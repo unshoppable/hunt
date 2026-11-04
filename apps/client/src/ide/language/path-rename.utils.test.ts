@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { newFolderProblem, newNameProblem, pathMatches, pathOffsets, renamedTo } from "./path-rename.utils";
+import { newNameProblem, newPathProblem, pathMatches, pathOffsets, renamedTo } from "./path-rename.utils";
 
 describe("pathOffsets", () => {
   it("finds the path as a whole, also as the start of a longer path or the end of an absolute one", () => {
@@ -48,15 +48,17 @@ describe("renamedTo", () => {
   });
 });
 
-describe("newFolderProblem", () => {
+describe("newPathProblem", () => {
   it("accepts a name and a nested path", () => {
-    expect(newFolderProblem("docs")).toBeNull();
-    expect(newFolderProblem("docs/adrs")).toBeNull();
+    expect(newPathProblem("docs", true)).toBeNull();
+    expect(newPathProblem("docs/adrs", true)).toBeNull();
+    expect(newPathProblem("docs/README.md", false)).toBeNull();
   });
 
   it("rejects empty segments and the dot names", () => {
-    expect(newFolderProblem("")).toMatch(/folder name/);
-    expect(newFolderProblem("docs//adrs")).toMatch(/folder name/);
-    expect(newFolderProblem("../docs")).toMatch(/neither/);
+    expect(newPathProblem("", true)).toMatch(/folder name/);
+    expect(newPathProblem("docs//adrs", true)).toMatch(/folder name/);
+    expect(newPathProblem("docs/", false)).toMatch(/file name/);
+    expect(newPathProblem("../docs", true)).toMatch(/neither/);
   });
 });

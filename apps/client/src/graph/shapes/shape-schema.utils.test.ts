@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseShapeDiagram } from "./shape-schema.utils";
+import { parseShapeDiagram, shapeDiagramTypeOf } from "./shape-schema.utils";
 
 const context = {
   type: "c4-context",
@@ -161,6 +161,24 @@ describe("parseShapeDiagram", () => {
     expect(parsed.diagram.nodes.map((node) => node.change)).toEqual([undefined, "added"]);
     expect(parsed.diagram.edges[0].change).toBeUndefined();
     expect(parsed.problems).toHaveLength(3);
+  });
+
+  it("keeps a numeric position and clears any other, naming the file it was given", () => {
+    const parsed = parseShapeDiagram(
+      { type: "states", nodes: [{ id: "a", kind: "state", label: "A", position: { x: 10.5, y: -4 } }, { id: "b", kind: "state", label: "B", position: { x: "1", y: 2 } }], edges: [] },
+      "states",
+      "docs/order.react-flow.json",
+    );
+    expect(parsed.diagram.nodes.map((node) => node.position)).toEqual([{ x: 10.5, y: -4 }, undefined]);
+    expect(parsed.problems).toHaveLength(1);
+    expect(parseShapeDiagram([], "states", "docs/order.react-flow.json").problems[0]).toContain("docs/order.react-flow.json");
+  });
+
+  it("reads the shape diagram type a file declares", () => {
+    expect(shapeDiagramTypeOf({ type: "erd", nodes: [] })).toBe("erd");
+    expect(shapeDiagramTypeOf({ nodes: [], edges: [] })).toBeNull();
+    expect(shapeDiagramTypeOf({ type: "dependencies" })).toBeNull();
+    expect(shapeDiagramTypeOf("erd")).toBeNull();
   });
 
   it("drops edges with unknown endpoints and duplicate edges", () => {

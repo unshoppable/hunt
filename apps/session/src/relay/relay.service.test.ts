@@ -12,6 +12,7 @@ import {
   responseMessage,
   type JsonRpcId,
   type JsonRpcMessage,
+  type JsonRpcNotification,
   type JsonRpcRequest,
   type Outcome,
 } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
@@ -59,6 +60,15 @@ const PERMISSION_PARAMS = {
 };
 const ALLOWED = { result: { outcome: { outcome: "selected", optionId: "allow" } } };
 const END_TURN = { result: { stopReason: "end_turn" } };
+const SETUP_META = {
+  systemPrompt: { append: "Commit locally only." },
+  claudeCode: {
+    emitRawSDKMessages: [
+      { type: "system", subtype: "task_progress" },
+      { type: "system", subtype: "task_notification" },
+    ],
+  },
+};
 
 /** Answers a request the relay sends to the adapter; a method without a handler is left for the test to answer. */
 type AgentScript = Record<string, ((params: Record<string, unknown>) => Outcome) | undefined>;
@@ -167,7 +177,7 @@ async function startedHarness(config: Partial<HuntSessionConfig> = {}) {
 }
 
 describe("start", () => {
-  it("initializes the adapter once with only terminal_output and serves the result without unsupported session capabilities", async () => {
+  it("initializes the adapter once with subagents and terminal_output and serves the result without unsupported session capabilities", async () => {
     const harness = createHarness();
     const early = fakeClient();
     harness.relay.connectClient(early);
@@ -184,7 +194,11 @@ describe("start", () => {
     harness.relay.handleClientMessage(late, requestMessage("again", "initialize", {}));
     expect(late.sent).toEqual([{ jsonrpc: "2.0", id: "again", result: expected }]);
     expect(harness.requestsTo("initialize").map((request) => request.params)).toEqual([
-      { protocolVersion: 1, clientCapabilities: { _meta: { terminal_output: true } }, clientInfo: expect.objectContaining({ name: "hunt-relay" }) },
+      {
+        protocolVersion: 1,
+        clientCapabilities: { subagents: {}, _meta: { terminal_output: true } },
+        clientInfo: expect.objectContaining({ name: "hunt-relay" }),
+      },
     ]);
   });
 
@@ -198,7 +212,7 @@ describe("start", () => {
       "session/set_config_option",
       "session/set_config_option",
     ]);
-    const setup = { cwd: CONFIG.cwd, mcpServers: MCP_SERVERS, _meta: { systemPrompt: { append: "Commit locally only." } } };
+    const setup = { cwd: CONFIG.cwd, mcpServers: MCP_SERVERS, _meta: SETUP_META };
     expect(harness.requestsTo("session/load")[0].params).toEqual({ sessionId: SESSION_ID, ...setup });
     expect(harness.requestsTo("session/set_mode")[0].params).toEqual({ sessionId: SESSION_ID, modeId: "bypassPermissions" });
     expect(harness.requestsTo("session/set_config_option").map((request) => request.params)).toEqual([
@@ -220,7 +234,7 @@ describe("start", () => {
 
     await harness.relay.start();
 
-    const setup = { cwd: CONFIG.cwd, mcpServers: MCP_SERVERS, _meta: { systemPrompt: { append: "Commit locally only." } } };
+    const setup = { cwd: CONFIG.cwd, mcpServers: MCP_SERVERS, _meta: SETUP_META };
     expect(harness.requestsTo("session/new")[0].params).toEqual(setup);
     expect(harness.requestsTo("session/set_mode")[0].params).toEqual({ sessionId: "acp-new", modeId: "bypassPermissions" });
     expect(harness.persisted).toEqual([{ acpSessionId: "acp-new" }]);
@@ -427,6 +441,51 @@ describe("prompts", () => {
   });
 });
 
+describe("steering", () => {
+  function steerRequest(id: JsonRpcId, text: string): JsonRpcRequest {
+    return requestMessage(id, "_session/steering", { sessionId: SESSION_ID, prompt: [{ type: "text", text }], _meta: { steering: { idleBehavior: "promptRequired" } } });
+  }
+
+  it("forwards a steered prompt into the running turn and records it once the adapter took it in", async () => {
+    const harness = await startedHarness();
+    const sender = harness.loadedClient();
+    const other = harness.loadedClient();
+    harness.relay.handleClientMessage(sender, promptRequest("p1", "first"));
+
+    harness.relay.handleClientMessage(sender, steerRequest("s1", "also this"));
+    const [steer] = harness.requestsTo("_session/steering");
+    expect(steer.params).toEqual(steerRequest("s1", "also this").params);
+    expect(other.sent.map(textOf).filter(Boolean)).toEqual(["first"]);
+
+    harness.respond(steer, { result: { outcome: "injected" } });
+    expect(sender.sent.at(-1)).toEqual({ jsonrpc: "2.0", id: "s1", result: { outcome: "injected" } });
+    expect(other.sent.map(textOf).filter(Boolean)).toEqual(["first", "also this"]);
+    expect(sender.sent.map(textOf).filter(Boolean)).toEqual([]);
+  });
+
+  it("records nothing when the adapter's turn ended before it got the steered prompt", async () => {
+    const harness = await startedHarness();
+    const sender = harness.loadedClient();
+    const other = harness.loadedClient();
+    harness.relay.handleClientMessage(sender, promptRequest("p1", "first"));
+    harness.relay.handleClientMessage(sender, steerRequest("s1", "also this"));
+
+    harness.respond(harness.requestsTo("_session/steering")[0], { result: { outcome: "promptRequired", reason: "noRunningTurn" } });
+    expect(sender.sent.at(-1)).toEqual({ jsonrpc: "2.0", id: "s1", result: { outcome: "promptRequired", reason: "noRunningTurn" } });
+    expect(other.sent.map(textOf).filter(Boolean)).toEqual(["first"]);
+  });
+
+  it("answers promptRequired without asking the adapter while no turn runs", async () => {
+    const harness = await startedHarness();
+    const client = harness.loadedClient();
+
+    harness.relay.handleClientMessage(client, steerRequest("s1", "hello"));
+
+    expect(harness.requestsTo("_session/steering")).toEqual([]);
+    expect(client.sent).toEqual([{ jsonrpc: "2.0", id: "s1", result: { outcome: "promptRequired", reason: "noRunningTurn" } }]);
+  });
+});
+
 describe("cancellation", () => {
   it("answers queued prompts as cancelled and forwards session/cancel for the running one", async () => {
     const harness = await startedHarness();
@@ -613,6 +672,152 @@ describe("settings", () => {
 
     expect(client.sent).toEqual([{ jsonrpc: "2.0", id: 1, error: { code: -32603, message: "Invalid value for config option model: nope" } }]);
     expect(harness.persisted).toEqual([]);
+  });
+});
+
+describe("subagents", () => {
+  const CHILD = "a84ac2fc8a50f5d9a";
+  const NESTED = "b2c3d4";
+
+  function spawned(subagentSessionId: string): Record<string, unknown> {
+    return { sessionUpdate: "subagent_spawned", subagentSessionId, name: "Count files", task: "Count files", prompt: "Count", capabilities: {} };
+  }
+
+  function sdkMessage(subtype: string, taskId: string, totalTokens: number, sessionId = SESSION_ID): JsonRpcNotification {
+    const message = { type: "system", subtype, task_id: taskId, usage: { total_tokens: totalTokens, tool_uses: 1, duration_ms: 1307 } };
+    return notificationMessage("_claude/sdkMessage", { sessionId, message });
+  }
+
+  /** The session ID and the update kind of each `session/update`, for asserting the order across sessions. */
+  function sessionLabels(messages: JsonRpcMessage[]): string[] {
+    return messages.map((message) => {
+      const params = "params" in message && isRecord(message.params) ? message.params : {};
+      return updateOf(message) ? `${String(params.sessionId)} ${label(message)}` : label(message);
+    });
+  }
+
+  it("keeps the updates of announced subagent sessions in the history, sends them live and replays them in order", async () => {
+    const harness = await startedHarness();
+    const live = harness.loadedClient();
+
+    harness.update(spawned(CHILD));
+    harness.update({ sessionUpdate: "tool_call", toolCallId: "child-tool", title: "Glob" }, CHILD);
+    harness.update(spawned(NESTED), CHILD);
+    harness.update(chunk("nested text"), NESTED);
+    harness.update({ sessionUpdate: "usage_update", used: 5, size: 100 }, CHILD);
+    harness.update(chunk("unknown session"), "c-unknown");
+    harness.update({ sessionUpdate: "subagent_state_update", subagentSessionId: CHILD, state: "completed" });
+    harness.update(chunk("root text"));
+
+    const expected = [
+      `${SESSION_ID} subagent_spawned`,
+      `${CHILD} tool_call`,
+      `${CHILD} subagent_spawned`,
+      `${NESTED} agent_message_chunk`,
+      `${CHILD} usage_update`,
+      `${SESSION_ID} subagent_state_update`,
+      `${SESSION_ID} agent_message_chunk`,
+    ];
+    expect(sessionLabels(live.sent)).toEqual(expected);
+    const late = fakeClient();
+    harness.relay.connectClient(late);
+    harness.relay.handleClientMessage(late, loadRequest("late"));
+    expect(sessionLabels(late.sent)).toEqual([...expected, "response:late", `${SESSION_ID} turn:idle`]);
+    expect(late.sent.slice(0, expected.length)).toEqual(live.sent);
+  });
+
+  it("keeps the subagent traffic that arrives while session/new runs", async () => {
+    const harness = createHarness({ acpSessionId: null });
+    harness.script["session/new"] = () => {
+      harness.update(spawned(CHILD), "acp-new");
+      harness.update(chunk("child text"), CHILD);
+      harness.relay.handleAgentMessage(sdkMessage("task_progress", CHILD, 10, "acp-new"));
+      return { result: { sessionId: "acp-new", modes: MODES, configOptions: CONFIG_OPTIONS } };
+    };
+    await harness.relay.start();
+
+    const client = fakeClient();
+    harness.relay.connectClient(client);
+    harness.relay.handleClientMessage(client, loadRequest(1, "acp-new"));
+
+    expect(client.sent.map(label)).toEqual(["subagent_spawned", "agent_message_chunk", "response:1", "notification:_claude/sdkMessage", "turn:idle"]);
+  });
+
+  it("passes SDK messages on live and replays the latest one of each subagent task after the history", async () => {
+    const harness = await startedHarness();
+    const live = harness.loadedClient();
+    harness.update(spawned(CHILD));
+    harness.update(spawned(NESTED), CHILD);
+
+    const messages = [
+      sdkMessage("task_progress", CHILD, 100),
+      sdkMessage("task_progress", NESTED, 200),
+      sdkMessage("task_notification", CHILD, 300),
+      sdkMessage("init", "no-task", 0),
+      sdkMessage("task_progress", NESTED, 400, NESTED),
+    ];
+    for (const message of messages) {
+      harness.relay.handleAgentMessage(message);
+    }
+    harness.relay.handleAgentMessage(sdkMessage("task_progress", "foreign", 1, "acp-other"));
+    harness.relay.handleAgentMessage(notificationMessage("_claude/sdkMessage", "not a record"));
+
+    expect(live.sent.slice(2)).toEqual(messages);
+    const late = fakeClient();
+    harness.relay.connectClient(late);
+    harness.relay.handleClientMessage(late, loadRequest("late"));
+    expect(late.sent.map(label)).toEqual([
+      "subagent_spawned",
+      "subagent_spawned",
+      "response:late",
+      "notification:_claude/sdkMessage",
+      "notification:_claude/sdkMessage",
+      "turn:idle",
+    ]);
+    expect(late.sent.slice(3, 5)).toEqual([messages[2], messages[4]]);
+  });
+
+  it("keeps the session's own commands and usage when a subagent reports its own", async () => {
+    const harness = await startedHarness();
+    harness.update({ sessionUpdate: "usage_update", used: 1, size: 100 });
+    harness.update(spawned(CHILD));
+    harness.update({ sessionUpdate: "usage_update", used: 9, size: 100 }, CHILD);
+    harness.update({ sessionUpdate: "current_mode_update", currentModeId: "plan" }, CHILD);
+
+    const client = fakeClient();
+    harness.relay.connectClient(client);
+    harness.relay.handleClientMessage(client, loadRequest(1));
+
+    expect(client.sent.map(label)).toEqual(["subagent_spawned", "usage_update", "current_mode_update", "response:1", "usage_update", "turn:idle"]);
+    expect(updateOf(client.sent[4])).toMatchObject({ used: 1 });
+    expect(client.sent[3]).toMatchObject({ result: { modes: { currentModeId: "bypassPermissions" } } });
+  });
+
+  it("reports the question from the session's own reply, not from a subagent's text", async () => {
+    const harness = await startedHarness();
+    harness.update(chunk("Shall I push?"));
+    harness.update(spawned(CHILD));
+    harness.update({ sessionUpdate: "tool_call", toolCallId: "child-tool", title: "Glob" }, CHILD);
+    harness.update(chunk("Found 12 files."), CHILD);
+    expect(harness.relay.status().question).toBe(true);
+
+    harness.update(chunk(" Pushed."));
+    harness.update(chunk("Which ones?"), CHILD);
+    expect(harness.relay.status().question).toBe(false);
+  });
+
+  it("forwards a subagent's permission request like the session's own", async () => {
+    const harness = await startedHarness();
+    const client = harness.loadedClient();
+    harness.update(spawned(CHILD));
+    client.sent.length = 0;
+
+    harness.relay.handleAgentMessage(requestMessage(5, "session/request_permission", { ...PERMISSION_PARAMS, sessionId: CHILD }));
+    expect(client.sent).toEqual([expect.objectContaining({ method: "session/request_permission", params: { ...PERMISSION_PARAMS, sessionId: CHILD } })]);
+
+    const forwarded = client.sent[0];
+    harness.relay.handleClientMessage(client, { jsonrpc: "2.0", id: "id" in forwarded ? forwarded.id : null, ...ALLOWED });
+    expect(harness.toAgent.at(-1)).toEqual({ jsonrpc: "2.0", id: 5, ...ALLOWED });
   });
 });
 

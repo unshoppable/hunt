@@ -2,7 +2,7 @@ Update the Hunt C4 container diagram for this session. The session's changes are
 `git diff --name-only {{diffBase}}` lists plus untracked files (`git ls-files --others --exclude-standard`); use
 exactly this base, whatever earlier diagrams covered.
 
-Rebuild `.hunt/diagram.c4-container.json` (`"type": "c4-container"`, schema in `.hunt/diagram.schema.json`) as
+Rebuild `.hunt/diagrams/c4-container.react-flow.json` (`"type": "c4-container"`, schema in `.hunt/diagrams/diagram.schema.json`) as
 described in your instructions:
 
 - Scope: one group in `groups` is the boundary of the system the session's changes belong to, and every `container`

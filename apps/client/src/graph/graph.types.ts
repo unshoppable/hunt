@@ -13,7 +13,7 @@ export type GraphNode = { path: string; review?: ReviewLevel; reviewReason?: str
  */
 export type GraphEdge = { source: string; target: string; label?: string; description?: string };
 
-/** The validated content of `.hunt/graph.json` (see src-tauri/src/graph/graph.schema.json). */
+/** The validated content of `.hunt/diagrams/dependencies.react-flow.json` (see src-tauri/src/graph/graph.schema.json). */
 export type ArchitectureGraph = { nodes: GraphNode[]; edges: GraphEdge[] };
 
 /** Age of a diagram: when its file was last written, and whether session files changed since. */

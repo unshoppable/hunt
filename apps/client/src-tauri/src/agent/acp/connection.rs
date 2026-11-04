@@ -10,12 +10,12 @@ use agent_client_protocol::schema::v1::{
     ClientCapabilities, ConfigOptionUpdate, EnvVariable, InitializeRequest, LoadSessionRequest, McpServer,
     McpServerStdio, Meta, NewSessionRequest, RequestPermissionOutcome, RequestPermissionRequest,
     RequestPermissionResponse, SelectedPermissionOutcome, SessionConfigOption, SessionId,
-    SessionNotification, SessionUpdate,
+    SessionNotification, SessionUpdate, SubagentCapabilities,
 };
 use agent_client_protocol::schema::ProtocolVersion;
 use agent_client_protocol::{
     on_receive_notification, on_receive_request, AcpAgent, AcpAgentConfig, Agent, Client,
-    ConnectionTo, Error, ErrorCode, RequestCancellation,
+    ConnectionTo, Error, ErrorCode, Handled, RequestCancellation, UntypedMessage,
 };
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
@@ -23,6 +23,8 @@ use tokio::sync::oneshot;
 use uuid::Uuid;
 
 use super::message_time::{self, Transcript};
+use super::steering;
+use super::subagents::{self, SubagentTree};
 use super::turn::{self, OwnTurn, TurnTracker};
 use crate::agent::accounts;
 use crate::agent::browser::BrowserRegistry;
@@ -205,8 +207,15 @@ struct ClosedEvent {
     error: Option<String>,
 }
 
-/// What `connect` needs once the session is usable: its ID, its config options and the connection to talk to it.
-type Ready = (SessionId, Vec<SessionConfigOption>, ConnectionTo<Agent>);
+/// The session an agent brought up: its ID, its config options and whether it steers (see `steering`).
+struct Established {
+    acp_session_id: SessionId,
+    config_options: Vec<SessionConfigOption>,
+    steers: bool,
+}
+
+/// What `connect` needs once the session is usable: the established session and the connection to talk to it.
+type Ready = (Established, ConnectionTo<Agent>);
 
 /// Delivers the ready result to `connect` exactly once. Both the session setup and the end of the connection
 /// try to fire it; whichever comes first wins and later calls are ignored.
@@ -286,6 +295,52 @@ fn hold_or_publish(
     publish_update(app, hunt_session_id, history, notification);
 }
 
+/// Where the notifications of one agent connection go: the session's attribution and sync, its turn tracking and its
+/// history and UI.
+#[derive(Clone)]
+struct NotificationSink {
+    app: AppHandle,
+    hunt_session_id: Uuid,
+    worktree: Option<PathBuf>,
+    sync_owner: Option<Uuid>,
+    history: Arc<Mutex<Vec<SessionNotification>>>,
+    turns: Arc<Mutex<TurnTracker>>,
+    replay: Arc<Mutex<Option<Replay>>>,
+    subagents: Arc<Mutex<SubagentTree>>,
+}
+
+impl NotificationSink {
+    /// Takes one notification. A subagent's edits count for the session like the main agent's, but its output runs no
+    /// turn of the session: a background subagent works while the main agent is idle.
+    fn receive(&self, mut notification: SessionNotification) {
+        let (app, hunt_session_id, history) = (&self.app, self.hunt_session_id, &self.history);
+        graph::hide_replayed_refresh(&mut notification);
+        let is_replaying = match self.replay.lock().unwrap().as_ref() {
+            Some(replay) => {
+                message_time::stamp_replayed(&mut notification, &replay.transcript);
+                true
+            }
+            None => false,
+        };
+        if let Some(worktree) = &self.worktree {
+            attribution::observe(app, hunt_session_id, worktree, &notification);
+        }
+        if let Some(owner) = self.sync_owner {
+            crate::session::sync::observe(app, owner, hunt_session_id, &notification);
+        }
+        let is_subagent = self.subagents.lock().unwrap().is_child(&notification.session_id);
+        let own_turn = if is_replaying || is_subagent { None } else { self.turns.lock().unwrap().observe(&notification.update) };
+        let acp_session_id = notification.session_id.clone();
+        if own_turn == Some(OwnTurn::Started) {
+            turn::report_turn(app, hunt_session_id, history, &acp_session_id, true);
+        }
+        hold_or_publish(app, hunt_session_id, history, &self.replay, notification);
+        if own_turn == Some(OwnTurn::Ended) {
+            turn::report_turn(app, hunt_session_id, history, &acp_session_id, false);
+        }
+    }
+}
+
 /// Ends the replay of a load and sends what it held back in one event, before any update that follows: a chat that
 /// applies thousands of replayed updates one event at a time renders for many seconds.
 fn end_replay(app: &AppHandle, hunt_session_id: Uuid, replay: &Mutex<Option<Replay>>) {
@@ -351,13 +406,16 @@ pub async fn connect(
     };
     tauri::async_runtime::spawn(run_agent_task(agent, task));
 
-    let (acp_session_id, config_options, connection) = ready_receiver
+    let (Established { acp_session_id, config_options, steers }, connection) = ready_receiver
         .await
         .map_err(|_| "agent task ended before the session was ready".to_string())??;
 
     // The session response carries the model/effort/mode options; the UI consumes them like a live update.
     let options_update = SessionUpdate::ConfigOptionUpdate(ConfigOptionUpdate::new(config_options));
     publish_update(&app, hunt_session_id, &history, SessionNotification::new(acp_session_id.clone(), options_update));
+    if steers {
+        publish_update(&app, hunt_session_id, &history, steering::supported_update(&acp_session_id));
+    }
 
     Ok(LiveSession { connection, acp_session_id, history, turns, shutdown: Some(shutdown_sender), finished: Some(finished_receiver) })
 }
@@ -391,37 +449,40 @@ async fn run_agent_task(agent: AcpAgent, task: AgentTask) {
         }),
         SessionStart::New { .. } => None,
     }));
-    let notify_replay = replay.clone();
+    let sink = NotificationSink {
+        app: notify_app,
+        hunt_session_id,
+        worktree,
+        sync_owner,
+        history,
+        turns,
+        replay: replay.clone(),
+        subagents: Arc::default(),
+    };
+    let untyped_sink = sink.clone();
     let session_app = app.clone();
 
+    // The untyped handler runs first: it takes the notifications the typed `SessionNotification` cannot parse (see
+    // `subagents`) and passes every other one on.
     let result = Client
         .builder()
         .name("hunt")
         .on_receive_notification(
-            async move |mut notification: SessionNotification, _connection| {
-                graph::hide_replayed_refresh(&mut notification);
-                let is_replaying = match notify_replay.lock().unwrap().as_ref() {
-                    Some(replay) => {
-                        message_time::stamp_replayed(&mut notification, &replay.transcript);
-                        true
+            async move |message: UntypedMessage, connection: ConnectionTo<Agent>| {
+                let translated = untyped_sink.subagents.lock().unwrap().translate(&message.method, &message.params, claude_dir().ok().as_deref());
+                match translated {
+                    Some(notification) => {
+                        untyped_sink.receive(notification);
+                        Ok(Handled::Yes)
                     }
-                    None => false,
-                };
-                if let Some(worktree) = &worktree {
-                    attribution::observe(&notify_app, hunt_session_id, worktree, &notification);
+                    None => Ok(Handled::No { message: (message, connection), retry: false }),
                 }
-                if let Some(owner) = sync_owner {
-                    crate::session::sync::observe(&notify_app, owner, hunt_session_id, &notification);
-                }
-                let own_turn = if is_replaying { None } else { turns.lock().unwrap().observe(&notification.update) };
-                let acp_session_id = notification.session_id.clone();
-                if own_turn == Some(OwnTurn::Started) {
-                    turn::report_turn(&notify_app, hunt_session_id, &history, &acp_session_id, true);
-                }
-                hold_or_publish(&notify_app, hunt_session_id, &history, &notify_replay, notification);
-                if own_turn == Some(OwnTurn::Ended) {
-                    turn::report_turn(&notify_app, hunt_session_id, &history, &acp_session_id, false);
-                }
+            },
+            on_receive_notification!(),
+        )
+        .on_receive_notification(
+            async move |notification: SessionNotification, _connection| {
+                sink.receive(notification);
                 Ok(())
             },
             on_receive_notification!(),
@@ -469,9 +530,9 @@ async fn run_session(
     shutdown: oneshot::Receiver<()>,
 ) -> Result<(), Error> {
     // A failed setup is not fired here: it surfaces as the connection's result, which fires the handoff with it.
-    let (acp_session_id, config_options) = establish(&connection, start, &system_prompt, mcp_servers, may_start_over).await?;
+    let established = establish(&connection, start, &system_prompt, mcp_servers, may_start_over).await?;
     end_replay();
-    ready.fire(Ok((acp_session_id, config_options, connection.clone())));
+    ready.fire(Ok((established, connection.clone())));
 
     tokio::select! {
         _ = shutdown => {}
@@ -498,8 +559,8 @@ async fn forget_live_session(app: &AppHandle, hunt_session_id: Uuid) {
         .retain(|_, pending| pending.hunt_session_id != hunt_session_id);
 }
 
-/// Initializes the protocol and creates or loads the session with the MCP servers `mcp_servers`; returns its ID and
-/// config options. `system_prompt` is appended to the agent's own system prompt (see `system_prompt_append`).
+/// Initializes the protocol and creates or loads the session with the MCP servers `mcp_servers`; returns its ID, its
+/// config options and whether the agent steers. `system_prompt` is appended to the agent's own system prompt (see `system_prompt_append`).
 /// With `may_start_over`, a conversation the agent no longer has (its transcript was cleaned up or never written) is
 /// replaced by a new one, so the session stays usable; the caller stores the new ID.
 async fn establish(
@@ -508,18 +569,17 @@ async fn establish(
     system_prompt: &str,
     mcp_servers: Vec<McpServer>,
     may_start_over: bool,
-) -> Result<(SessionId, Vec<SessionConfigOption>), Error> {
+) -> Result<Established, Error> {
     let mut capability_meta = Meta::new();
     capability_meta.insert("terminal_output".into(), serde_json::Value::Bool(true));
-    connection
-        .send_request(
-            InitializeRequest::new(ProtocolVersion::V1)
-                .client_capabilities(ClientCapabilities::new().meta(capability_meta)),
-        )
+    let capabilities = ClientCapabilities::new().meta(capability_meta).subagents(SubagentCapabilities::new());
+    let initialized = connection
+        .send_request(InitializeRequest::new(ProtocolVersion::V1).client_capabilities(capabilities))
         .block_task()
         .await?;
+    let steers = steering::is_supported(initialized.meta.as_ref());
 
-    match start {
+    let (acp_session_id, config_options) = match start {
         SessionStart::New { cwd } => new_session(connection, cwd, system_prompt, mcp_servers).await,
         SessionStart::Load { cwd, acp_session_id } => {
             let session_id = SessionId::new(acp_session_id);
@@ -535,7 +595,8 @@ async fn establish(
                 Err(error) => Err(error),
             }
         }
-    }
+    }?;
+    Ok(Established { acp_session_id, config_options, steers })
 }
 
 /// Creates a new session in `cwd` with the MCP servers `mcp_servers` on the initialized connection; returns its ID and
@@ -644,10 +705,12 @@ fn workspace_prompt(app: &AppHandle, hunt_session_id: Uuid) -> Option<String> {
     })
 }
 
-/// The `session/new` and `session/load` meta the adapter reads the system prompt addition from.
+/// The `session/new` and `session/load` meta the adapter reads the system prompt addition from, plus the raw SDK
+/// messages that carry the usage of a subagent (`subagents::raw_sdk_messages`).
 fn build_session_meta(system_prompt: &str) -> Meta {
     let mut meta = Meta::new();
     meta.insert("systemPrompt".into(), serde_json::json!({ "append": system_prompt }));
+    meta.insert("claudeCode".into(), serde_json::json!({ "emitRawSDKMessages": subagents::raw_sdk_messages() }));
     meta
 }
 

@@ -49,6 +49,7 @@ import { rememberEditors, useRightTab, useSessionViewStore, type RightTab } from
 import { hasInspectorTab } from "../sessions/inspector.utils";
 import { useControlCommands } from "../control/control-commands.hook";
 import { useScriptRunRequests } from "../terminal/script-runs.hook";
+import { useDiagramFileRequests } from "../sessions/diagram-file-requests.hook";
 import { TerminalPanel } from "../terminal/TerminalPanel";
 import { FactoryPanel } from "../factory/FactoryPanel";
 import { isTerminalActive } from "../terminal/terminal-tabs.utils";
@@ -185,6 +186,7 @@ export function App() {
   useBackendEvents();
   useShowSessionRequests();
   useScriptRunRequests();
+  useDiagramFileRequests();
   useControlCommands();
   useRememberWindowBounds("main");
 

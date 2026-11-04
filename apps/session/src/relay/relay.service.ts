@@ -6,7 +6,9 @@
  * another, and a permission request goes to every loaded client: the first answer goes to the adapter, the other
  * clients get a `$/cancel_request` for it. JSON-RPC IDs are rewritten in both directions, so the adapter sees only
  * relay IDs and every client only its own. `relay.main.ts` wires `sendToAgent` and `ClientConnection` to the adapter's stdio
- * and the Unix socket.
+ * and the Unix socket. A prompt a client steers into the running turn (`_session/steering`) goes to the adapter at once.
+ * The relay announces native subagents: the updates of the session's subagent sessions and the adapter's raw SDK
+ * messages of their tasks go to the clients unchanged, beside those of the session itself.
  */
 import type { ConfigChanges } from "./hunt-session-config.utils.ts";
 import type { HuntSessionConfig } from "./hunt-session-config.value-object.ts";
@@ -28,6 +30,7 @@ import {
   type JsonRpcNotification,
   type Outcome,
 } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
+import { SubagentSessions } from "./subagent-sessions.domain.ts";
 import { ToolCallLog } from "./tool-call-log.domain.ts";
 import { TrailingReply } from "./trailing-reply.domain.ts";
 
@@ -37,6 +40,15 @@ const UNSUPPORTED_SESSION_CAPABILITIES = ["fork", "delete", "close", "list"];
 /** The config option that mirrors the session mode; a change of it is stored as `modeId`. */
 const MODE_CONFIG_ID = "mode";
 const CANCELLED: Outcome = { result: { stopReason: "cancelled" } };
+/** The request that sends a prompt into the turn the adapter runs, which it advertises in `_meta.steering` of `initialize`. */
+const STEER_METHOD = "_session/steering";
+/** The answer to a steered prompt while no turn runs: the client sends it as a prompt of its own. */
+const PROMPT_REQUIRED: Outcome = { result: { outcome: "promptRequired", reason: "noRunningTurn" } };
+/** The notification under which the adapter passes on the SDK messages that `_meta.claudeCode.emitRawSDKMessages` asks for. */
+const SDK_MESSAGE_METHOD = "_claude/sdkMessage";
+/** The SDK messages of a subagent's task, its progress and its end, each with the task's usage. */
+const TASK_MESSAGE_SUBTYPES = ["task_progress", "task_notification"];
+const RAW_SDK_MESSAGES = TASK_MESSAGE_SUBTYPES.map((subtype) => ({ type: "system", subtype }));
 
 /** One client connection. */
 export interface ClientConnection {
@@ -73,6 +85,7 @@ interface ClientRequest {
 type AgentRequest =
   | { kind: "internal"; settle(outcome: Outcome): void }
   | { kind: "prompt"; request: ClientRequest }
+  | { kind: "steer"; request: ClientRequest }
   | { kind: "setting"; method: string; request: ClientRequest; modeUpdatesAtSend: number };
 
 interface PendingPermission {
@@ -89,6 +102,8 @@ export class Relay {
   private error: string | null = null;
   private initializeResult: unknown;
   private sessionId: string | null = null;
+  /** The session's subagent sessions; set together with `sessionId`. */
+  private subagents: SubagentSessions | null = null;
   private modes: Record<string, unknown> | null = null;
   private configOptions: unknown[] | null = null;
   /** Counts `current_mode_update`s, so an accepted `session/set_mode` does not override a mode announced meanwhile. */
@@ -98,7 +113,9 @@ export class Relay {
   private readonly trailingReply = TrailingReply.start();
   private latestCommands: JsonRpcNotification | null = null;
   private latestUsage: JsonRpcNotification | null = null;
-  /** Updates that arrive while `session/new` runs, before the session ID is known. */
+  /** The latest `_claude/sdkMessage` of each subagent task by its `task_id`, in the order the tasks first reported. */
+  private readonly latestTaskMessages = new Map<string, JsonRpcNotification>();
+  /** Updates and SDK messages that arrive while `session/new` runs, before the session ID is known. */
   private heldUpdates: JsonRpcNotification[] | null = null;
   private readonly clients = new Map<ClientConnection, Client>();
   private waitingInitializes: ClientRequest[] = [];
@@ -128,16 +145,18 @@ export class Relay {
   async start(): Promise<void> {
     this.publishStatus();
     try {
-      const initialize = { protocolVersion: 1, clientCapabilities: { _meta: { terminal_output: true } }, clientInfo: CLIENT_INFO };
+      const clientCapabilities = { subagents: {}, _meta: { terminal_output: true } };
+      const initialize = { protocolVersion: 1, clientCapabilities, clientInfo: CLIENT_INFO };
       const initialized = await this.call("initialize", initialize, "failed to initialize the agent");
       if (!isRecord(initialized)) throw new Error("failed to initialize the agent: the result is not an object");
       this.initializeResult = withoutUnsupportedCapabilities(initialized);
       this.answerWaitingInitializes();
 
       const config = this.deps.loadConfig();
-      const setup = { cwd: config.cwd, mcpServers: this.deps.mcpServers, _meta: { systemPrompt: { append: config.systemPromptAppend } } };
+      const meta = { systemPrompt: { append: config.systemPromptAppend }, claudeCode: { emitRawSDKMessages: RAW_SDK_MESSAGES } };
+      const setup = { cwd: config.cwd, mcpServers: this.deps.mcpServers, _meta: meta };
       if (config.acpSessionId) {
-        this.sessionId = config.acpSessionId;
+        this.adoptSessionId(config.acpSessionId);
         this.publishStatus();
         const loaded = await this.call("session/load", { sessionId: config.acpSessionId, ...setup }, `failed to load the session ${config.acpSessionId}`);
         this.adoptSessionState(loaded);
@@ -146,7 +165,7 @@ export class Relay {
         const created = await this.call("session/new", setup, "failed to create a session");
         const sessionId = isRecord(created) ? created.sessionId : undefined;
         if (typeof sessionId !== "string" || !sessionId) throw new Error("failed to create a session: the result has no sessionId");
-        this.sessionId = sessionId;
+        this.adoptSessionId(sessionId);
         this.adoptSessionState(created);
         this.releaseHeldUpdates();
         this.persist({ acpSessionId: sessionId });
@@ -225,7 +244,7 @@ export class Relay {
   }
 
   private endsWithQuestion(): boolean {
-    this.trailingReply.follow(this.history);
+    this.trailingReply.follow(this.history, this.sessionId);
     return this.trailingReply.asksQuestion();
   }
 
@@ -251,6 +270,11 @@ export class Relay {
     const id = this.nextAgentRequestId++;
     this.agentRequests.set(id, pending);
     this.deps.sendToAgent(requestMessage(id, method, params));
+  }
+
+  private adoptSessionId(sessionId: string): void {
+    this.sessionId = sessionId;
+    this.subagents = SubagentSessions.of(sessionId);
   }
 
   /** Takes the modes and config options of a `session/new` or `session/load` result. */
@@ -330,6 +354,9 @@ export class Relay {
       case "session/prompt":
         this.enqueuePrompt(request);
         break;
+      case STEER_METHOD:
+        this.steer(request);
+        break;
       case "session/set_mode":
       case "session/set_config_option":
         this.forwardSetting(method, request);
@@ -370,7 +397,8 @@ export class Relay {
 
   /**
    * Replays the session to the client in one synchronous run, so no live update interleaves: the buffered history, the
-   * response with the current modes and config options, the latest commands and usage, and the turn state. Open
+   * response with the current modes and config options, the latest commands and usage, the latest SDK message of each
+   * subagent task, and the turn state. Open
    * permission requests the client did not get yet follow; from then on the client receives live updates. The client's
    * `cwd` and `_meta` are ignored: the session was set up from `hunt-session.json`.
    */
@@ -395,6 +423,9 @@ export class Relay {
     }
     if (this.latestUsage) {
       client.connection.send(this.latestUsage);
+    }
+    for (const taskMessage of this.latestTaskMessages.values()) {
+      client.connection.send(taskMessage);
     }
     client.connection.send(this.turnUpdate());
     client.isLoaded = true;
@@ -448,6 +479,31 @@ export class Relay {
       this.history.push(chunk);
       this.broadcast(chunk, prompt.client);
     }
+  }
+
+  /**
+   * Forwards a steered prompt to the adapter while a turn runs; with none running the client gets `promptRequired`, so
+   * that its prompt queues behind the prompts of the other clients like any other.
+   */
+  private steer(request: ClientRequest): void {
+    const problem = this.sessionProblem(request.params);
+    if (problem) {
+      this.answer(request, problem);
+      return;
+    }
+    if (!this.activePrompt) {
+      this.answer(request, PROMPT_REQUIRED);
+      return;
+    }
+    this.sendToAgent(STEER_METHOD, request.params, { kind: "steer", request });
+  }
+
+  /** Answers a forwarded steered prompt; one the running turn took in goes into the history like a prompt. */
+  private finishSteer(request: ClientRequest, outcome: Outcome): void {
+    if (isRecord(outcome.result) && outcome.result.outcome === "injected") {
+      this.recordPrompt(request);
+    }
+    this.answer(request, outcome);
   }
 
   private finishPrompt(prompt: ClientRequest, outcome: Outcome): void {
@@ -550,14 +606,16 @@ export class Relay {
       pending.settle(outcome);
     } else if (pending.kind === "prompt") {
       this.finishPrompt(pending.request, outcome);
+    } else if (pending.kind === "steer") {
+      this.finishSteer(pending.request, outcome);
     } else {
       this.finishSetting(pending, outcome);
     }
   }
 
   /**
-   * Permission requests go to every loaded client, or wait for the next client's load; the adapter's other requests
-   * are not offered by the relay.
+   * Permission requests, a subagent's included, go to every loaded client, or wait for the next client's load; the
+   * adapter's other requests are not offered by the relay.
    */
   private receiveAgentRequest(id: JsonRpcId, method: string, params: unknown): void {
     if (method !== "session/request_permission") {
@@ -608,27 +666,40 @@ export class Relay {
   private receiveAgentNotification(message: JsonRpcNotification): void {
     if (message.method === "session/update") {
       this.recordUpdate(message);
+    } else if (message.method === SDK_MESSAGE_METHOD) {
+      this.recordSdkMessage(message);
     } else if (message.method === "$/cancel_request") {
       this.withdrawPermission(message.params);
     }
   }
 
   /**
-   * Buffers an update of the relay's session and passes it to the loaded clients. Commands and usage keep only their
-   * latest update, mode and config option updates only the state they carry; updates of other sessions are dropped.
+   * Buffers an update of the relay's session or of one of its subagent sessions and passes it to the loaded clients.
+   * A subagent's updates all go into the history; updates of other sessions are dropped.
    */
   private recordUpdate(message: JsonRpcNotification): void {
     const params = message.params;
     if (!isRecord(params) || !isRecord(params.update)) return;
-    if (!this.sessionId) {
+    if (!this.subagents) {
       this.heldUpdates?.push(message);
       return;
     }
-    if (params.sessionId !== this.sessionId) return;
+    if (!this.subagents.owns(params.sessionId)) return;
     const update = params.update;
+    this.subagents.observe(params.sessionId, update);
     if (this.state === "ready") {
       this.logToolCall(update);
     }
+    if (this.subagents.isChild(params.sessionId)) {
+      this.history.push(message);
+    } else {
+      this.recordSessionUpdate(message, update);
+    }
+    this.broadcast(message);
+  }
+
+  /** Of the relay's own session, commands and usage keep only their latest update, mode and config option updates only the state they carry. */
+  private recordSessionUpdate(message: JsonRpcNotification, update: Record<string, unknown>): void {
     switch (update.sessionUpdate) {
       case "available_commands_update":
         this.latestCommands = message;
@@ -650,6 +721,24 @@ export class Relay {
       default:
         this.history.push(message);
     }
+  }
+
+  /**
+   * Passes a raw SDK message of the relay's session or a subagent session to the loaded clients; of a subagent task's
+   * progress and end, the latest message per task is kept for the clients that load later.
+   */
+  private recordSdkMessage(message: JsonRpcNotification): void {
+    const params = message.params;
+    if (!isRecord(params)) return;
+    if (!this.subagents) {
+      this.heldUpdates?.push(message);
+      return;
+    }
+    if (!this.subagents.owns(params.sessionId)) return;
+    const sdkMessage = params.message;
+    if (isRecord(sdkMessage) && isTaskMessage(sdkMessage)) {
+      this.latestTaskMessages.set(sdkMessage.task_id, message);
+    }
     this.broadcast(message);
   }
 
@@ -664,7 +753,7 @@ export class Relay {
     const held = this.heldUpdates ?? [];
     this.heldUpdates = null;
     for (const message of held) {
-      this.recordUpdate(message);
+      this.receiveAgentNotification(message);
     }
   }
 
@@ -706,6 +795,11 @@ export class Relay {
       update: { sessionUpdate: "session_info_update", _meta: { hunt: { turn: this.turn } } },
     });
   }
+}
+
+/** Whether an SDK message reports the progress or end of a subagent task. */
+function isTaskMessage(message: Record<string, unknown>): message is Record<string, unknown> & { task_id: string } {
+  return message.type === "system" && TASK_MESSAGE_SUBTYPES.includes(String(message.subtype)) && typeof message.task_id === "string";
 }
 
 /** The adapter's `initialize` result without the session capabilities the relay does not serve. */

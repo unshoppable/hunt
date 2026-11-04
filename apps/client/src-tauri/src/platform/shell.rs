@@ -27,10 +27,12 @@ pub fn find_on_path(program: &str) -> Option<PathBuf> {
     std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(program)).find(|path| path.is_file())
 }
 
-/// Replaces `path` with `text` unless it holds it already; through a temporary file, so that a running `sh` never
-/// reads half a script.
+/// Replaces `path` with `text` and `mode` unless it holds both already; through a temporary file, so that a running
+/// `sh` never reads half a script.
 pub fn write_if_changed(path: &Path, text: &str, mode: u32) -> Result<(), String> {
-    if std::fs::read_to_string(path).is_ok_and(|current| current == text) {
+    use std::os::unix::fs::PermissionsExt;
+    let has_mode = std::fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o777 == mode);
+    if has_mode && std::fs::read_to_string(path).is_ok_and(|current| current == text) {
         return Ok(());
     }
     let temporary = path.with_extension("hunt-tmp");
@@ -51,5 +53,16 @@ mod tests {
         assert_eq!(shell_quote("it's"), r"'it'\''s'");
         assert_eq!(shell_quote(""), "''");
         assert_eq!(shell_command("sudo", &["-n", "hunt-ctl", "prepare", "a b"]), "sudo -n hunt-ctl prepare 'a b'");
+    }
+
+    #[test]
+    fn write_if_changed_restores_the_lost_mode_of_an_unchanged_script() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("tmux");
+        write_if_changed(&script, "#!/bin/sh\n", 0o755).unwrap();
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_if_changed(&script, "#!/bin/sh\n", 0o755).unwrap();
+        assert_eq!(std::fs::metadata(&script).unwrap().permissions().mode() & 0o777, 0o755);
     }
 }

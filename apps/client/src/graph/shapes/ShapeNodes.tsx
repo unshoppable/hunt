@@ -61,12 +61,15 @@ function Caption({ label, description, className = "" }: { label: string; descri
   );
 }
 
-/** Invisible handles at the top (incoming) and bottom (outgoing) of a node, where the layout attaches the edges. */
+/**
+ * Handles at the top (incoming) and bottom (outgoing) of a node, where the layout attaches the edges; invisible, except
+ * that an editable canvas shows the outgoing one of the hovered node to drag a new connection from (`.shape-handle`).
+ */
 function VerticalHandles() {
   return (
     <>
-      <Handle type="target" position={Position.Top} style={HANDLE_STYLE} />
-      <Handle type="source" position={Position.Bottom} style={HANDLE_STYLE} />
+      <Handle type="target" position={Position.Top} className="shape-handle" />
+      <Handle type="source" position={Position.Bottom} className="shape-handle" />
     </>
   );
 }
@@ -309,18 +312,19 @@ const POPOVER_GAP = 6;
 const MUTED_OPACITY = 0.3;
 
 /**
- * A connection on ELK's orthogonal route, drawn brighter while it is hovered or lit by a hovered node and faded while
- * another one is; an added or changed connection keeps its change color. The markers come from the layout
- * (arrowheads, or crow's feet for an ERD). The label sits on the box ELK reserved for it; an edge laid out without
- * one (an ERD relationship) shows its label only in the hover card, which floats above the label box or the middle
- * of the route while the mouse is on the edge or its label.
+ * A connection on ELK's orthogonal route, or React Flow's stepped path between the handles when it has none (a manual
+ * layout), drawn brighter while it is hovered or lit by a hovered node and faded while another one is; an added or
+ * changed connection keeps its change color. The markers come from the layout (arrowheads, or crow's feet for an
+ * ERD). The label sits on the box ELK reserved for it or, with `hasInlineLabel`, on the middle of the stepped path; an
+ * edge without either (an ERD relationship) shows its label only in the hover card, which floats above the label box
+ * or the middle of the route while the mouse is on the edge or its label.
  */
 export function ShapeEdgeView({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerStart, markerEnd, selected }: EdgeProps<ShapeFlowEdge>) {
   const [isLabelHovered, setIsLabelHovered] = useState(false);
   const points = data?.points ?? [];
   const [fallbackPath, fallbackX, fallbackY] = getSmoothStepPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, borderRadius: 8 });
   const path = points.length >= 2 ? orthogonalPath(points) : fallbackPath;
-  const labelCenter = data?.labelCenter ?? null;
+  const labelCenter = data?.labelCenter ?? (data?.hasInlineLabel ? { x: fallbackX, y: fallbackY } : null);
   const anchor = labelCenter ?? (points.length >= 2 ? pathMidpoint(points) : { x: fallbackX, y: fallbackY });
   const isHighlighted = Boolean(selected) || Boolean(data?.isHovered) || Boolean(data?.isLit) || isLabelHovered;
   const isMuted = Boolean(data?.isMuted) && !isHighlighted;

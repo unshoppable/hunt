@@ -17,8 +17,10 @@ type SubChatComposerProps = {
   onTextareaKeyDown: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
   /** The sub session the questions go to; `null` until the first question created it. */
   subSessionId: string | null;
-  /** Whether a turn of the sub session runs, so that a question waits in its queue. */
+  /** Whether a turn of the sub session runs, so that a question waits in its queue or goes into the turn. */
   isTurnRunning: boolean;
+  /** Whether a question sent now goes into the running turn instead of the queue (see `steersPrompt`). */
+  steers: boolean;
   /** Whether the first question is creating the sub session. */
   isCreating: boolean;
   /** Whether a permission request is pending; the text area and the send button wait for its answer. */
@@ -50,6 +52,7 @@ export function SubChatComposer({
   onTextareaKeyDown,
   subSessionId,
   isTurnRunning,
+  steers,
   isCreating,
   hasPermission,
   placeholder,
@@ -77,7 +80,15 @@ export function SubChatComposer({
           onChange={(event) => onTextChange(event.target.value)}
           onKeyDown={onTextareaKeyDown}
           rows={1}
-          placeholder={isTurnRunning ? "Enter queues the question for after this turn" : subSessionId ? "Follow up…" : (placeholder ?? "Ask about the selected code…")}
+          placeholder={
+            steers
+              ? "Enter adds the question to the running turn"
+              : isTurnRunning
+                ? "Enter queues the question for after this turn"
+                : subSessionId
+                  ? "Follow up…"
+                  : (placeholder ?? "Ask about the selected code…")
+          }
           className="block min-w-0 flex-1 resize-none bg-transparent py-[calc((36px-1lh)/2)] outline-none placeholder:text-neutral-600 disabled:opacity-50"
         />
         <div className="flex flex-col items-end gap-2">

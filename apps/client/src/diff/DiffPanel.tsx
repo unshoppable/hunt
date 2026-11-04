@@ -131,7 +131,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     if (!hiddenGlobs.length) return scopedFiles;
     return scopedFiles.filter((file) => !hiddenGlobs.some((glob) => matchesGlob(glob, file.path)));
   }, [scopedFiles, hiddenGlobsText]);
-  /** The agent's review ratings from `.hunt/graph.json`, keyed by path; empty while there is no diagram. */
+  /** The agent's review ratings from `.hunt/diagrams/dependencies.react-flow.json`, keyed by path; empty while there is no diagram. */
   const [reviewRatings, setReviewRatings] = useState<Map<string, GraphNode>>(() => new Map());
   /** The selected file; the one selected when the session was left until the changelist arrives. */
   const [selectedPath, setSelectedPath] = useState<string | null>(() => useSessionViewStore.getState().views[sessionId]?.diffPath ?? null);

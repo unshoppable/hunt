@@ -57,9 +57,10 @@ decision records that steer the agent.
   diagnostics from the TypeScript 7 language server, WebStorm-style semantic coloring and folder colors.
 - **Pull request reviews.** Pick an open PR, review its diff against the merge base, draft inline comments in the
   gutter and submit the review through `gh`.
-- **Architecture diagrams.** The agent writes a dependency graph of the change to `.hunt/graph.json` and C4, state,
-  ERD and process diagrams to `.hunt/diagram.<type>.json`; Hunt validates them and lays them out with ELK inside
-  React Flow in its own style. A diagram flags itself as outdated when the worktree changes.
+- **Architecture diagrams.** The agent writes a dependency graph of the change to `.hunt/diagrams/dependencies.react-flow.json` and C4, state,
+  ERD and process diagrams to `.hunt/diagrams/<type>.react-flow.json`; Hunt validates them and lays them out with ELK inside
+  React Flow in its own style. A diagram flags itself as outdated when the worktree changes. Shape diagrams are
+  editable, can be saved into the repository and opened from there again ("Show in Architecture").
 - **Checks tab.** Runs the commands that `hunt.json` declares, such as lint, test and build, one by one or all at
   once, shows which pass and whether a result is outdated, and sends a failure to the agent.
 - **Guardrails window.** Edit `CLAUDE.md`, `.claude/rules/*.md`, skills and ADRs in one place, with templates for
@@ -170,9 +171,24 @@ See [CLAUDE.md](CLAUDE.md) for the conventions contributors and coding agents fo
 `apps/client/src-tauri/src/agent/acp/` spawns `@agentclientprotocol/claude-agent-acp` per session and forwards every
 `session/update` to the UI as the `acp:update` event; permission requests become `acp:permission`, and one the agent
 withdraws with `$/cancel_request` becomes `acp:permission-withdrawn`, which removes it from the chat.
+A prompt sent while a turn runs goes into that turn, as in Claude Code's terminal: the agent takes it in between the
+turn's tool calls (`_session/steering`, `agent/acp/steering.rs`, `steersPrompt` in `src/chat/chat.store-slice.ts`). It
+queues for the end of the turn instead while the agent starts, the session moves, Hunt runs a turn of its own or a
+prompt is queued already, for `/clear`, and with an agent or relay that cannot steer; ⌃↩ still stops the turn and sends the prompt at once.
 A local agent starts with `CLAUDE_CODE_ENABLE_CFC=1`, so it drives the user's own Chrome through Claude in Chrome when
 the extension is installed and Claude Code runs with the login of `claude /login`; with another account picked in Hunt
 (`CLAUDE_CODE_OAUTH_TOKEN`), Claude Code leaves Claude in Chrome off.
+
+Subagents (Agent/Task tool) run as native subagent sessions of the adapter (`clientCapabilities.subagents`): each one
+is a child session whose updates carry its own session ID, announced on its parent with `subagent_spawned` and ended
+with `subagent_state_update`. `agent/acp/subagents.rs` turns both, and the `task_progress`/`task_notification` SDK
+messages the adapter forwards as `_claude/sdkMessage`, into the protocol's `subagent_update` with Hunt's
+`_meta.hunt.subagent` (state, prompt, usage); a load replays each child's history, whose usage it reads from
+`<session>/subagents/agent-<id>.jsonl`. A child's output runs no turn of the session. The chat (`reduceChat` in
+`src/chat/chat-reducer.utils.ts`) routes a child's updates into its own `SubagentChat` and puts a card into its parent's
+chat; the agent strip below the session summary (`src/chat/subagents/`) switches the chat between the main agent and
+each subagent, with their tokens (a subagent's last request, as Claude Code counts them). The composer always writes to
+the main agent. The relay of a remote session passes the same traffic through (`apps/session/src/relay/subagent-sessions.domain.ts`).
 
 #### Local browser
 
@@ -530,6 +546,16 @@ conversation, whose first message is prefilled with `/<name> KIND: SUMMARY` (or 
 the suggestion to the repository's declines file, which the skill greps before it writes: `declinedGuardrailsFile` of
 `hunt.json`, `.claude/declined-guardrails.jsonl` without it (`apps/client/src-tauri/src/agent/declined_guardrails.rs`).
 
+The "Context" pill right of the mode pill lists the guardrails the session's agent holds in its context window, read
+from its Claude Code transcript each time it opens (`loaded_context`, `apps/client/src-tauri/src/agent/loaded_context.rs`):
+the instruction files and rules Claude Code loaded at the start or once a file matched their `paths:`, the skills the
+agent invoked or the user called, its auto memory, and the ADRs and other `.claude/` files it read with `Read` or printed
+with a shell command. A compaction starts the list over with what Claude Code attaches again. A file in the worktree
+opens in the "Editor" tab. "Show as text" opens the whole context window as text, rebuilt from the transcript
+(`context_parts`, `apps/client/src-tauri/src/agent/context_parts.rs`): the system prompt and tool definitions of the last
+prompt snapshot, then everything since the last compaction, one collapsible section per part with its kind in color and
+its estimated tokens; chips per kind show the totals and hide or show that kind.
+
 The "Lint rules" tab lists the ESLint rules of every `eslint.config.*` in the worktree (`read_lint_rules`,
 `apps/client/src-tauri/src/ide/lint_rules.rs`). `apps/client/scripts/eslintRules.mjs` imports the configs on the
 worktree's `node`, so the ESLint and plugins it installs supply each rule's description and documentation link. The tab
@@ -566,27 +592,38 @@ additional instructions that go along with that one run. Each run is a headless 
 session's local worktree (`apps/client/src-tauri/src/session/diagram_agent.rs`), on the model and effort from
 Settings → Agent (default `claude-opus-5-5` with `high`): the chat agent takes no part, so the chat can run a turn
 meanwhile, its agent may be stopped, and several diagram types can generate at once. The process may only read the
-worktree, run read-only git commands and write into `.hunt/`; it denies everything else without asking. A remote
+worktree, run read-only git commands and write into `.hunt/diagrams/`; it denies everything else without asking. A remote
 session's diagram is generated on the Mac as well, in the local worktree the file sync keeps in step with the VM. The
 prompts name the session's diff base: `HEAD`, or the merge base of a reviewed pull
 request. `apps/client/src-tauri/src/graph/graph.rs` owns the prompts, the files and their status; the React panels live in
 `apps/client/src/graph/` (`ArchitecturePanel.tsx` picks the view, `GraphPanel.tsx` is the Dependencies view,
 `ShapeDiagramPanel.tsx` the five others).
 
-The Dependencies diagram is `.hunt/graph.json` (schema in `apps/client/src-tauri/src/graph/graph.schema.json`): one node
+The Dependencies diagram is `.hunt/diagrams/dependencies.react-flow.json` (schema in `apps/client/src-tauri/src/graph/graph.schema.json`): one node
 per changed file plus the unchanged files that explain the change, and one edge per dependency with a label stating
 how the source uses the target (one to three words, a verb, a noun or both, in the AI language from the settings)
 and a description of how it is used. Hunt validates it, fills pairs the agent left out with unlabeled edges read
 from the import statements and lays it out with ELK inside React Flow. A diagram is generated only on a click. ⌘F
-jumps to the matching files and highlights them. When labels are missing, look at the session's `.hunt/graph.json`
+jumps to the matching files and highlights them. When labels are missing, look at the session's `.hunt/diagrams/dependencies.react-flow.json`
 first: edge labels come only from the agent.
 
-A shape diagram is `.hunt/diagram.<type>.json` (`diagram.c4-container.json` and so on; schema in
-`apps/client/src-tauri/src/graph/diagram.schema.json`, which the prompt also copies into `.hunt/`): nodes with a kind
+A shape diagram is `.hunt/diagrams/<type>.react-flow.json` (`c4-container.react-flow.json` and so on; schema in
+`apps/client/src-tauri/src/graph/diagram.schema.json`, which the prompt also copies into `.hunt/diagrams/`): nodes with a kind
 (`person`, `system`, `container`, `database`, `table`, `state`, `decision`, …), label and description, optional
 boundary groups, and edges with a label, a description, the ERD's columns and cardinalities, plus a `change` mark on
-everything the session added or altered. The file holds content only: shapes, colors, sizes and layout are Hunt's
-(`ShapeNodes.tsx`, `shape-diagram.utils.ts`), so the same diagram looks the same on every branch. The prompts live in
+everything the session added or altered. The file holds content and, once someone dragged an element, the `position`
+of every element: shapes, colors and sizes are Hunt's (`ShapeNodes.tsx`, `shape-diagram.utils.ts`), ELK lays out
+every element without a position, and a manual layout draws its edges as stepped paths between the handles until
+*Auto-layout* drops the positions again. Every shape diagram is editable in the tab: a click on an element, a
+connection or a boundary label opens its editor (`ShapeElementEditor.tsx`, the ERD's tables `TableEditor.tsx`; the
+edits are `shape-edit.utils.ts` and `erd-edit.utils.ts`), the toolbar adds elements and boundaries, and a drag from
+the dot under an element connects it to the element it is dropped on. *Save…* writes a generated diagram into the
+repository, into one of the folders the pattern of *Settings → Architecture* names (`apps/*/docs/diagrams` by
+default, a `*` segment standing for every subfolder; `graph/diagram-save.utils.ts`), as `<name>.react-flow.json`, and
+the tab then shows that file. Such a file is an ordinary worktree file: it can be moved anywhere, and the project
+tree's context menu opens any `*.react-flow.json` with *Show in Architecture* (`sessions/diagram-file-requests.hook.ts`,
+which also works from the editor window), where it stays editable and reloads when it changes on disk; the
+Dependencies diagram describes the current diff and is neither saved nor edited. The prompts live in
 `apps/client/prompts/diagram/`: `diagram.system-prompt.md` extends the diagram agent's system prompt with the rules shared by the five
 types, `diagram-<type>.user-prompt.md` is the message of one type. A shape diagram is generated only on a click.
 
@@ -712,7 +749,7 @@ the ACP adapter, loads the conversation once and serves it over `/run/hunt/relay
 session is then `ssh … sudo -n -u agent socat - UNIX-CONNECT:/run/hunt/relay.sock`, so the chat works as before; a
 client that connects later gets the conversation replayed, and the relay reports a running turn. Several clients, such
 as the Hunt apps of different people, can be attached at once: each gets every update live, their prompts run one after
-another, and a permission request goes to all of them; the first answer counts, and the relay withdraws the request from
+another (a prompt steered into the running turn goes to the adapter at once), and a permission request goes to all of them; the first answer counts, and the relay withdraws the request from
 the others. The guardrails stay local and wait until the session comes back; diff, editor, graph and pull request work
 on the local worktree, which Hunt keeps in sync with the VM (below). For every tool call the agent finishes, the relay
 writes one line to the journal, which the Ops Agent ships to Cloud Logging (`tool-call-log.domain.ts`): tool, status, duration,
@@ -1094,7 +1131,7 @@ merge and update work on the local worktree alone, as for a local session, and t
 connect.
 *WebStorm* is switched off for a remote session and its sub chats. Its `node_modules` install leaves the lockfile alone (`npm ci`, `--frozen-lockfile`). The chat header
 shows when the last sync succeeded, and the chat shows a failure. A diagram refresh runs on the agent on the VM,
-against the session's diff base, and Hunt copies `.hunt/graph.json` back afterwards. Known limits: an edit that keeps
+against the session's diff base, and Hunt copies `.hunt/diagrams/dependencies.react-flow.json` back afterwards. Known limits: an edit that keeps
 a file's size within the same second it was last synced in goes unnoticed until the next change, and line-ending
 conversion (`core.autocrlf`) makes the two sides' contents differ, so it should stay off for remote sessions.
 

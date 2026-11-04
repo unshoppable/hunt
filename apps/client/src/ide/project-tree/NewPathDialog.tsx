@@ -5,28 +5,42 @@ import { GHOST_BUTTON_MD, PRIMARY_BUTTON_MD } from "../../ui/buttons.constants";
 import { Modal } from "../../ui/Modal";
 import { useDialogSize } from "../../ui/dialog-size.hook";
 import { errorText } from "../../ui/error-text.utils";
-import { newFolderProblem } from "../language/path-rename.utils";
+import { newPathProblem } from "../language/path-rename.utils";
 
 /**
- * Asks for the name of a new folder inside the worktree folder `parent` (`""` is the worktree itself) and creates it;
- * `a/b` creates nested folders. Enter creates, Esc closes. Dragging an edge resizes the dialog.
+ * Asks for the name of a new empty file or, with `isDir`, folder inside the worktree folder `parent` (`""` is the
+ * worktree itself) and creates it; `a/b` creates the missing folder `a` on the way. Enter creates, Esc closes. Dragging
+ * an edge resizes the dialog.
  */
-export function NewFolderDialog({ sessionId, parent, onClose, onCreated }: { sessionId: string; parent: string; onClose: () => void; onCreated: (path: string) => void }) {
-  const dialog = useDialogSize("newFolder");
+export function NewPathDialog({
+  sessionId,
+  parent,
+  isDir,
+  onClose,
+  onCreated,
+}: {
+  sessionId: string;
+  parent: string;
+  isDir: boolean;
+  onClose: () => void;
+  onCreated: (path: string) => void;
+}) {
+  const dialog = useDialogSize("newPath");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
-  const folderName = name.trim();
-  const problem = folderName ? newFolderProblem(folderName) : null;
-  const canSubmit = !!folderName && !problem && !isBusy;
+  const title = isDir ? "New folder" : "New file";
+  const trimmedName = name.trim();
+  const problem = trimmedName ? newPathProblem(trimmedName, isDir) : null;
+  const canSubmit = !!trimmedName && !problem && !isBusy;
 
   async function submit() {
     if (!canSubmit) return;
-    const path = parent ? `${parent}/${folderName}` : folderName;
+    const path = parent ? `${parent}/${trimmedName}` : trimmedName;
     setIsBusy(true);
     setError(null);
     try {
-      await commands.createDir(sessionId, path);
+      await (isDir ? commands.createDir(sessionId, path) : commands.createFile(sessionId, path));
       onCreated(path);
       onClose();
     } catch (reason) {
@@ -36,16 +50,16 @@ export function NewFolderDialog({ sessionId, parent, onClose, onCreated }: { ses
   }
 
   return (
-    <Modal label="New folder" onClose={onClose} isCloseable={!isBusy} className="bg-(--surface-chat) p-4" style={dialog.style} resize={dialog.resize}>
-      <h2 className="mb-1 text-base font-semibold">New folder</h2>
+    <Modal label={title} onClose={onClose} isCloseable={!isBusy} className="bg-(--surface-chat) p-4" style={dialog.style} resize={dialog.resize}>
+      <h2 className="mb-1 text-base font-semibold">{title}</h2>
       <p className="mb-3 truncate font-mono text-[13px] text-neutral-400" title={parent || "/"}>
         {parent ? `${parent}/` : "/"}
       </p>
-      <label htmlFor="new-folder-name" className="mb-1 block text-[13px] text-neutral-400">
+      <label htmlFor="new-path-name" className="mb-1 block text-[13px] text-neutral-400">
         Name
       </label>
       <input
-        id="new-folder-name"
+        id="new-path-name"
         value={name}
         onChange={(event) => setName(event.target.value)}
         onKeyDown={(event) => {

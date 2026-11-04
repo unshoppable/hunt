@@ -27,9 +27,9 @@ describe("diagram types", () => {
   it("names the file of every type", () => {
     expect(isShapeDiagramType("dependencies")).toBe(false);
     expect(isShapeDiagramType("erd")).toBe(true);
-    expect(DIAGRAM_FILES.dependencies).toBe(".hunt/graph.json");
+    expect(DIAGRAM_FILES.dependencies).toBe(".hunt/diagrams/dependencies.react-flow.json");
     for (const type of schema.properties.type.enum as ShapeDiagramType[]) {
-      expect(DIAGRAM_FILES[type]).toBe(`.hunt/diagram.${type}.json`);
+      expect(DIAGRAM_FILES[type]).toBe(`.hunt/diagrams/${type}.react-flow.json`);
     }
   });
 });

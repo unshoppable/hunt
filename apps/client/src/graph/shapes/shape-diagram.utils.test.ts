@@ -108,7 +108,7 @@ describe("layoutShapeDiagram", () => {
       expect(node.position.x + node.width!).toBeLessThanOrEqual(box.width);
       expect(node.position.y + node.height!).toBeLessThanOrEqual(box.height);
     }
-    expect(nodes.find((node) => node.id === "customer")).toMatchObject({ type: "person", parentId: undefined, draggable: false, data: { width: 120, height: 110 } });
+    expect(nodes.find((node) => node.id === "customer")).toMatchObject({ type: "person", parentId: undefined, draggable: true, data: { width: 120, height: 110 } });
     expect(edges).toHaveLength(4);
     expect(edges[0]).toMatchObject({ id: "customer->web", type: "shape", source: "customer", target: "web", zIndex: -2, data: { label: "uses" } });
     expect(edges[0].markerEnd).toMatchObject({ type: "arrowclosed" });
@@ -137,6 +137,28 @@ describe("layoutShapeDiagram", () => {
     const last = points[points.length - 1];
     expect(last.x).toBeCloseTo(customers.position.x, 0);
     expect(Math.abs(last.y - (customers.position.y + tableRowCenterY(erd.nodes[1], 0)))).toBeLessThanOrEqual(1);
+  });
+
+  it("keeps placed elements where they are, fits the boundary around them and drops the routes", async () => {
+    const placed: ShapeDiagram = {
+      ...container,
+      nodes: container.nodes.map((node) => (node.id === "web" ? { ...node, position: { x: 500, y: 400 } } : node.id === "api" ? { ...node, position: { x: 900, y: 400 } } : node)),
+    };
+    const { nodes, edges } = await layoutShapeDiagram(placed);
+    const boundary = nodes.find((node) => node.id === "shop")!;
+    const web = nodes.find((node) => node.id === "web")!;
+    expect(web.parentId).toBe("shop");
+    expect({ x: boundary.position.x + web.position.x, y: boundary.position.y + web.position.y }).toEqual({ x: 500, y: 400 });
+    const api = nodes.find((node) => node.id === "api")!;
+    expect(boundary.position.x + api.position.x).toBe(900);
+    for (const id of ["web", "api", "db"]) {
+      const node = nodes.find((candidate) => candidate.id === id)!;
+      expect(node.position.x).toBeGreaterThanOrEqual(0);
+      expect(node.position.y).toBeGreaterThanOrEqual(0);
+      expect(node.position.x + node.width!).toBeLessThanOrEqual(boundary.width!);
+      expect(node.position.y + node.height!).toBeLessThanOrEqual(boundary.height!);
+    }
+    expect(edges.every((edge) => edge.data!.points.length === 0 && edge.data!.labelCenter === null && edge.data!.hasInlineLabel)).toBe(true);
   });
 
   it("returns an empty layout for an empty diagram", async () => {

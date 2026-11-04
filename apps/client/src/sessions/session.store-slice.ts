@@ -166,6 +166,7 @@ function placeholderSession(id: string, title: string, target: WorktreeTarget, p
     hasLocalWorktree: false,
     mode: target.pullRequest ? "git-review" : "edit",
     dismissedGuardrails: [],
+    tokensUsed: 0,
   };
 }
 

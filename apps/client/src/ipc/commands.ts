@@ -2,8 +2,9 @@ import { convertFileSrc, invoke } from "@tauri-apps/api/core";
 import type { SessionNotification } from "@agentclientprotocol/sdk";
 import type { ClaudeAccounts } from "../accounts/accounts.types";
 import type { PlanUsage } from "../accounts/plan-usage.types";
-import type { Screenshot } from "../chat/chat.types";
+import type { Screenshot, SteerOutcome } from "../chat/chat.types";
 import type { GuardrailDeclineReason } from "../chat/guardrail/guardrail-suggestion.types";
+import type { ContextPart, LoadedContextFile } from "../chat/loaded-context/loaded-context.types";
 import type { ChecksStatus } from "../checks/checks.types";
 import type { DiagramType } from "../common/diagram/diagram.types";
 import type { DesktopEndpoint } from "../desktop/desktop.types";
@@ -240,7 +241,13 @@ export const commands = {
   /** Sends the text plus the image files at `images` (absolute paths) as one user turn. */
   /** Sends one user turn; `messageId` is the id of the chat item showing it, which `acp:message-times` names its time by. */
   sendPrompt: (id: string, text: string, images: string[], messageId: string) => invoke<string>("send_prompt", { id, text, images, messageId }),
+  /** Sends a prompt into the running turn, like `sendPrompt` otherwise; resolves once the agent took it in or declined it. */
+  steerPrompt: (id: string, text: string, images: string[], messageId: string) => invoke<SteerOutcome>("steer_prompt", { id, text, images, messageId }),
   sessionHistory: (id: string) => invoke<SessionNotification[]>("session_history", { id }),
+  /** The guardrails the session's agent holds in its context window, from its transcript; none before its first turn. */
+  loadedContext: (id: string) => invoke<LoadedContextFile[]>("loaded_context", { id }),
+  /** The text of the session agent's context window as parts, rebuilt from its transcript; none before its first turn. */
+  contextParts: (id: string) => invoke<ContextPart[]>("context_parts", { id }),
   cancelPrompt: (id: string) => invoke<void>("cancel_prompt", { id }),
   setSessionMode: (id: string, modeId: string) => invoke<void>("set_session_mode", { id, modeId }),
   setSessionConfigOption: (id: string, configId: string, value: string) =>
@@ -268,6 +275,8 @@ export const commands = {
   deletePath: (id: string, path: string) => invoke<void>("delete_path", { id, path }),
   /** Creates a worktree folder nothing exists at yet, with its missing parents. */
   createDir: (id: string, path: string) => invoke<void>("create_dir", { id, path }),
+  /** Creates an empty worktree file nothing exists at yet, with its missing parent folders; it counts as the session's own change. */
+  createFile: (id: string, path: string) => invoke<void>("create_file", { id, path }),
   /** Moves a worktree file or folder to a path nothing exists at yet, creating its parent folders. */
   movePath: (id: string, from: string, to: string) => invoke<void>("move_path", { id, from, to }),
   shelveFiles: (id: string, paths: string[], name: string) => invoke<void>("shelve_files", { id, paths, name }),

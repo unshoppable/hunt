@@ -1,7 +1,7 @@
-//! The diagrams the agent writes to `<worktree>/.hunt/`: the file-level dependency graph in `graph.json` and the
-//! shape diagrams (C4 context and container, states, ERD, process) in `diagram.<type>.json`, each described by a
-//! prompt and validated against a schema file placed next to it, plus a watcher that tells the UI about rewrites
-//! and the reader.
+//! The diagrams the agent writes to `<worktree>/.hunt/diagrams/`, each in `<type>.react-flow.json`: the file-level
+//! dependency graph in `dependencies.react-flow.json` and the shape diagrams (C4 context and container, states, ERD,
+//! process), each described by a prompt and validated against a schema file placed next to it, plus a watcher that
+//! tells the UI about rewrites and the reader.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -18,19 +18,18 @@ use uuid::Uuid;
 
 use crate::platform::preferences::ENGLISH_TERMS;
 
-pub const GRAPH_DIR: &str = ".hunt";
-const GRAPH_FILE: &str = "graph.json";
+pub const DIAGRAMS_DIR: &str = ".hunt/diagrams";
 const GRAPH_SCHEMA_FILE: &str = "graph.schema.json";
 const DIAGRAM_SCHEMA_FILE: &str = "diagram.schema.json";
 
-/// JSON schema of the dependency graph file; written into `.hunt/` so the agent can read it, and the frontend
+/// JSON schema of the dependency graph file; written into `.hunt/diagrams/` so the agent can read it, and the frontend
 /// validates against the same shape.
 pub const SCHEMA: &str = include_str!("graph.schema.json");
-/// JSON schema shared by the shape diagrams, written into `.hunt/` next to the graph schema.
+/// JSON schema shared by the shape diagrams, written into `.hunt/diagrams/` next to the graph schema.
 pub const DIAGRAM_SCHEMA: &str = include_str!("diagram.schema.json");
 
 /// Which diagram a request is about: the file-level dependency graph or one of the shape diagrams. The frontend
-/// sends the kebab-case id, which is also the `<type>` in `diagram.<type>.json`.
+/// sends the kebab-case id, which is also the `<type>` in `<type>.react-flow.json`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DiagramType {
@@ -47,15 +46,27 @@ pub const SHAPE_TYPES: [DiagramType; 5] =
     [DiagramType::C4Context, DiagramType::C4Container, DiagramType::States, DiagramType::Erd, DiagramType::Process];
 
 impl DiagramType {
-    /// Name of the file the agent writes into `.hunt/`.
+    /// The kebab-case id the frontend sends and a shape diagram carries as its `type`.
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Dependencies => "dependencies",
+            Self::C4Context => "c4-context",
+            Self::C4Container => "c4-container",
+            Self::States => "states",
+            Self::Erd => "erd",
+            Self::Process => "process",
+        }
+    }
+
+    /// Name of the file the agent writes into `.hunt/diagrams/`: `<id>.react-flow.json`.
     pub fn file_name(self) -> &'static str {
         match self {
-            Self::Dependencies => GRAPH_FILE,
-            Self::C4Context => "diagram.c4-context.json",
-            Self::C4Container => "diagram.c4-container.json",
-            Self::States => "diagram.states.json",
-            Self::Erd => "diagram.erd.json",
-            Self::Process => "diagram.process.json",
+            Self::Dependencies => "dependencies.react-flow.json",
+            Self::C4Context => "c4-context.react-flow.json",
+            Self::C4Container => "c4-container.react-flow.json",
+            Self::States => "states.react-flow.json",
+            Self::Erd => "erd.react-flow.json",
+            Self::Process => "process.react-flow.json",
         }
     }
 
@@ -104,8 +115,8 @@ pub fn system_prompt(language: &str) -> String {
 const SYSTEM_PROMPT: &str = r#"
 ## Hunt component diagram
 
-The client application "Hunt" renders an interactive component diagram from `.hunt/graph.json` in the
-working directory (git-ignored; its JSON schema is in `.hunt/graph.schema.json`). Every node is a file and
+The client application "Hunt" renders an interactive component diagram from `.hunt/diagrams/dependencies.react-flow.json` in
+the working directory (git-ignored; its JSON schema is in `.hunt/diagrams/graph.schema.json`). Every node is a file and
 every edge a dependency between two files, scoped to the changes of this session:
 
 - Nodes: every file the session changed is a node, without exception and however many there are, identified by
@@ -139,7 +150,7 @@ every edge a dependency between two files, scoped to the changes of this session
   when it is hovered.
 - Shape, exactly: {"nodes":[{"path","review","reviewReason"}],"edges":[{"source","target","label","description"}]},
   with `review` and `reviewReason` left out on an unchanged context file. There are no other fields: no `id`, `kind`, `group`, `level` or `isChanged`, and no hierarchy. A previous
-  graph.json with another shape is obsolete; never copy its shape.
+  dependencies.react-flow.json with another shape is obsolete; never copy its shape.
 
 Hunt itself knows which files changed and how much and dims the unchanged files you add.
 
@@ -165,7 +176,8 @@ pub fn refresh_prompt(diagram_type: DiagramType, language: &str, diff_base: &str
     let mut prompt = format!(
         "{REFRESH_PROMPT_START} The session's changes are the files `git diff --name-only {diff_base}` lists plus \
          untracked files (`git ls-files --others --exclude-standard`); use exactly this base, whatever earlier \
-         diagrams covered. Rebuild `.hunt/graph.json` as described in your instructions: one node per changed file, \
+         diagrams covered. Rebuild `.hunt/diagrams/dependencies.react-flow.json` as described in your instructions: \
+         one node per changed file, \
          all of them however many there are, the unchanged files they depend on where helpful (about 20 at most), \
          an edge for every import or other dependency between two \
          nodes, each with a label of one to three words (a verb, a noun or both, never a symbol or file name) stating \
@@ -179,7 +191,7 @@ pub fn refresh_prompt(diagram_type: DiagramType, language: &str, diff_base: &str
          `node_modules`; package imports are not edges. Write every label, description and reason \
          in {language}. {ENGLISH_TERMS} Write exactly the shape \
          {{\"nodes\":[{{\"path\",\"review\",\"reviewReason\"}}],\"edges\":[{{\"source\",\"target\",\"label\",\"description\"}}]}} \
-         with `source` and `target` being node paths; ignore the shape of any previous graph.json."
+         with `source` and `target` being node paths; ignore the shape of any previous dependencies.react-flow.json."
     );
     if !instructions.is_empty() {
         prompt.push_str(&format!(" Additional instructions for this run: {instructions}"));
@@ -225,19 +237,18 @@ struct GraphChangedEvent {
 
 /// Absolute path of the file `diagram_type` is written to in `worktree`.
 pub fn diagram_path(worktree: &Path, diagram_type: DiagramType) -> PathBuf {
-    worktree.join(GRAPH_DIR).join(diagram_type.file_name())
+    worktree.join(DIAGRAMS_DIR).join(diagram_type.file_name())
 }
 
-/// True for `graph.json` and every `diagram.<type>.json`, the files whose rewrite the UI is told about; the schema
-/// files Hunt writes itself are not diagrams.
+/// True for every `<type>.react-flow.json`, the files whose rewrite the UI is told about; the schema files Hunt writes
+/// itself (`*.schema.json`) are not diagrams.
 fn is_diagram_file(path: &Path) -> bool {
-    let Some(name) = path.file_name().and_then(|name| name.to_str()) else { return false };
-    name == GRAPH_FILE || (name.starts_with("diagram.") && name.ends_with(".json") && name != DIAGRAM_SCHEMA_FILE)
+    path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.ends_with(".react-flow.json"))
 }
 
-/// Creates `.hunt/` in `worktree` with the current schema files; returns the folder.
+/// Creates `.hunt/diagrams/` in `worktree` with the current schema files; returns the folder.
 pub fn prepare_dir(worktree: &Path) -> Result<PathBuf, String> {
-    let directory = worktree.join(GRAPH_DIR);
+    let directory = worktree.join(DIAGRAMS_DIR);
     std::fs::create_dir_all(&directory).map_err(|error| format!("failed to create {}: {error}", directory.display()))?;
     std::fs::write(directory.join(GRAPH_SCHEMA_FILE), SCHEMA).map_err(|error| format!("failed to write {GRAPH_SCHEMA_FILE}: {error}"))?;
     std::fs::write(directory.join(DIAGRAM_SCHEMA_FILE), DIAGRAM_SCHEMA).map_err(|error| format!("failed to write {DIAGRAM_SCHEMA_FILE}: {error}"))?;
@@ -249,7 +260,7 @@ pub fn emit_changed(app: &AppHandle, hunt_session_id: Uuid) {
     let _ = app.emit("graph:changed", GraphChangedEvent { hunt_session_id });
 }
 
-/// Prepares `.hunt/` (see `prepare_dir`) and starts watching it for diagram rewrites.
+/// Prepares `.hunt/diagrams/` (see `prepare_dir`) and starts watching it for diagram rewrites.
 pub fn watch(app: &AppHandle, registry: &WatcherRegistry, hunt_session_id: Uuid, worktree: &Path) -> Result<(), String> {
     let directory = prepare_dir(worktree)?;
 
@@ -299,11 +310,11 @@ pub fn status(worktree: &Path, diagram_type: DiagramType, changed_at: Option<Dat
 
 /// Writes `content`, the serialized diagram the frontend edited, as the file of `diagram_type` in `worktree`; the
 /// content must be a JSON object whose `type` is the diagram's id, so a stray write can never put another diagram
-/// into the file. The watcher of `.hunt/` reports the rewrite like the agent's.
+/// into the file. The watcher of `.hunt/diagrams/` reports the rewrite like the agent's.
 pub fn write_graph(worktree: &Path, diagram_type: DiagramType, content: &str) -> Result<(), String> {
     let file_name = diagram_type.file_name();
     let value: serde_json::Value = serde_json::from_str(content).map_err(|error| format!("failed to write {file_name}: the content is not valid JSON: {error}"))?;
-    let expected = file_name.trim_start_matches("diagram.").trim_end_matches(".json");
+    let expected = diagram_type.id();
     if value.get("type").and_then(|kind| kind.as_str()) != Some(expected) {
         return Err(format!("failed to write {file_name}: the content is not a {expected} diagram"));
     }
@@ -343,8 +354,10 @@ mod tests {
         for (id, expected) in ids {
             let parsed: DiagramType = serde_json::from_value(serde_json::json!(id)).unwrap_or_else(|error| panic!("{id}: {error}"));
             assert_eq!(parsed, expected);
+            assert_eq!(expected.id(), id);
+            assert_eq!(expected.file_name(), format!("{id}.react-flow.json"));
         }
-        assert_eq!(DiagramType::Erd.file_name(), "diagram.erd.json");
+        assert_eq!(DiagramType::Erd.file_name(), "erd.react-flow.json");
     }
 
     #[test]
@@ -376,7 +389,7 @@ mod tests {
             assert!(prompt.starts_with(prompt_start(template)), "{diagram_type:?}");
             assert!(prompt.contains("`git diff --name-only d9f3dfc`"), "{diagram_type:?}");
             assert!(prompt.contains("in German"), "{diagram_type:?}");
-            assert!(prompt.contains(&format!("`.hunt/{}`", diagram_type.file_name())), "{diagram_type:?}");
+            assert!(prompt.contains(&format!("`.hunt/diagrams/{}`", diagram_type.file_name())), "{diagram_type:?}");
             assert!(prompt.ends_with("Additional instructions for this run: (none)\n"), "{diagram_type:?}");
             assert!(!prompt.contains("{{"), "{diagram_type:?}");
 
@@ -388,10 +401,10 @@ mod tests {
 
     #[test]
     fn diagram_files_are_told_apart_from_schemas() {
-        assert!(is_diagram_file(Path::new("/w/.hunt/graph.json")));
-        assert!(is_diagram_file(Path::new("/w/.hunt/diagram.erd.json")));
-        assert!(!is_diagram_file(Path::new("/w/.hunt/diagram.schema.json")));
-        assert!(!is_diagram_file(Path::new("/w/.hunt/graph.schema.json")));
+        assert!(is_diagram_file(Path::new("/w/.hunt/diagrams/dependencies.react-flow.json")));
+        assert!(is_diagram_file(Path::new("/w/.hunt/diagrams/erd.react-flow.json")));
+        assert!(!is_diagram_file(Path::new("/w/.hunt/diagrams/diagram.schema.json")));
+        assert!(!is_diagram_file(Path::new("/w/.hunt/diagrams/graph.schema.json")));
         assert!(!is_diagram_file(Path::new("/w/.hunt/other.json")));
     }
 
@@ -406,7 +419,7 @@ mod tests {
     #[test]
     fn status_compares_diagram_mtime_with_latest_change() {
         let worktree = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(worktree.path().join(GRAPH_DIR)).unwrap();
+        std::fs::create_dir_all(worktree.path().join(DIAGRAMS_DIR)).unwrap();
         std::fs::write(diagram_path(worktree.path(), DiagramType::Dependencies), "{}").unwrap();
 
         let fresh = status(worktree.path(), DiagramType::Dependencies, None).unwrap();
@@ -421,17 +434,17 @@ mod tests {
     #[test]
     fn status_and_read_graph_use_the_file_of_the_type() {
         let worktree = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(worktree.path().join(GRAPH_DIR)).unwrap();
-        std::fs::write(worktree.path().join(GRAPH_DIR).join("diagram.erd.json"), r#"{"type":"erd"}"#).unwrap();
+        std::fs::create_dir_all(worktree.path().join(DIAGRAMS_DIR)).unwrap();
+        std::fs::write(worktree.path().join(DIAGRAMS_DIR).join("erd.react-flow.json"), r#"{"type":"erd"}"#).unwrap();
 
         assert!(status(worktree.path(), DiagramType::Erd, None).unwrap().generated_at.is_some());
         assert!(status(worktree.path(), DiagramType::Dependencies, None).unwrap().generated_at.is_none());
         assert_eq!(read_graph(worktree.path(), DiagramType::Erd).unwrap(), Some(serde_json::json!({ "type": "erd" })));
         assert_eq!(read_graph(worktree.path(), DiagramType::Dependencies).unwrap(), None);
 
-        std::fs::write(worktree.path().join(GRAPH_DIR).join("diagram.states.json"), "{").unwrap();
+        std::fs::write(worktree.path().join(DIAGRAMS_DIR).join("states.react-flow.json"), "{").unwrap();
         let error = read_graph(worktree.path(), DiagramType::States).unwrap_err();
-        assert!(error.starts_with("diagram.states.json is not valid JSON"), "{error}");
+        assert!(error.starts_with("states.react-flow.json is not valid JSON"), "{error}");
     }
 
     #[test]

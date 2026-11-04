@@ -9,10 +9,14 @@ export type TableColumn = { name: string; type: string; isPrimaryKey?: boolean; 
 /** What the session did to an element: Hunt highlights added and changed elements, everything else is the unchanged context. */
 export type ShapeChange = "added" | "changed";
 
+/** Top-left corner of an element on the canvas, in absolute diagram coordinates. */
+export type ShapePosition = { x: number; y: number };
+
 /**
  * One element of a shape diagram. `id` is a stable kebab-case id derived from the name, so the same element has the same
  * id on every branch; `description` is the second line under the label (a container's technology, a system's purpose);
- * `parent` names the group the element sits in; `actor` is who performs an action; `columns` are the rows of a table.
+ * `parent` names the group the element sits in; `actor` is who performs an action; `columns` are the rows of a table;
+ * `position` is where the user placed it, absent while ELK lays the element out.
  */
 export type ShapeNode = {
   id: string;
@@ -22,6 +26,7 @@ export type ShapeNode = {
   parent?: string;
   actor?: string;
   columns?: TableColumn[];
+  position?: ShapePosition;
   change?: ShapeChange;
 };
 
@@ -46,5 +51,5 @@ export type ShapeEdge = {
   change?: ShapeChange;
 };
 
-/** The validated content of `.hunt/diagram.<type>.json`. */
+/** The validated content of a shape diagram file (`.hunt/diagrams/<type>.react-flow.json` or one saved into the repository). */
 export type ShapeDiagram = { type: ShapeDiagramType; title?: string; nodes: ShapeNode[]; groups?: ShapeGroup[]; edges: ShapeEdge[] };

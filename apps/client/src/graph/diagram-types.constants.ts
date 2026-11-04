@@ -8,7 +8,7 @@ export type DiagramTypeOption = { id: DiagramType; name: string; description: st
  * The diagram types the Architecture tab offers, in the order the picker lists them. A new type also needs its id in
  * `DiagramType` (common/diagram/diagram.types.ts), entries in `KINDS_BY_TYPE` and `DIAGRAM_FILES`, the `type` enum and
  * an `allOf` branch in `src-tauri/src/graph/diagram.schema.json`, a `DiagramType` variant in `graph/graph.rs` (in
- * `SHAPE_TYPES`, with its `prompts/diagram/diagram-<type>.user-prompt.md`), and node views in `ShapeNodes.tsx` for
+ * `SHAPE_TYPES`, `id()` and `file_name()`, with its `prompts/diagram/diagram-<type>.user-prompt.md`), and node views in `ShapeNodes.tsx` for
  * element kinds it adds.
  */
 export const DIAGRAM_TYPES: DiagramTypeOption[] = [
@@ -20,7 +20,7 @@ export const DIAGRAM_TYPES: DiagramTypeOption[] = [
   { id: "process", name: "Process", description: "Steps and decisions of a workflow in the order they run" },
 ];
 
-/** True for every type the agent writes to `.hunt/diagram.<type>.json`; only the dependency diagram comes from `graph.json`. */
+/** True for every type the agent writes as a shape diagram to `.hunt/diagrams/<type>.react-flow.json`, all but the dependency diagram. */
 export function isShapeDiagramType(type: DiagramType): type is ShapeDiagramType {
   return type !== "dependencies";
 }
@@ -36,10 +36,10 @@ export const KINDS_BY_TYPE: Record<ShapeDiagramType, ShapeKind[]> = {
 
 /** The worktree-relative file each diagram type is read from. */
 export const DIAGRAM_FILES: Record<DiagramType, string> = {
-  dependencies: ".hunt/graph.json",
-  "c4-context": ".hunt/diagram.c4-context.json",
-  "c4-container": ".hunt/diagram.c4-container.json",
-  states: ".hunt/diagram.states.json",
-  erd: ".hunt/diagram.erd.json",
-  process: ".hunt/diagram.process.json",
+  dependencies: ".hunt/diagrams/dependencies.react-flow.json",
+  "c4-context": ".hunt/diagrams/c4-context.react-flow.json",
+  "c4-container": ".hunt/diagrams/c4-container.react-flow.json",
+  states: ".hunt/diagrams/states.react-flow.json",
+  erd: ".hunt/diagrams/erd.react-flow.json",
+  process: ".hunt/diagrams/process.react-flow.json",
 };

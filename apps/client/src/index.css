@@ -959,6 +959,29 @@ body,
 .react-flow__edgelabel-renderer {
   z-index: 1;
 }
+/* Shape diagram handles stay invisible where the layout attaches edges; on an editable canvas the outgoing handle of
+   the hovered element shows as a dot to drag a new connection from. */
+.shape-handle {
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+}
+.react-flow__node.shape-node-selected {
+  outline: 2px solid rgba(96, 165, 250, 0.8);
+  outline-offset: 3px;
+  border-radius: 12px;
+}
+.shape-canvas-editable .react-flow__node:hover .shape-handle.source {
+  opacity: 1;
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--surface-inspector);
+  background: #60a5fa;
+  cursor: crosshair;
+}
 
 /* Chat pane: proportional type in a centered reading column; tool activity stays monospace. */
 .chat {

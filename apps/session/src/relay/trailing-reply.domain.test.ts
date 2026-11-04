@@ -13,7 +13,7 @@ const HIDDEN = { hunt: { hidden: true } };
 /** Whether `history`, taken in at once, ends with a question. */
 function asksQuestion(history: JsonRpcNotification[]): boolean {
   const reply = TrailingReply.start();
-  reply.follow(history);
+  reply.follow(history, "acp-1");
   return reply.asksQuestion();
 }
 
@@ -50,22 +50,30 @@ describe("TrailingReply", () => {
   it("takes in only what the history gained since the last call", () => {
     const history = [user("fix it"), agent("Shall I push?")];
     const reply = TrailingReply.start();
-    reply.follow(history);
+    reply.follow(history, "acp-1");
     expect(reply.asksQuestion()).toBe(true);
 
     history.push(user("yes"));
-    reply.follow(history);
+    reply.follow(history, "acp-1");
     expect(reply.asksQuestion()).toBe(false);
 
     history.push(agent("Pushed. Anything else?"));
-    reply.follow(history);
+    reply.follow(history, "acp-1");
     expect(reply.asksQuestion()).toBe(true);
+  });
+
+  it("leaves the updates of other sessions, such as a subagent's, out of the items", () => {
+    const child = (update: Record<string, unknown>) => notificationMessage("session/update", { sessionId: "a84ac2fc8a50f5d9a", update });
+    const childText = child({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Found 12 files?" } });
+    const childTool = child({ sessionUpdate: "tool_call", toolCallId: "t7", title: "Glob" });
+    expect(asksQuestion([user("count"), agent("Shall I push?"), childTool, childText])).toBe(true);
+    expect(asksQuestion([user("count"), agent("Pushed."), childText])).toBe(false);
   });
 
   it("counts the entries taken in and remembers the tool calls the history named", () => {
     const history = [user("fix it"), entry({ sessionUpdate: "tool_call", toolCallId: "t1", title: "Read" }), agent("Done.")];
     const reply = TrailingReply.start();
-    reply.follow(history);
+    reply.follow(history, "acp-1");
 
     expect(reply.taken).toBe(3);
     expect(reply.text).toBe("Done.");

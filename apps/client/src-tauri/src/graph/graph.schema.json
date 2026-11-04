@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Hunt component diagram",
-  "description": "File-level component diagram of a Hunt session's changes: one node per file, edges are dependencies between files. Rendered by the Hunt client from `.hunt/graph.json`.",
+  "description": "File-level component diagram of a Hunt session's changes: one node per file, edges are dependencies between files. Rendered by the Hunt client from `.hunt/diagrams/dependencies.react-flow.json`.",
   "type": "object",
   "required": ["nodes", "edges"],
   "additionalProperties": false,

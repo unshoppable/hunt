@@ -45,15 +45,18 @@ export class TrailingReply extends DomainModel<typeof ZodTrailingReplyState> {
     return this.text !== null && asksQuestion(this.text);
   }
 
-  /** Takes in the entries `history` gained since the last call; `history` only ever grows. */
-  follow(history: readonly JsonRpcNotification[]): void {
+  /**
+   * Takes in the entries `history` gained since the last call; `history` only ever grows. Only the updates of
+   * `sessionId` count: those of its subagent sessions are not the conversation's own items.
+   */
+  follow(history: readonly JsonRpcNotification[], sessionId: string | null): void {
     if (this.taken >= history.length) return;
     this.changeState(() => {
       // A copy, so that a rejected change leaves the set of the last valid state as it was.
       this.toolCallIds = new Set(this.toolCallIds);
       for (let index = this.taken; index < history.length; index++) {
         const params = history[index].params;
-        if (isRecord(params) && isRecord(params.update)) {
+        if (isRecord(params) && params.sessionId === sessionId && isRecord(params.update)) {
           this.take(params.update);
         }
       }

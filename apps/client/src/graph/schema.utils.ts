@@ -34,7 +34,7 @@ export function isThirdPartyPath(path: string): boolean {
 }
 
 /**
- * Validates the raw content of `.hunt/graph.json` against the schema and keeps whatever is usable, so a sloppy
+ * Validates the raw content of `.hunt/diagrams/dependencies.react-flow.json` against the schema and keeps whatever is usable, so a sloppy
  * agent output still renders while the panel lists what was wrong. A label that names a symbol or file instead of a
  * purpose is dropped, so the edge shows no label. A node without a review rating is an unchanged context file; one
  * whose rating is not an integer from 1 to 4 keeps no rating and no reason. Edges to nodes the agent did not list are kept
@@ -44,7 +44,7 @@ export function isThirdPartyPath(path: string): boolean {
 export function parseGraph(value: unknown): ParsedGraph {
   const problems: string[] = [];
   if (!isRecord(value) || !Array.isArray(value.nodes) || !Array.isArray(value.edges)) {
-    return { graph: { nodes: [], edges: [] }, problems: ["graph.json must be an object with `nodes` and `edges` arrays."] };
+    return { graph: { nodes: [], edges: [] }, problems: ["dependencies.react-flow.json must be an object with `nodes` and `edges` arrays."] };
   }
 
   const nodes = new Map<string, GraphNode>();

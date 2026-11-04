@@ -1,5 +1,8 @@
 mod connection;
 pub mod message_time;
+pub mod steering;
+pub mod subagents;
+pub mod token_usage;
 pub mod turn;
 
 pub use connection::{

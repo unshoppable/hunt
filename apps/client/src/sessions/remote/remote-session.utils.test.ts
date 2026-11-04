@@ -44,6 +44,7 @@ function session(id: string, patch: Partial<SessionView> = {}): SessionView {
     mode: "edit",
     pushTarget: "main",
     dismissedGuardrails: [],
+    tokensUsed: 0,
     ...patch,
   };
 }

@@ -3,9 +3,12 @@ import type { SessionView } from "./session.types";
 
 export const SESSION = "11111111-1111-1111-1111-111111111111";
 
-/** Payloads recorded from claude-agent-acp 0.89.1 over the wire. */
-export function notification(update: Record<string, unknown>): SessionNotification {
-  return { sessionId: "acp-session", update } as unknown as SessionNotification;
+/** The agent session of `notification`'s updates; a subagent's updates carry their child session ID instead. */
+export const ACP_SESSION = "acp-session";
+
+/** Payloads recorded from claude-agent-acp 0.89.1 over the wire, on the agent session `sessionId`. */
+export function notification(update: Record<string, unknown>, sessionId = ACP_SESSION): SessionNotification {
+  return { sessionId, update } as unknown as SessionNotification;
 }
 
 /** A stored top-level session as the backend lists it. */
@@ -38,6 +41,7 @@ export function storedSession(id: string, title: string): SessionView {
     mode: "edit",
     pushTarget: "main",
     dismissedGuardrails: [],
+    tokensUsed: 0,
   };
 }
 

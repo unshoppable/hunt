@@ -39,7 +39,7 @@ const FILE_HOVER_DELAY = 100;
 /**
  * The Dependencies view of the Architecture tab: a component diagram of the session's changes against its diff base (with a reviewed pull request, its commits
  * plus the uncommitted changes), one node per changed file, sized by its changed lines,
- * with the imports read from the files and the dependencies the agent wrote to `.hunt/graph.json` as labeled
+ * with the imports read from the files and the dependencies the agent wrote to `.hunt/diagrams/dependencies.react-flow.json` as labeled
  * edges; hovering an edge shows what the dependency is used for, hovering a file lights up the files it depends on
  * and lists them in a card. Unchanged files the agent added for context are dimmed, and files of the same folder
  * share a translucent group area. A click on a changed file opens its diff in a window of its own; the "Files" popover hides files
@@ -55,7 +55,7 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
   const refreshGraph = useHuntStore((state) => state.refreshGraph);
   const graphFilter = useSettingsStore((state) => state.graphFilter);
 
-  /** Undefined until `graph.json` was read, null when there is none. */
+  /** Undefined until `dependencies.react-flow.json` was read, null when there is none. */
   const [graph, setGraph] = useState<ArchitectureGraph | null | undefined>(undefined);
   const [problems, setProblems] = useState<string[]>([]);
   /** When the diagram was generated and whether files changed since; refetched with the diagram and with every edit. */

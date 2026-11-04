@@ -144,7 +144,10 @@ describe("main", () => {
       sessionId: "acp-1",
       cwd: dir,
       mcpServers,
-      _meta: { systemPrompt: { append: "Commit locally only." } },
+      _meta: {
+        systemPrompt: { append: "Commit locally only." },
+        claudeCode: { emitRawSDKMessages: [{ type: "system", subtype: "task_progress" }, { type: "system", subtype: "task_notification" }] },
+      },
     });
     expect(received.find((message) => message.id === "permission-1")).toMatchObject({ result: { outcome: { optionId: "allow" } } });
     expect(received[received.length - 1]).toEqual({ event: "stdin closed" });

@@ -8,7 +8,7 @@ export type FileNode = Node<DiagramNode, "file">;
 export type FolderGroupNode = Node<DiagramGroup, "folder">;
 export type DiagramFlowNode = FileNode | FolderGroupNode;
 /** Room ELK keeps between a group's border and its files; the top holds the folder label. */
-const GROUP_PADDING = "[top=34,left=16,bottom=16,right=16]";
+export const GROUP_PADDING = { top: 34, left: 16, bottom: 16, right: 16 };
 /**
  * `points` is ELK's orthogonal route from source to target, `labelCenter` the middle of the label box ELK reserved
  * on that route: the label sits on a segment that is long enough for it and clear of the nodes.
@@ -127,7 +127,7 @@ async function runLayout(input: LayoutInput): Promise<LayoutResult> {
     children: [
       ...input.groups.map((group) => ({
         id: group.id,
-        layoutOptions: { "elk.padding": GROUP_PADDING },
+        layoutOptions: { "elk.padding": `[top=${GROUP_PADDING.top},left=${GROUP_PADDING.left},bottom=${GROUP_PADDING.bottom},right=${GROUP_PADDING.right}]` },
         children: input.nodes.filter((node) => node.groupId === group.id).map(toElkNode),
       })),
       ...input.nodes.filter((node) => !node.groupId).map(toElkNode),

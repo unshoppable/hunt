@@ -27,6 +27,8 @@ export const KEYMAP_COMMANDS = [
   { id: "chat.interrupt", label: "Interrupt the agent's turn", group: "Chat", scope: "app", defaults: ["Escape"] },
   { id: "chat.toggleVerbose", label: "Toggle verbose tool output", group: "Chat", scope: "app", defaults: ["Ctrl+o"] },
   { id: "chat.cycleMode", label: "Cycle the permission mode", group: "Chat", scope: "app", defaults: ["Shift+Tab"] },
+  { id: "chat.nextAgent", label: "Show the next agent's chat", group: "Chat", scope: "app", defaults: ["Ctrl+Alt+ArrowRight"] },
+  { id: "chat.previousAgent", label: "Show the previous agent's chat", group: "Chat", scope: "app", defaults: ["Ctrl+Alt+ArrowLeft"] },
   {
     id: "chat.sendNow",
     label: "Send now, stopping the agent's turn",
@@ -77,6 +79,14 @@ export const KEYMAP_COMMANDS = [
     scope: "app",
     defaults: ["Shift+F6"],
     note: "in the editor's project tree",
+  },
+  {
+    id: "editor.newInTree",
+    label: "New file or folder",
+    group: "Editor",
+    scope: "app",
+    defaults: ["Meta+n"],
+    note: "in the editor's project tree, inside the selected folder",
   },
   { id: "editor.newFolderInTree", label: "New folder", group: "Editor", scope: "app", defaults: [], note: "in the editor's project tree, inside the selected folder" },
   { id: "editor.closeTab", label: "Close tab", group: "Editor", scope: "app", defaults: ["Meta+w"] },

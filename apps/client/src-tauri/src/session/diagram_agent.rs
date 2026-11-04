@@ -1,5 +1,5 @@
 //! Diagram generation in the background: every request runs its own headless `claude -p` process in the session's
-//! local worktree, which writes the diagram of one type into `.hunt/`. The session's chat agent takes no part, so it
+//! local worktree, which writes the diagram of one type into `.hunt/diagrams/`. The session's chat agent takes no part, so it
 //! may run a turn or be stopped meanwhile. A remote session's diagram is generated on this Mac as well: the file sync
 //! keeps its local worktree in step with the VM and leaves `.hunt/` out, so the file stays where the panel reads it.
 
@@ -21,7 +21,7 @@ use crate::session::store::SessionRecord;
 const TIMEOUT: Duration = Duration::from_secs(30 * 60);
 
 /// Tools the diagram agent may use without asking: reading the worktree, the read-only git commands the prompts name
-/// and writing inside `.hunt/`. In the `dontAsk` permission mode every other tool call is denied.
+/// and writing inside `.hunt/diagrams/`. In the `dontAsk` permission mode every other tool call is denied.
 const ALLOWED_TOOLS: [&str; 8] =
     ["Read", "Grep", "Glob", "Bash(git diff:*)", "Bash(git ls-files:*)", "Bash(git log:*)", "Bash(git show:*)", "Bash(git status:*)"];
 
@@ -107,7 +107,7 @@ pub async fn generate(
 
 /// Arguments of the `claude -p` run: the diagram model and effort, no MCP servers and no stored transcript, the diagram
 /// instructions appended to the system prompt, JSON output and the permissions of `ALLOWED_TOOLS` plus writes into
-/// `.hunt/`, everything else denied without a prompt.
+/// `.hunt/diagrams/`, everything else denied without a prompt.
 fn claude_args(model: &str, effort: &str, system_prompt: &str) -> Vec<String> {
     let mut args: Vec<String> = ["-p", "--model", model, "--effort", effort, "--no-session-persistence", "--strict-mcp-config"]
         .into_iter()
@@ -116,7 +116,7 @@ fn claude_args(model: &str, effort: &str, system_prompt: &str) -> Vec<String> {
     args.extend(["--append-system-prompt".into(), system_prompt.into(), "--output-format".into(), "json".into()]);
     args.extend(["--permission-mode".into(), "dontAsk".into(), "--allowedTools".into()]);
     args.extend(ALLOWED_TOOLS.iter().map(|tool| tool.to_string()));
-    args.extend(["Write", "Edit"].map(|tool| format!("{tool}(./{}/**)", graph::GRAPH_DIR)));
+    args.extend(["Write", "Edit"].map(|tool| format!("{tool}(./{}/**)", graph::DIAGRAMS_DIR)));
     args
 }
 
@@ -133,7 +133,7 @@ mod tests {
         assert_eq!(after("--append-system-prompt"), "diagram rules");
         assert_eq!(after("--permission-mode"), "dontAsk");
         let allowed = &args[args.iter().position(|arg| arg == "--allowedTools").unwrap() + 1..];
-        assert!(allowed.contains(&"Write(./.hunt/**)".to_string()) && allowed.contains(&"Edit(./.hunt/**)".to_string()));
+        assert!(allowed.contains(&"Write(./.hunt/diagrams/**)".to_string()) && allowed.contains(&"Edit(./.hunt/diagrams/**)".to_string()));
         assert!(allowed.iter().all(|tool| !tool.starts_with('-')), "the tool list must end the arguments: {allowed:?}");
         assert!(!allowed.iter().any(|tool| tool == "Bash" || tool == "Write" || tool == "Edit"));
     }

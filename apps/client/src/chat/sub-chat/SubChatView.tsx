@@ -3,7 +3,7 @@ import { useAgentDefaultsStore } from "../agent-defaults.store";
 import { useSettingsStore } from "../../settings/settings.store";
 import { useHuntStore } from "../../sessions/hunt.store";
 import { agentSetupOf } from "../../sessions/session.store-slice";
-import type { QueuedPrompt, SessionChat } from "../chat.store-slice";
+import { steersPrompt, type QueuedPrompt, type SessionChat } from "../chat.store-slice";
 import { DeleteSessionDialog } from "../../sessions/DeleteSessionDialog";
 import { PopupModeButton, PopupWindowTitleBar } from "../../ui/PopupTitleBar";
 import { findSelectOption, listChoiceOptions } from "../config-options.utils";
@@ -461,6 +461,7 @@ export function SubChatView({
           onTextareaKeyDown={onTextareaKeyDown}
           subSessionId={subSessionId}
           isTurnRunning={chat?.isBusy ?? false}
+          steers={steersPrompt(chat)}
           isCreating={isCreating}
           hasPermission={hasPermission}
           placeholder={placeholder}

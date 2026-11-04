@@ -1,11 +1,12 @@
-import type { ContentBlock, SessionNotification, ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
-import type { ChatItem, HuntChunkMeta, ToolCallView } from "./chat.types";
+import type { ContentBlock, SessionNotification, SubagentUpdate, ToolCall, ToolCallUpdate } from "@agentclientprotocol/sdk";
+import type { ChatItem, HuntChunkMeta, HuntSubagentMeta, SubagentChat, ToolCallView } from "./chat.types";
 import type { SessionChat } from "./chat.store-slice";
 import { imageDataUrl, imagePlaceholder } from "./image-data.utils";
 
 export function createEmptyChat(): SessionChat {
   return {
     items: [],
+    subagents: {},
     plan: [],
     commands: [],
     modeId: "default",
@@ -13,6 +14,7 @@ export function createEmptyChat(): SessionChat {
     permission: null,
     contextUsage: null,
     isBusy: false,
+    steers: false,
     queue: [],
     hasUnseenActivity: false,
     unseenAfterMessageId: null,
@@ -41,6 +43,11 @@ export function createEmptyChat(): SessionChat {
 export function replacedChat(chat: SessionChat): SessionChat {
   const { modeId, queue, isLoading, remoteStep, remoteDetail, remoteRun, move, fileSync, generatingDiagrams, diagramErrors } = chat;
   return { ...createEmptyChat(), modeId, queue, hasHistory: true, isLoading, remoteStep, remoteDetail, remoteRun, move, fileSync, generatingDiagrams, diagramErrors };
+}
+
+/** Whether a `session_info_update` reports in `_meta.hunt.steering` that the agent steers (see `SessionChat.steers`). */
+function reportsSteering(meta: unknown): boolean {
+  return (meta as { hunt?: { steering?: unknown } } | null | undefined)?.hunt?.steering === true;
 }
 
 /** The turn state the backend or the relay of a remote session reports in `_meta.hunt.turn` of a `session_info_update`, if any. */
@@ -216,25 +223,133 @@ function mergeToolCallUpdate(items: ChatItem[], update: ToolCallUpdate): ChatIte
   return next;
 }
 
+/** Whether `update` reports a tool call of `items` that finished an edit, after which the diff panel refetches. */
+function finishesEdit(items: ChatItem[], update: ToolCallUpdate): boolean {
+  if (update.status !== "completed") return false;
+  const merged = items.find((item) => item.kind === "tool" && item.toolCall.toolCallId === update.toolCallId);
+  const kind = merged?.kind === "tool" ? merged.toolCall.kind : "other";
+  return kind === "edit" || kind === "delete" || kind === "move";
+}
+
+/** The tools that start a subagent; with native subagent sessions their own calls stay out of the chat. */
+const SUBAGENT_TOOLS = new Set(["Agent", "Task"]);
+
+/**
+ * Whether a tool call update belongs to a call the chat does not show: claude-agent-acp hides the Agent/Task call
+ * behind the subagent it starts, but still reports its launch result on the parent session.
+ */
+function isHiddenToolCall(items: ChatItem[], update: ToolCallUpdate): boolean {
+  const toolName = (update._meta as { claudeCode?: { toolName?: unknown } } | null | undefined)?.claudeCode?.toolName;
+  if (typeof toolName !== "string" || !SUBAGENT_TOOLS.has(toolName)) return false;
+  return !items.some((item) => item.kind === "tool" && item.toolCall.toolCallId === update.toolCallId);
+}
+
+/**
+ * `items` with the agent output `update` applied: a user, agent or thought chunk or a tool call or its update; `null`
+ * for every other update. Shared by the main agent's chat and every subagent's.
+ */
+function reduceItems(items: ChatItem[], update: SessionNotification["update"]): ChatItem[] | null {
+  switch (update.sessionUpdate) {
+    case "user_message_chunk":
+      return appendUserBlock(items, update.content, chunkOrigin(update));
+    case "agent_message_chunk":
+      return appendMessageBlock(items, "agent", update.content, chunkOrigin(update));
+    case "agent_thought_chunk":
+      return appendThought(items, describeContentBlock(update.content));
+    case "tool_call":
+      return [...items, { kind: "tool", id: nextItemId(), toolCall: toToolCallView(update) }];
+    case "tool_call_update":
+      return isHiddenToolCall(items, update) ? items : mergeToolCallUpdate(items, update);
+    default:
+      return null;
+  }
+}
+
+/** The change of a subagent's state, prompt and usage `agent/acp/subagents.rs` sends in `_meta.hunt.subagent`. */
+function subagentChange(meta: unknown) {
+  return (meta as HuntSubagentMeta | null | undefined)?.hunt?.subagent ?? {};
+}
+
+/** `chat` with the card of the subagent `sessionId` added to the chat of its parent: the main agent's or a subagent's. */
+function withSubagentCard(chat: SessionChat, parentSessionId: string, sessionId: string): SessionChat {
+  const card: ChatItem = { kind: "subagent", id: nextItemId(), sessionId };
+  const parent = chat.subagents[parentSessionId];
+  if (!parent) return { ...chat, items: [...chat.items, card] };
+  return { ...chat, subagents: { ...chat.subagents, [parentSessionId]: { ...parent, items: [...parent.items, card] } } };
+}
+
+/**
+ * Applies a `subagent_update` of the parent session `parentSessionId`: the first one announces the subagent, whose
+ * card goes into its parent's chat and whose live prompt opens its own chat (a replay sends the prompt as a user chunk);
+ * later ones change its title, description, state or usage.
+ */
+function applySubagentUpdate(chat: SessionChat, parentSessionId: string, update: SubagentUpdate): SessionChat {
+  const change = subagentChange(update._meta);
+  const existing = chat.subagents[update.sessionId];
+  if (existing) {
+    const changed: SubagentChat = {
+      ...existing,
+      title: update.title ?? existing.title,
+      description: update.description ?? existing.description,
+      state: change.state ?? existing.state,
+      usage: change.usage ?? existing.usage,
+    };
+    return { ...chat, subagents: { ...chat.subagents, [update.sessionId]: changed } };
+  }
+  const isHidden = chat.isHiddenTurn || Boolean(chat.subagents[parentSessionId]?.isHidden);
+  const prompt: ChatItem[] = change.prompt ? [{ kind: "user", id: nextItemId(), text: change.prompt, images: [] }] : [];
+  const subagent: SubagentChat = {
+    sessionId: update.sessionId,
+    parentSessionId,
+    title: update.title ?? "",
+    description: update.description ?? "",
+    state: change.state ?? "running",
+    items: prompt,
+    plan: [],
+    usage: change.usage ?? null,
+    isHidden,
+  };
+  const announced = { ...chat, subagents: { ...chat.subagents, [update.sessionId]: subagent } };
+  return isHidden ? announced : withSubagentCard(announced, parentSessionId, update.sessionId);
+}
+
+/**
+ * Applies an update of the subagent `subagent`'s own session to its chat. Its usage, turn state, commands and config
+ * are the main agent's concern and stay out; a finished edit of a subagent refetches the diff like the main agent's.
+ */
+function reduceSubagent(chat: SessionChat, subagent: SubagentChat, update: SessionNotification["update"]): SessionChat {
+  if (update.sessionUpdate === "plan") return { ...chat, subagents: { ...chat.subagents, [subagent.sessionId]: { ...subagent, plan: update.entries } } };
+  const items = reduceItems(subagent.items, update);
+  if (!items) return chat;
+  const isFinishedEdit = update.sessionUpdate === "tool_call_update" && finishesEdit(items, update);
+  return {
+    ...chat,
+    subagents: { ...chat.subagents, [subagent.sessionId]: { ...subagent, items } },
+    editVersion: isFinishedEdit ? chat.editVersion + 1 : chat.editVersion,
+  };
+}
+
+/**
+ * Applies one notification to the chat. A subagent's announcement and changes come on its parent's session, its
+ * output on its own session ID, which routes it into its chat; everything else is the main agent's.
+ */
 export function reduceChat(chat: SessionChat, notification: SessionNotification): SessionChat {
   const update = notification.update;
+  if (update.sessionUpdate === "subagent_update") return applySubagentUpdate(chat, notification.sessionId, update);
+  const subagent = chat.subagents[notification.sessionId];
+  if (subagent) return reduceSubagent(chat, subagent, update);
   if (TURN_OUTPUT_UPDATES.has(update.sessionUpdate) && chat.isHiddenTurn) return chat;
   switch (update.sessionUpdate) {
     case "user_message_chunk":
       if (isHiddenChunk(update._meta)) return { ...chat, isHiddenTurn: true };
-      return { ...chat, items: appendUserBlock(chat.items, update.content, chunkOrigin(update)), isHiddenTurn: false };
+      return { ...chat, items: reduceItems(chat.items, update) ?? chat.items, isHiddenTurn: false };
     case "agent_message_chunk":
-      return { ...chat, items: appendMessageBlock(chat.items, "agent", update.content, chunkOrigin(update)) };
     case "agent_thought_chunk":
-      return { ...chat, items: appendThought(chat.items, describeContentBlock(update.content)) };
     case "tool_call":
-      return { ...chat, items: [...chat.items, { kind: "tool", id: nextItemId(), toolCall: toToolCallView(update) }] };
+      return { ...chat, items: reduceItems(chat.items, update) ?? chat.items };
     case "tool_call_update": {
-      const items = mergeToolCallUpdate(chat.items, update);
-      const merged = items.find((item) => item.kind === "tool" && item.toolCall.toolCallId === update.toolCallId);
-      const kind = merged?.kind === "tool" ? merged.toolCall.kind : "other";
-      const isFinishedEdit = update.status === "completed" && (kind === "edit" || kind === "delete" || kind === "move");
-      return { ...chat, items, editVersion: isFinishedEdit ? chat.editVersion + 1 : chat.editVersion };
+      const items = reduceItems(chat.items, update) ?? chat.items;
+      return { ...chat, items, editVersion: finishesEdit(items, update) ? chat.editVersion + 1 : chat.editVersion };
     }
     case "plan":
       return { ...chat, plan: update.entries };
@@ -250,6 +365,7 @@ export function reduceChat(chat: SessionChat, notification: SessionNotification)
     case "usage_update":
       return { ...chat, contextUsage: { used: update.used, size: update.size } };
     case "session_info_update": {
+      if (reportsSteering(update._meta)) return { ...chat, steers: true };
       const turn = huntTurnOf(update._meta);
       if (!turn) return chat;
       // A turn that ends, whoever on the relay sent it, may have changed the worktree on the VM.

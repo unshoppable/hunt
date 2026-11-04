@@ -31,6 +31,7 @@ function session(id: string, title: string, branch: string, parentId: string | n
     mode: "edit",
     pushTarget: "main",
     dismissedGuardrails: [],
+    tokensUsed: 0,
   };
 }
 

@@ -1,14 +1,14 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Hunt architecture diagram",
-  "description": "One of the shape diagrams the Hunt client renders from `.hunt/diagram.<type>.json`: a C4 context or container diagram, a UML state diagram, an entity-relationship diagram or a UML activity (process) diagram. The file holds content only (elements, their connections, labels and what the session changed); Hunt owns shapes, colors, sizes and layout, so the same diagram looks the same on every branch.",
+  "description": "One of the shape diagrams the Hunt client renders from `.hunt/diagrams/<type>.react-flow.json`: a C4 context or container diagram, a UML state diagram, an entity-relationship diagram or a UML activity (process) diagram. The file holds content (elements, their connections, labels and what the session changed) and, once someone placed the elements by hand in the Architecture tab, their positions; Hunt owns shapes, colors and sizes, and lays out every element without a position, so the same diagram looks the same on every branch.",
   "type": "object",
   "required": ["type", "nodes", "edges"],
   "additionalProperties": false,
   "properties": {
     "type": {
       "enum": ["c4-context", "c4-container", "states", "erd", "process"],
-      "description": "Which diagram the file holds; must match the file name `diagram.<type>.json`."
+      "description": "Which diagram the file holds; must match the file name `<type>.react-flow.json`."
     },
     "title": { "type": "string", "maxLength": 80, "description": "What the diagram shows in a few words, e.g. the subsystem or the flow it covers." },
     "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
@@ -71,6 +71,13 @@
           "minItems": 1,
           "items": { "$ref": "#/$defs/column" },
           "description": "erd only, required for a `table`: its columns in the order they are declared."
+        },
+        "position": {
+          "type": "object",
+          "required": ["x", "y"],
+          "additionalProperties": false,
+          "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
+          "description": "Top-left corner of the element in absolute diagram coordinates, set when someone placed it by hand in the Architecture tab. Keep it unchanged for an element that stays and leave it out for a new one; Hunt places elements without a position automatically."
         },
         "change": { "$ref": "#/$defs/change" }
       },

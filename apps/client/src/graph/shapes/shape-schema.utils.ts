@@ -1,5 +1,5 @@
 import type { ShapeDiagramType } from "../../common/diagram/diagram.types";
-import type { Cardinality, ShapeChange, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeNode, TableColumn } from "./shape-diagram.types";
+import type { Cardinality, ShapeChange, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeNode, ShapePosition, TableColumn } from "./shape-diagram.types";
 import { KINDS_BY_TYPE } from "../diagram-types.constants";
 
 export type ParsedShapeDiagram = {
@@ -31,6 +31,18 @@ function isCardinality(value: unknown): value is Cardinality {
   return value === "one" || value === "many";
 }
 
+/** The position when `x` and `y` are finite numbers; undefined otherwise. */
+function parsePosition(value: unknown): ShapePosition | undefined {
+  if (!isRecord(value) || typeof value.x !== "number" || typeof value.y !== "number" || !Number.isFinite(value.x) || !Number.isFinite(value.y)) return undefined;
+  return { x: value.x, y: value.y };
+}
+
+/** The shape diagram type a file's content declares in `type`, or null when it declares none of them. */
+export function shapeDiagramTypeOf(value: unknown): ShapeDiagramType | null {
+  if (!isRecord(value) || typeof value.type !== "string") return null;
+  return Object.keys(KINDS_BY_TYPE).includes(value.type) ? (value.type as ShapeDiagramType) : null;
+}
+
 /** The column when `name` and `type` are strings, the flags coerced to booleans; undefined otherwise. */
 function parseColumn(value: unknown): TableColumn | undefined {
   if (!isRecord(value) || !optionalString(value.name) || typeof value.type !== "string") return undefined;
@@ -45,14 +57,14 @@ function parseColumn(value: unknown): TableColumn | undefined {
 }
 
 /**
- * Validates the raw content of `.hunt/diagram.<type>.json` against the schema and keeps whatever is usable, so a
- * sloppy agent output still renders while the panel lists what was wrong. A file of another type, or no object at
- * all, yields an empty diagram. Nodes without a valid id, label or kind, duplicate ids, tables without a usable
- * column and edges whose endpoints or columns do not exist are dropped; an unknown `parent` or `change` is cleared.
- * A missing label on a transition or on an edge leaving a decision is reported but the edge stays.
+ * Validates the raw content of a diagram file (`.hunt/diagrams/<type>.react-flow.json`, or `file` when the diagram was
+ * saved elsewhere) against the schema and keeps whatever is usable, so a sloppy agent output still renders while the
+ * panel lists what was wrong. A file of another type, or no object at all, yields an empty diagram. Nodes without a
+ * valid id, label or kind, duplicate ids, tables without a usable column and edges whose endpoints or columns do not
+ * exist are dropped; an unknown `parent`, `position` or `change` is cleared. A missing label on a transition or on an
+ * edge leaving a decision is reported but the edge stays.
  */
-export function parseShapeDiagram(value: unknown, expected: ShapeDiagramType): ParsedShapeDiagram {
-  const file = `diagram.${expected}.json`;
+export function parseShapeDiagram(value: unknown, expected: ShapeDiagramType, file = `${expected}.react-flow.json`): ParsedShapeDiagram {
   const empty: ShapeDiagram = { type: expected, nodes: [], edges: [] };
   if (!isRecord(value)) return { diagram: empty, problems: [`${file} must be an object with \`type\`, \`nodes\` and \`edges\`.`] };
   if (value.type !== expected) return { diagram: empty, problems: [`${file} has the type ${JSON.stringify(value.type)} instead of "${expected}".`] };
@@ -138,6 +150,14 @@ export function parseShapeDiagram(value: unknown, expected: ShapeDiagramType): P
         node.parent = raw.parent;
       } else {
         problems.push(`Node "${raw.id}" names the parent ${JSON.stringify(raw.parent)}, which is not a group; cleared.`);
+      }
+    }
+    if (raw.position !== undefined) {
+      const position = parsePosition(raw.position);
+      if (position) {
+        node.position = position;
+      } else {
+        problems.push(`Node "${raw.id}" has the position ${JSON.stringify(raw.position)} instead of numbers \`x\` and \`y\`; cleared.`);
       }
     }
     if (raw.change !== undefined) {

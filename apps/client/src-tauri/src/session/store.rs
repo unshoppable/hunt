@@ -81,6 +81,10 @@ pub struct SessionRecord {
     /// longer offers them, also after the chat was rebuilt from the agent's history.
     #[serde(default)]
     pub dismissed_guardrails: Vec<String>,
+    /// Tokens the session's agent spent so far, also those before a `/clear`: input, output and cache tokens of the
+    /// main agent without its subagents, as the prompt responses report them (`agent::acp::token_usage`).
+    #[serde(default)]
+    pub tokens_used: u64,
 }
 
 /// What a session is for. `Edit` works on the code of its worktree, `GitReview` reviews the pull request `pull_request`
@@ -154,6 +158,7 @@ impl SessionRecord {
             leftover_vm: None,
             mode: SessionMode::Edit,
             dismissed_guardrails: Vec::new(),
+            tokens_used: 0,
         }
     }
 
@@ -471,6 +476,13 @@ pub fn update_session(app: &AppHandle, id: Uuid, update: impl FnOnce(&mut Sessio
 /// noted is kept once.
 pub fn dismiss_guardrail(app: &AppHandle, id: Uuid, summary: &str) -> Result<(), String> {
     update_session(app, id, |record| record.dismiss_guardrail(summary))?;
+    Ok(())
+}
+
+/// Adds `tokens` to the tokens `id` spent and tells every window.
+pub fn add_tokens_used(app: &AppHandle, id: Uuid, tokens: u64) -> Result<(), String> {
+    update_session(app, id, |record| record.tokens_used += tokens)?;
+    announce_sessions_changed(app);
     Ok(())
 }
 

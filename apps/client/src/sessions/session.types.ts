@@ -64,6 +64,8 @@ export type SessionView = {
    * no longer offers them.
    */
   dismissedGuardrails: string[];
+  /** Tokens the session's agent spent so far, also those before a `/clear`: input, output and cache tokens of the main agent without its subagents. */
+  tokensUsed: number;
 };
 
 /**

@@ -1,59 +1,72 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Background, Controls, MiniMap, ReactFlow, ReactFlowProvider, useEdgesState, useNodesState, useReactFlow } from "@xyflow/react";
+import { Background, Controls, MiniMap, ReactFlow, ReactFlowProvider, useEdgesState, useNodesState, useReactFlow, type FinalConnectionState, type ReactFlowInstance } from "@xyflow/react";
 import { commands } from "../../ipc/commands";
 import type { ShapeDiagramType } from "../../common/diagram/diagram.types";
 import type { GraphStatus } from "../graph.types";
-import type { ShapeDiagram } from "./shape-diagram.types";
+import type { ShapeDiagram, ShapeKind, ShapePosition } from "./shape-diagram.types";
 import { DIAGRAM_FONT_SIZE, useSettingsStore } from "../../settings/settings.store";
 import { useHuntStore } from "../../sessions/hunt.store";
 import { STATUS_BAR } from "../../ui/bars.constants";
 import { SECONDARY_BUTTON_XS } from "../../ui/buttons.constants";
+import { Dropdown } from "../../ui/Dropdown";
 import { PlusIcon, Spinner } from "../../ui/Icons";
 import { useLoad } from "../../ui/load.hook";
 import { errorText } from "../../ui/error-text.utils";
-import { DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton } from "../DiagramToolbar";
-import { DIAGRAM_TYPES } from "../diagram-types.constants";
+import { DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton, SaveDiagramButton } from "../DiagramToolbar";
+import { DIAGRAM_TYPES, KINDS_BY_TYPE } from "../diagram-types.constants";
 import { addTable, emptyErd, serializeShapeDiagram } from "./erd-edit.utils";
-import { decorateShapeFlow, layoutShapeDiagram, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shape-diagram.utils";
+import { addEdge, addGroup, addNode, clearPositions, emptyDiagram, setPositions } from "./shape-edit.utils";
+import { decorateShapeFlow, hasManualLayout, layoutShapeDiagram, shapeNodeSize, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shape-diagram.utils";
 import { CHANGE_EDGE_COLOR, CrowFootDefs, SHAPE_EDGE_TYPES, SHAPE_NODE_TYPES } from "./ShapeNodes";
 import { parseShapeDiagram } from "./shape-schema.utils";
+import { KIND_NAMES, ShapeElementEditor, type ShapeSelection } from "./ShapeElementEditor";
 import { TableEditor } from "./TableEditor";
 
 /** How long after the last edit the diagram file is written; edits within that time are written together. */
 const WRITE_DELAY_MS = 400;
-const NO_FOCUS: ShapeFocus = { hoveredEdgeId: null, hoveredNodeId: null, selectedNodeId: null };
+const NO_HOVER = { hoveredEdgeId: null, hoveredNodeId: null };
 
 /**
- * One of the shape diagrams of the Architecture tab (C4 context, C4 container, states, ERD, process): the content the
- * agent wrote to `.hunt/diagram.<type>.json`, validated and laid out with ELK inside React Flow in Hunt's fixed
- * style. Hovering an edge shows its description, hovering a node lights its edges; everything else fades meanwhile.
- * An ERD is editable: a click on a table opens its editor beside the canvas, the toolbar adds a table, and every edit
- * shows at once and is written back to the file shortly after, where the agent reads it on the next update. The
- * toolbar switches the diagram type, shows whether files changed since the diagram was generated and generates or
- * updates it, with optional instructions for that run; nothing is generated without a click.
+ * Where a shape diagram comes from: the file the agent generates for the session in `.hunt/diagrams/`, or a diagram
+ * file of the repository (saved there from a generated one), whose type its content declares.
  */
-export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: string; diagramType: ShapeDiagramType }) {
+export type ShapeDiagramSource = { kind: "generated"; type: ShapeDiagramType } | { kind: "file"; path: string; type: ShapeDiagramType };
+
+/**
+ * One of the shape diagrams of the Architecture tab (C4 context, C4 container, states, ERD, process): the content of
+ * its diagram file, validated and laid out with ELK inside React Flow in Hunt's fixed style, or placed where the user
+ * dragged its elements. Hovering an edge shows its description, hovering a node lights its edges; everything else
+ * fades meanwhile. Every diagram is editable: a click on an element, connection or boundary label opens its editor
+ * beside the canvas (the table editor for an ERD table), the toolbar adds elements and boundaries, dragging from the
+ * dot under an element connects it to another one, and dragging an element fixes the positions of all of them until
+ * Auto-layout drops them again. Every edit shows at once and is written back to the file shortly after. For a
+ * generated diagram the toolbar also shows whether files changed since it was generated, generates or updates it, and
+ * saves it into the repository, after which the tab shows the saved file; nothing is generated without a click.
+ */
+export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; source: ShapeDiagramSource }) {
+  const diagramType = source.type;
+  const filePath = source.kind === "file" ? source.path : null;
   const graphVersion = useHuntStore((state) => state.chats[sessionId]?.graphVersion ?? 0);
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
-  const isGeneratingGraph = useHuntStore((state) => state.chats[sessionId]?.generatingDiagrams.includes(diagramType) ?? false);
-  const generateError = useHuntStore((state) => state.chats[sessionId]?.diagramErrors[diagramType] ?? null);
+  const isGeneratingGraph = useHuntStore((state) => (!filePath && state.chats[sessionId]?.generatingDiagrams.includes(diagramType)) ?? false);
+  const generateError = useHuntStore((state) => (filePath ? null : (state.chats[sessionId]?.diagramErrors[diagramType] ?? null)));
   const refreshGraph = useHuntStore((state) => state.refreshGraph);
+  const setDiagramFile = useSettingsStore((state) => state.setDiagramFile);
   const typeName = DIAGRAM_TYPES.find((type) => type.id === diagramType)?.name ?? diagramType;
   const isErd = diagramType === "erd";
 
   /** Undefined until the file was read, null when there is none. */
   const [diagram, setDiagram] = useState<ShapeDiagram | null | undefined>(undefined);
-  /** The file content of `diagram`, to tell a reload of the user's own write from a rewrite by the agent. */
+  /** The file content of `diagram`, to tell a reload of the user's own write from a rewrite by the agent or an editor. */
   const serializedRef = useRef<string | null>(null);
   const writeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [problems, setProblems] = useState<string[]>([]);
   /** When the diagram was generated and whether files changed since; refetched with the diagram and with every edit. */
   const [status, setStatus] = useState<GraphStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [focus, setFocus] = useState<ShapeFocus>(NO_FOCUS);
-  /** The last layout before decoration; the flags are applied to it whenever the focus changes. */
-  const layoutRef = useRef<{ nodes: ShapeDiagramFlowNode[]; edges: ShapeFlowEdge[] }>({ nodes: [], edges: [] });
-  /** The table added last, whose editor starts with the name selected. */
+  const [hover, setHover] = useState<Pick<ShapeFocus, "hoveredEdgeId" | "hoveredNodeId">>(NO_HOVER);
+  const [selection, setSelection] = useState<ShapeSelection | null>(null);
+  /** The element, connection or boundary added last, whose editor starts with the name selected. */
   const [createdId, setCreatedId] = useState<string | null>(null);
   const [showProblems, setShowProblems] = useState(false);
   /** Bumped when a layout with other elements lands, so React Flow remounts and fits the diagram into view. */
@@ -62,11 +75,22 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
   const zoomScale = useSettingsStore((state) => state.panes.architecture.fontSize) / DIAGRAM_FONT_SIZE;
   const fitViewOptions = { padding: 0.1, minZoom: 0.3 * zoomScale, maxZoom: 1.2 * zoomScale };
   const elementIdsRef = useRef("");
+  const canvasRef = useRef<HTMLDivElement>(null);
+  const flowRef = useRef<ReactFlowInstance<ShapeDiagramFlowNode, ShapeFlowEdge> | null>(null);
+  /** The last layout before decoration; the flags are applied to it whenever the focus changes. */
+  const layoutRef = useRef<{ nodes: ShapeDiagramFlowNode[]; edges: ShapeFlowEdge[] }>({ nodes: [], edges: [] });
   const [nodes, setNodes, onNodesChange] = useNodesState<ShapeDiagramFlowNode>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<ShapeFlowEdge>([]);
+  const { hoveredEdgeId, hoveredNodeId } = hover;
+  const selectedNodeId = selection?.kind === "node" ? selection.id : null;
+  const selectedEdgeId = selection?.kind === "edge" ? selection.id : null;
+  const focus: ShapeFocus = { hoveredEdgeId, hoveredNodeId, selectedNodeId, selectedEdgeId };
+
+  const readDiagram = (): Promise<unknown> =>
+    filePath ? commands.readFile(sessionId, filePath).then((content) => JSON.parse(content) as unknown) : commands.readGraph(sessionId, diagramType);
 
   useLoad(
-    () => commands.readGraph(sessionId, diagramType),
+    () => readDiagram(),
     {
       onValue: (raw) => {
         if (raw === null || raw === undefined) {
@@ -74,7 +98,7 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
           setDiagram(null);
           setProblems([]);
         } else {
-          const parsed = parseShapeDiagram(raw, diagramType);
+          const parsed = parseShapeDiagram(raw, diagramType, filePath ?? undefined);
           const serialized = serializeShapeDiagram(parsed.diagram);
           if (serialized !== serializedRef.current) {
             serializedRef.current = serialized;
@@ -84,12 +108,17 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
         }
         setError(null);
       },
-      onError: (reason) => setError(errorText(reason)),
+      onError: (reason) => setError(filePath ? `Reading ${filePath} failed: ${errorText(reason)}` : errorText(reason)),
     },
-    [sessionId, diagramType, graphVersion],
+    // A diagram file of the repository changes like any worktree file; the generated one reports its own rewrites.
+    [sessionId, diagramType, filePath, filePath ? editVersion : graphVersion],
   );
 
-  useLoad(() => commands.graphStatus(sessionId, diagramType), { onValue: setStatus, onError: (reason) => setError(errorText(reason)) }, [sessionId, diagramType, graphVersion, editVersion]);
+  useLoad(
+    () => (filePath ? Promise.resolve(null) : commands.graphStatus(sessionId, diagramType)),
+    { onValue: setStatus, onError: (reason) => setError(errorText(reason)) },
+    [sessionId, diagramType, filePath, graphVersion, editVersion],
+  );
 
   useLoad(
     (signal) => (diagram ? layoutShapeDiagram(diagram, signal) : Promise.resolve({ nodes: [], edges: [] })),
@@ -112,10 +141,10 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
 
   // The flags follow the mouse and the selection without a new layout.
   useEffect(() => {
-    const decorated = decorateShapeFlow(layoutRef.current.nodes, layoutRef.current.edges, focus, isErd);
+    const decorated = decorateShapeFlow(layoutRef.current.nodes, layoutRef.current.edges, { hoveredEdgeId, hoveredNodeId, selectedNodeId, selectedEdgeId }, isErd);
     setNodes(decorated.nodes);
     setEdges(decorated.edges);
-  }, [focus, isErd, setNodes, setEdges]);
+  }, [hoveredEdgeId, hoveredNodeId, selectedNodeId, selectedEdgeId, isErd, setNodes, setEdges]);
 
   /** Shows `next` at once and writes it to the diagram file after `WRITE_DELAY_MS`; the reload it triggers is recognised and skipped. */
   const applyEdit = useCallback(
@@ -128,10 +157,11 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
       }
       writeTimer.current = setTimeout(() => {
         writeTimer.current = null;
-        commands.writeGraph(sessionId, diagramType, serialized).catch((reason) => setError(`Saving the diagram failed: ${errorText(reason)}`));
+        const write = filePath ? commands.writeFile(sessionId, filePath, serialized) : commands.writeGraph(sessionId, diagramType, serialized);
+        write.catch((reason) => setError(`Saving the diagram failed: ${errorText(reason)}`));
       }, WRITE_DELAY_MS);
     },
-    [sessionId, diagramType],
+    [sessionId, diagramType, filePath],
   );
 
   // A pending write goes out when the panel closes, so no edit is lost to a tab switch.
@@ -140,63 +170,162 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
       if (!writeTimer.current || !serializedRef.current) return;
       clearTimeout(writeTimer.current);
       writeTimer.current = null;
-      void commands.writeGraph(sessionId, diagramType, serializedRef.current);
+      void (filePath ? commands.writeFile(sessionId, filePath, serializedRef.current) : commands.writeGraph(sessionId, diagramType, serializedRef.current));
     },
-    [sessionId, diagramType],
+    [sessionId, diagramType, filePath],
   );
+
+  const select = (next: ShapeSelection, isNew = false) => {
+    setSelection(next);
+    setCreatedId(isNew ? next.id : null);
+  };
+
+  /** Middle of the visible canvas in diagram coordinates, minus half of `size`, so a new element lands in view. */
+  const viewCenter = (size: { width: number; height: number }): ShapePosition | undefined => {
+    const rect = canvasRef.current?.getBoundingClientRect();
+    if (!rect || !flowRef.current) return undefined;
+    const center = flowRef.current.screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
+    return { x: center.x - size.width / 2, y: center.y - size.height / 2 };
+  };
 
   const addNewTable = () => {
     const added = addTable(diagram ?? emptyErd(), "new_table");
-    applyEdit(added.diagram);
-    setCreatedId(added.id);
-    setFocus((current) => ({ ...current, selectedNodeId: added.id }));
+    const table = added.diagram.nodes.find((node) => node.id === added.id);
+    const position = table && hasManualLayout(added.diagram) ? viewCenter(shapeNodeSize(table)) : undefined;
+    applyEdit(position ? setPositions(added.diagram, new Map([[added.id, position]])) : added.diagram);
+    select({ kind: "node", id: added.id }, true);
   };
 
-  const selectedTable = isErd && diagram && focus.selectedNodeId ? diagram.nodes.find((node) => node.id === focus.selectedNodeId) : undefined;
+  const addNewElement = (kind: ShapeKind) => {
+    const base = diagram ?? emptyDiagram(diagramType);
+    const label = `New ${KIND_NAMES[kind].toLowerCase()}`;
+    const position = hasManualLayout(base) ? viewCenter(shapeNodeSize({ id: "", kind, label })) : undefined;
+    const added = addNode(base, kind, label, position);
+    applyEdit(added.diagram);
+    select({ kind: "node", id: added.id }, true);
+  };
+
+  const addNewGroup = () => {
+    const added = addGroup(diagram ?? emptyDiagram(diagramType), "New boundary");
+    applyEdit(added.diagram);
+    select({ kind: "group", id: added.id }, true);
+  };
+
+  /** Fixes every element where it is now, so the one just dragged stays where it was dropped. */
+  const keepPositions = () => {
+    if (!diagram) return;
+    const boundaries = new Map(nodes.filter((node) => node.type === "boundary").map((node) => [node.id, node.position]));
+    const positions = new Map(
+      nodes
+        .filter((node) => node.type !== "boundary")
+        .map((node) => {
+          const origin = node.parentId ? (boundaries.get(node.parentId) ?? { x: 0, y: 0 }) : { x: 0, y: 0 };
+          return [node.id, { x: origin.x + node.position.x, y: origin.y + node.position.y }];
+        }),
+    );
+    applyEdit(setPositions(diagram, positions));
+  };
+
+  /** Connects the element a connection was dragged from to the element it was dropped on, a handle or anywhere on it. */
+  const connect = (event: MouseEvent | TouchEvent, connection: FinalConnectionState) => {
+    if (!diagram || !connection.fromNode) return;
+    const point = "changedTouches" in event ? event.changedTouches[0] : event;
+    const dropped = point ? document.elementFromPoint(point.clientX, point.clientY)?.closest(".react-flow__node")?.getAttribute("data-id") : null;
+    const target = connection.toNode?.id ?? dropped;
+    if (!target) return;
+    const added = addEdge(diagram, connection.fromNode.id, target);
+    if (!added.id) return;
+    applyEdit(added.diagram);
+    select({ kind: "edge", id: added.id }, true);
+  };
+
+  const selectedNode = diagram && selection?.kind === "node" ? diagram.nodes.find((node) => node.id === selection.id) : undefined;
+  const isManual = diagram ? hasManualLayout(diagram) : false;
   const isOutdated = Boolean(diagram) && Boolean(status?.isOutdated);
   const generatedAt = status?.generatedAt ? new Date(status.generatedAt).toLocaleString() : null;
   const hint = isGeneratingGraph
     ? "Generating…"
-    : diagram === null
-      ? `No ${typeName} diagram yet`
-      : problems.length
-        ? "Parts of the agent's diagram do not match the schema and are left out; update the diagram to get them."
-        : isOutdated
-          ? "Files changed since the diagram was generated"
-          : null;
+    : filePath
+      ? filePath
+      : diagram === null
+        ? `No ${typeName} diagram yet`
+        : problems.length
+          ? "Parts of the agent's diagram do not match the schema and are left out; update the diagram to get them."
+          : isOutdated
+            ? "Files changed since the diagram was generated"
+            : null;
   const emptyText = diagram
-    ? "The diagram has no elements; update it to fill it."
+    ? "The diagram has no elements; add one or update it to fill it."
     : isErd
       ? "Generate the ERD from the session's changes, or add a table to start one by hand."
-      : `Generate the ${typeName} diagram to see it here.`;
+      : `Generate the ${typeName} diagram, or add an element to start one by hand.`;
+  const elementKinds = KINDS_BY_TYPE[diagramType].filter((kind) => kind !== "table");
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex items-center gap-3 border-b border-(--line) px-3 py-2.5 text-[13px]">
         <DiagramTypeDropdown sessionId={sessionId} />
-        <GenerateSplitButton
-          label={isGeneratingGraph ? "Generating…" : diagram ? "Update diagram" : "Generate diagram"}
-          isDisabled={isGeneratingGraph}
-          onGenerate={(instructions) => void refreshGraph(sessionId, diagramType, instructions)}
-        />
-        {isErd && diagram !== undefined ? (
-          <button type="button" onClick={addNewTable} disabled={isGeneratingGraph} title="Add a table to the diagram" className={SECONDARY_BUTTON_XS}>
-            <PlusIcon /> Table
+        {filePath ? null : (
+          <GenerateSplitButton
+            label={isGeneratingGraph ? "Generating…" : diagram ? "Update diagram" : "Generate diagram"}
+            isDisabled={isGeneratingGraph}
+            onGenerate={(instructions) => void refreshGraph(sessionId, diagramType, instructions)}
+          />
+        )}
+        {diagram !== undefined && !error ? (
+          isErd ? (
+            <button type="button" onClick={addNewTable} disabled={isGeneratingGraph} title="Add a table to the diagram" className={SECONDARY_BUTTON_XS}>
+              <PlusIcon /> Table
+            </button>
+          ) : (
+            <>
+              <Dropdown
+                title="Add an element to the diagram"
+                value=""
+                placeholder="+ Element"
+                options={elementKinds.map((kind) => ({ id: kind, name: KIND_NAMES[kind] }))}
+                onChange={(kind) => addNewElement(kind as ShapeKind)}
+                disabled={isGeneratingGraph}
+                className={SECONDARY_BUTTON_XS}
+              />
+              {diagramType === "c4-context" || diagramType === "c4-container" ? (
+                <button type="button" onClick={addNewGroup} disabled={isGeneratingGraph} title="Add a boundary to the diagram" className={SECONDARY_BUTTON_XS}>
+                  <PlusIcon /> Boundary
+                </button>
+              ) : null}
+            </>
+          )
+        ) : null}
+        {isManual ? (
+          <button type="button" onClick={() => diagram && applyEdit(clearPositions(diagram))} title="Drop the positions set by hand and lay the diagram out automatically" className={SECONDARY_BUTTON_XS}>
+            Auto-layout
           </button>
         ) : null}
+        {!filePath && diagram?.nodes.length ? (
+          <SaveDiagramButton sessionId={sessionId} diagram={diagram} content={() => serializeShapeDiagram(diagram)} onSaved={(path) => setDiagramFile(sessionId, path)} />
+        ) : null}
         <span
-          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph ? "text-neutral-400" : problems.length || isOutdated ? "text-amber-300/90" : "text-neutral-500"}`}
-          title={generatedAt ? `Diagram generated ${generatedAt}` : undefined}
+          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph ? "text-neutral-400" : !filePath && (problems.length || isOutdated) ? "text-amber-300/90" : "text-neutral-500"}`}
+          title={filePath ?? (generatedAt ? `Diagram generated ${generatedAt}` : undefined)}
         >
           {isGeneratingGraph ? <Spinner className="size-5 shrink-0" /> : null}
-          {hint ? <span className="truncate">{hint}</span> : null}
+          {hint ? <span className={`truncate ${filePath ? "font-mono text-[12px]" : ""}`}>{hint}</span> : null}
         </span>
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-          <DiagramStatusBadge status={status} hasDiagram={Boolean(diagram)} />
-          {error || generateError ? <p className="absolute inset-x-3 top-3 z-10 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-[13px] text-red-300">{error ?? generateError}</p> : null}
+        <div ref={canvasRef} className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+          {filePath ? null : <DiagramStatusBadge status={status} hasDiagram={Boolean(diagram)} />}
+          {error || generateError ? (
+            <div className="absolute inset-x-3 top-3 z-10 flex items-start gap-3 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-[13px] text-red-300">
+              <p className="min-w-0 flex-1">{error ?? generateError}</p>
+              {filePath ? (
+                <button type="button" onClick={() => setDiagramFile(sessionId, null)} className={SECONDARY_BUTTON_XS}>
+                  Back to the generated diagrams
+                </button>
+              ) : null}
+            </div>
+          ) : null}
           <ReactFlowProvider key={`${layoutVersion}:${zoomScale}`}>
             {diagram?.nodes.length ? (
               <ReactFlow
@@ -204,28 +333,38 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
                 edges={edges}
                 onNodesChange={onNodesChange}
                 onEdgesChange={onEdgesChange}
+                onInit={(instance) => {
+                  flowRef.current = instance;
+                }}
                 nodeTypes={SHAPE_NODE_TYPES}
                 edgeTypes={SHAPE_EDGE_TYPES}
-                onEdgeMouseEnter={(_event, edge) => setFocus((current) => ({ ...current, hoveredEdgeId: edge.id }))}
-                onEdgeMouseLeave={() => setFocus((current) => ({ ...current, hoveredEdgeId: null }))}
+                onEdgeMouseEnter={(_event, edge) => setHover((current) => ({ ...current, hoveredEdgeId: edge.id }))}
+                onEdgeMouseLeave={() => setHover((current) => ({ ...current, hoveredEdgeId: null }))}
                 onNodeMouseEnter={(_event, node) => {
                   if (node.type === "boundary") return;
-                  setFocus((current) => ({ ...current, hoveredNodeId: node.id }));
+                  setHover((current) => ({ ...current, hoveredNodeId: node.id }));
                 }}
-                onNodeMouseLeave={() => setFocus((current) => ({ ...current, hoveredNodeId: null }))}
-                onNodeClick={(_event, node) => {
-                  if (!isErd || node.type !== "table") return;
-                  setFocus((current) => ({ ...current, selectedNodeId: node.id }));
+                onNodeMouseLeave={() => setHover((current) => ({ ...current, hoveredNodeId: null }))}
+                onNodeClick={(_event, node) => select({ kind: node.type === "boundary" ? "group" : "node", id: node.id })}
+                onEdgeClick={(_event, edge) => select({ kind: "edge", id: edge.id })}
+                onPaneClick={() => setSelection(null)}
+                onNodeDragStop={(_event, node) => {
+                  // A press without a move keeps the automatic layout.
+                  const before = layoutRef.current.nodes.find((candidate) => candidate.id === node.id)?.position;
+                  if (before && before.x === node.position.x && before.y === node.position.y) return;
+                  keepPositions();
                 }}
-                onPaneClick={() => setFocus((current) => ({ ...current, selectedNodeId: null }))}
+                onConnectEnd={connect}
                 fitView
                 fitViewOptions={fitViewOptions}
                 minZoom={0.2}
                 maxZoom={2 * Math.max(1, zoomScale)}
                 colorMode="dark"
-                nodesDraggable={false}
-                nodesConnectable={false}
+                className={isErd ? undefined : "shape-canvas-editable"}
+                nodesDraggable
+                nodesConnectable={!isErd}
                 elementsSelectable={false}
+                deleteKeyCode={null}
                 zIndexMode="manual"
                 proOptions={{ hideAttribution: true }}
               >
@@ -239,15 +378,19 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
             )}
           </ReactFlowProvider>
         </div>
-        {selectedTable && diagram ? (
-          <TableEditor
-            key={selectedTable.id}
-            diagram={diagram}
-            table={selectedTable}
-            isNew={selectedTable.id === createdId}
-            onChange={applyEdit}
-            onClose={() => setFocus((current) => ({ ...current, selectedNodeId: null }))}
-          />
+        {diagram && selection ? (
+          isErd && selectedNode?.kind === "table" ? (
+            <TableEditor key={selectedNode.id} diagram={diagram} table={selectedNode} isNew={selectedNode.id === createdId} onChange={applyEdit} onClose={() => setSelection(null)} />
+          ) : (
+            <ShapeElementEditor
+              key={`${selection.kind}:${selection.id}`}
+              diagram={diagram}
+              selection={selection}
+              isNew={selection.id === createdId}
+              onChange={applyEdit}
+              onClose={() => setSelection(null)}
+            />
+          )
         ) : null}
       </div>
 
@@ -264,7 +407,9 @@ export function ShapeDiagramPanel({ sessionId, diagramType }: { sessionId: strin
           {diagram?.title ? `${diagram.title} · ` : ""}
           {isErd ? `${diagram?.nodes.length ?? 0} tables · ${diagram?.edges.length ?? 0} relationships` : `${diagram?.nodes.length ?? 0} elements · ${diagram?.edges.length ?? 0} connections`}
         </span>
-        {isErd && diagram?.nodes.length && !selectedTable ? <span className="shrink-0">Click a table to edit it</span> : null}
+        {diagram?.nodes.length && !selection ? (
+          <span className="shrink-0">{isErd ? "Click a table to edit it, drag it to move it" : "Click to edit, drag to move, drag from the dot below an element to connect it"}</span>
+        ) : null}
         {problems.length ? (
           <button type="button" onClick={() => setShowProblems((value) => !value)} className="shrink-0 text-amber-300/90 hover:text-amber-200">
             {problems.length} schema {problems.length === 1 ? "problem" : "problems"}

@@ -143,6 +143,7 @@ export function serializeShapeDiagram(diagram: ShapeDiagram): string {
       parent: node.parent,
       actor: node.actor,
       columns: node.columns?.map((column) => ({ name: column.name, type: column.type, isPrimaryKey: column.isPrimaryKey, isForeignKey: column.isForeignKey })),
+      position: node.position ? { x: node.position.x, y: node.position.y } : undefined,
       change: node.change,
     })),
     groups: diagram.groups?.map((group) => ({ id: group.id, label: group.label, change: group.change })),

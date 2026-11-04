@@ -32,7 +32,13 @@ use terminal::tmux;
 pub fn run() {
     let context = tauri::generate_context!();
     legacy_identifier::migrate(&context.config().identifier);
-    tauri::Builder::default()
+    #[cfg(all(target_os = "macos", debug_assertions))]
+    platform::webview_activation::ignore();
+    let builder = tauri::Builder::default();
+    // A debug build launches behind the active app (see platform/webview_activation.rs).
+    #[cfg(target_os = "macos")]
+    let builder = builder.activate_ignoring_other_apps(!cfg!(debug_assertions));
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(external_links::init())
         .plugin(tauri_plugin_dialog::init())

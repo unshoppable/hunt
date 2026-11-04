@@ -1,9 +1,9 @@
 //! The commands of a session's chat: sending a prompt with its images (and, in a sub chat about a file, the file's
-//! current text), the conversation so far, cancelling a turn, the agent's permission mode and config options, the
-//! answers to its permission requests, the screenshots and image files a prompt attaches, and declining a guardrail the
-//! agent suggested.
+//! current text) as a turn or into the running one, the conversation so far, cancelling a turn, the agent's permission mode and config options, the
+//! answers to its permission requests, the screenshots and image files a prompt attaches, the guardrails in the agent's
+//! context, and declining a guardrail the agent suggested.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use agent_client_protocol::schema::v1::{
     CancelNotification, ConfigOptionUpdate, ContentBlock, ContentChunk, EmbeddedResource, EmbeddedResourceResource, ImageContent, Meta,
@@ -16,19 +16,20 @@ use tauri::{AppHandle, State};
 use uuid::Uuid;
 
 use super::{drop_pending_permissions, live_session, note_remote_activity, set_mode, worktree_file, worktree_session};
-use crate::agent::acp::{message_time, publish_update, turn, LiveHandles, PermissionRegistry, SessionRegistry};
-use crate::agent::declined_guardrails;
+use crate::agent::acp::steering::{self, SteerOutcome};
+use crate::agent::acp::{message_time, publish_update, token_usage, turn, LiveHandles, PermissionRegistry, SessionRegistry};
+use crate::agent::claude_config::claude_dir;
+use crate::agent::{context_parts, declined_guardrails, loaded_context};
 use crate::platform::screenshots::{self, Screenshot};
+use crate::remote::transcript::local_project;
 use crate::session::attribution;
 use crate::session::link;
-use crate::session::store;
+use crate::session::store::{self, SessionRecord};
 use crate::session::summary;
 use crate::session::sync;
 
-/// Sends one user turn (the text plus the image files in `images`) and resolves with the stop reason once the
-/// agent finished. A sub chat about writing a file (a selection with a task) gets the file's current content
-/// ahead of the text, so the agent always sees the version on disk; a remote session's local edits reach its VM
-/// first. The finished turn is handed to the background summarizer, which refreshes the session's summary and title.
+/// Sends one user turn (the text plus the image files in `images`, see `prompt_content`) and resolves with the stop
+/// reason once the agent finished. The finished turn is handed to the background summarizer, which refreshes the session's summary and title.
 /// `message_id` is the id the chat shows the prompt under (see `run_turn`).
 #[tauri::command]
 pub async fn send_prompt(
@@ -39,11 +40,40 @@ pub async fn send_prompt(
     images: Vec<String>,
     message_id: String,
 ) -> Result<String, String> {
-    let mut blocks = prompt_blocks(&text, &images)?;
+    let blocks = prompt_content(&app, id, &text, &images).await?;
+    run_turn(&app, &registry, id, blocks, None, Some(message_id)).await
+}
+
+/// Sends a prompt like `send_prompt`, but into the turn the agent runs, which takes it in between its tool calls. Only a
+/// prompt the turn took in (`Injected`) is recorded as the user's message; otherwise the caller sends it as a turn.
+#[tauri::command]
+pub async fn steer_prompt(
+    app: AppHandle,
+    registry: State<'_, SessionRegistry>,
+    id: Uuid,
+    text: String,
+    images: Vec<String>,
+    message_id: String,
+) -> Result<SteerOutcome, String> {
+    let blocks = prompt_content(&app, id, &text, &images).await?;
+    let LiveHandles { connection, acp_session_id, history, .. } = live_session(&registry, id).await?;
+    let outcome = steering::steer(&connection, &acp_session_id, blocks.clone()).await?;
+    if outcome == SteerOutcome::Injected {
+        note_remote_activity(&app, id, chrono::Utc::now());
+        publish_prompt(&app, id, &history, &acp_session_id, &blocks, None, Some(message_id));
+    }
+    Ok(outcome)
+}
+
+/// The content blocks of a prompt to the agent of `id`. A sub chat about writing a file (a selection with a task) gets
+/// the file's current content ahead of the text, so the agent always sees the version on disk; a remote session's local
+/// edits reach its VM first.
+async fn prompt_content(app: &AppHandle, id: Uuid, text: &str, images: &[String]) -> Result<Vec<ContentBlock>, String> {
+    let mut blocks = prompt_blocks(text, images)?;
     if blocks.is_empty() {
         return Err("the prompt is empty".into());
     }
-    let record = store::find_session(&app, id)?;
+    let record = store::find_session(app, id)?;
     if let Some(selection) = record.selection.as_ref().filter(|selection| selection.task.is_some() && !selection.is_folder) {
         if let Ok(target) = worktree_file(&record, &selection.path) {
             // The agent on a VM knows the file by its path there; the local copy holds the same content once synced.
@@ -57,8 +87,8 @@ pub async fn send_prompt(
         }
     }
     // The agent on a VM sees the files saved here before it reads the prompt.
-    sync::flush(&app, id).await;
-    run_turn(&app, &registry, id, blocks, None, Some(message_id)).await
+    sync::flush(app, id).await;
+    Ok(blocks)
 }
 
 /// The current text of the file at `target` as an embedded resource block, which the agent receives as a context
@@ -85,14 +115,10 @@ async fn run_turn(
     let LiveHandles { connection, acp_session_id, history, turns } = live_session(registry, id).await?;
     note_remote_activity(app, id, chrono::Utc::now());
 
-    // The agent never echoes the prompt back, so the prompt and the turn's state go into the history and to every window
-    // from here: a window that did not send the prompt shows it and the running turn as well.
+    // The turn's state goes into the history and to every window from here: a window that did not send the prompt shows
+    // the running turn as well.
     let turn_start = history.lock().unwrap().len();
-    for block in &blocks {
-        let mut chunk = ContentChunk::new(block.clone()).meta(hidden_meta.clone());
-        chunk.message_id = message_id.clone().map(MessageId::new);
-        publish_update(app, id, &history, SessionNotification::new(acp_session_id.clone(), SessionUpdate::UserMessageChunk(chunk)));
-    }
+    publish_prompt(app, id, &history, &acp_session_id, &blocks, hidden_meta.clone(), message_id);
     turns.lock().unwrap().prompt_started();
     turn::report_turn(app, id, &history, &acp_session_id, true);
 
@@ -104,12 +130,37 @@ async fn run_turn(
     let response = response.map_err(|error| format!("failed to send the prompt: {error}"))?;
 
     note_remote_activity(app, id, chrono::Utc::now());
+    let tokens = token_usage::turn_tokens(response.meta.as_ref());
+    if tokens > 0 {
+        if let Err(error) = store::add_tokens_used(app, id, tokens) {
+            eprintln!("recording the tokens of session {id} failed: {error}");
+        }
+    }
     if hidden_meta.is_none() {
-        let turn = history.lock().unwrap()[turn_start..].to_vec();
+        // The summary follows the main agent; a subagent's work reaches it through the main agent's own replies.
+        let turn = history.lock().unwrap()[turn_start..].iter().filter(|notification| notification.session_id == acp_session_id).cloned().collect();
         summary::schedule(app.clone(), id, turn);
     }
 
     Ok(format!("{:?}", response.stop_reason))
+}
+
+/// Records `blocks` as the user's message `message_id` in the history and sends them to every window: the agent never
+/// echoes a prompt back, and a window that did not send it shows it as well. `hidden_meta` marks a hidden turn's chunks.
+fn publish_prompt(
+    app: &AppHandle,
+    id: Uuid,
+    history: &std::sync::Mutex<Vec<SessionNotification>>,
+    acp_session_id: &SessionId,
+    blocks: &[ContentBlock],
+    hidden_meta: Option<Meta>,
+    message_id: Option<String>,
+) {
+    for block in blocks {
+        let mut chunk = ContentChunk::new(block.clone()).meta(hidden_meta.clone());
+        chunk.message_id = message_id.clone().map(MessageId::new);
+        publish_update(app, id, history, SessionNotification::new(acp_session_id.clone(), SessionUpdate::UserMessageChunk(chunk)));
+    }
 }
 
 /// The content blocks of one prompt: the text (left out when blank) followed by one image block per file.
@@ -145,6 +196,33 @@ pub async fn session_history(registry: State<'_, SessionRegistry>, id: Uuid) -> 
     let history = live_session(&registry, id).await?.history;
     let history = history.lock().unwrap().clone();
     Ok(history)
+}
+
+/// The guardrails the agent of session `id` holds in its context window (`loaded_context`), read from the copy of its
+/// transcript on this Mac; none before its first turn.
+#[tauri::command]
+pub async fn loaded_context(app: AppHandle, id: Uuid) -> Result<Vec<loaded_context::ContextFile>, String> {
+    let record = worktree_session(&app, id)?;
+    let Some(transcript) = local_transcript(&record)? else { return Ok(Vec::new()) };
+    tauri::async_runtime::spawn_blocking(move || loaded_context::read(&transcript, &record.worktree_path))
+        .await
+        .map_err(|error| format!("failed to read the loaded context: {error}"))?
+}
+
+/// The text of the context window of session `id`'s agent as parts (`context_parts`), read like `loaded_context`.
+#[tauri::command]
+pub async fn context_parts(app: AppHandle, id: Uuid) -> Result<Vec<context_parts::ContextPart>, String> {
+    let record = worktree_session(&app, id)?;
+    let Some(transcript) = local_transcript(&record)? else { return Ok(Vec::new()) };
+    tauri::async_runtime::spawn_blocking(move || context_parts::read(&transcript))
+        .await
+        .map_err(|error| format!("failed to read the context: {error}"))?
+}
+
+/// The copy on this Mac of the transcript of `record`'s agent; `None` before the agent started.
+fn local_transcript(record: &SessionRecord) -> Result<Option<PathBuf>, String> {
+    let Some(acp_session_id) = &record.acp_session_id else { return Ok(None) };
+    Ok(Some(local_project(&record.worktree_path, &claude_dir()?).join(format!("{acp_session_id}.jsonl"))))
 }
 
 /// Cancels the turn the agent runs. A turn Claude Code runs on its own ends in the chat at once, since its end is known

@@ -309,6 +309,78 @@ describe("prompt queue", () => {
     expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
   });
 
+  describe("with an agent that steers", () => {
+    const steering = notification({ sessionUpdate: "session_info_update", _meta: { hunt: { steering: true } } });
+    const userTexts = () => useHuntStore.getState().chats[SESSION].items.flatMap((item) => (item.kind === "user" ? [item.text] : []));
+
+    it("sends a prompt sent during a turn into the turn instead of the queue", async () => {
+      useHuntStore.getState().applyUpdate(SESSION, steering);
+      const first = deferredTurn();
+      vi.mocked(invoke).mockReturnValueOnce(first.turn).mockResolvedValueOnce("injected");
+
+      const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+      await useHuntStore.getState().sendPrompt(SESSION, "two");
+
+      expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("steer_prompt", { id: SESSION, text: "two", images: [], messageId: expect.any(String) });
+      expect(useHuntStore.getState().chats[SESSION].queue).toEqual([]);
+      expect(userTexts()).toEqual(["one", "two"]);
+
+      first.finish("EndTurn");
+      await firstSend;
+      expect(useHuntStore.getState().chats[SESSION].isBusy).toBe(false);
+      expect(vi.mocked(invoke).mock.calls.filter(([command]) => command === "send_prompt")).toHaveLength(1);
+    });
+
+    it("queues the prompt the turn did not take in and steers no more once the agent cannot", async () => {
+      useHuntStore.getState().applyUpdate(SESSION, steering);
+      const first = deferredTurn();
+      vi.mocked(invoke).mockReturnValueOnce(first.turn).mockResolvedValueOnce("unsupported");
+
+      const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+      await useHuntStore.getState().sendPrompt(SESSION, "two");
+
+      expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ steers: false, queue: [expect.objectContaining({ text: "two" })] });
+      expect(userTexts()).toEqual(["one"]);
+      first.finish("Cancelled");
+      await firstSend;
+    });
+
+    it("sends the prompt as a turn of its own when the turn ended before it took the prompt in", async () => {
+      useHuntStore.getState().applyUpdate(SESSION, steering);
+      const first = deferredTurn();
+      let declineSteer: (outcome: string) => void = () => {};
+      const steer = new Promise<string>((resolve) => {
+        declineSteer = resolve;
+      });
+      vi.mocked(invoke).mockReturnValueOnce(first.turn).mockReturnValueOnce(steer).mockResolvedValue("EndTurn");
+
+      const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+      const secondSend = useHuntStore.getState().sendPrompt(SESSION, "two");
+      first.finish("EndTurn");
+      await firstSend;
+      declineSteer("promptRequired");
+      await secondSend;
+
+      expect(vi.mocked(invoke)).toHaveBeenCalledWith("send_prompt", { id: SESSION, text: "two", images: [], messageId: expect.any(String) });
+      expect(userTexts()).toEqual(["one", "two"]);
+      expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ isBusy: false, queue: [] });
+    });
+
+    it("queues /clear instead of steering it", async () => {
+      useHuntStore.getState().applyUpdate(SESSION, steering);
+      const first = deferredTurn();
+      vi.mocked(invoke).mockReturnValueOnce(first.turn);
+
+      const firstSend = useHuntStore.getState().sendPrompt(SESSION, "one");
+      await useHuntStore.getState().sendPrompt(SESSION, "/clear");
+
+      expect(useHuntStore.getState().chats[SESSION].queue.map((prompt) => prompt.text)).toEqual(["/clear"]);
+      expect(vi.mocked(invoke)).not.toHaveBeenCalledWith("steer_prompt", expect.anything());
+      first.finish("Cancelled");
+      await firstSend;
+    });
+  });
+
   it("generates a diagram apart from the chat: the chat stays idle, a prompt runs meanwhile and a second click waits", async () => {
     const generation = deferredTurn();
     const promptTurn = deferredTurn();

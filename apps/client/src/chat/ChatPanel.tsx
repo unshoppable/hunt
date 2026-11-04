@@ -1,8 +1,8 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useIdeStore } from "../ide/ide.store";
 import { useAgentDefaultsStore } from "./agent-defaults.store";
 import { useHuntStore } from "../sessions/hunt.store";
-import { hasPendingQuestion } from "./chat.store-slice";
+import { hasPendingQuestion, steersPrompt } from "./chat.store-slice";
 import { findSelectOption, listChoiceOptions, listModes } from "./config-options.utils";
 import { MessageList } from "./messages/MessageList";
 import { PermissionPrompt } from "./PermissionPrompt";
@@ -30,6 +30,11 @@ import { SubChatPopover } from "./sub-chat/SubChatPopover";
 import { useSubChatPopover } from "./sub-chat/sub-chat-popover.hook";
 import { SaveGuardrailButton } from "./guardrail/SaveGuardrailButton";
 import { ContextMeter } from "./ContextMeter";
+import { AgentStrip } from "./subagents/AgentStrip";
+import { SubagentHeader, SubagentUsageLine } from "./subagents/SubagentHeader";
+import { useAgentViewStore } from "./subagents/agent-view.store";
+import { listSubagents, steppedAgent, subagentName } from "./subagents/subagent-list.utils";
+import { LoadedContextButton } from "./loaded-context/LoadedContextButton";
 import { HEADER_BAR } from "../ui/bars.constants";
 import { isShortcut } from "../ui/shortcuts.utils";
 import { repoName } from "../common/path/path.utils";
@@ -116,6 +121,14 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const guardrailSuggestion = isBusy ? null : findGuardrailSuggestion(chat?.items ?? [], session?.dismissedGuardrails ?? []);
   const hasQuestion = !!chat && !isCreating && hasPendingQuestion(chat);
   const hasPermission = Boolean(chat?.permission);
+  const subagents = chat?.subagents;
+  const listedSubagents = useMemo(() => listSubagents(subagents ?? {}), [subagents]);
+  const selectAgent = useAgentViewStore((state) => state.selectAgent);
+  const selectedAgentId = useAgentViewStore((state) => state.selected[sessionId] ?? null);
+  /** The subagent whose chat shows; the main agent's shows while none is picked or the picked one is gone. */
+  const shownSubagent = selectedAgentId ? subagents?.[selectedAgentId] : undefined;
+  /** The agent whose permission request waits: a subagent by its ID, the main agent as `null`; `undefined` while none waits. */
+  const askingAgent = chat?.permission ? (subagents?.[chat.permission.sessionId] ? chat.permission.sessionId : null) : undefined;
   const moveText = chat ? moveStatus(chat) : null;
   const modeId = chat?.modeId ?? "default";
   const modes = listModes(chat?.configOptions ?? []);
@@ -153,6 +166,9 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
       } else if (isShortcut(event, "chat.cycleMode") && !hasPermission) {
         event.preventDefault();
         cycleMode();
+      } else if ((isShortcut(event, "chat.nextAgent") || isShortcut(event, "chat.previousAgent")) && listedSubagents.length) {
+        event.preventDefault();
+        selectAgent(sessionId, steppedAgent(listedSubagents, shownSubagent?.sessionId ?? null, isShortcut(event, "chat.nextAgent") ? 1 : -1));
       }
     }
     window.addEventListener("keydown", onKeyDown);
@@ -178,7 +194,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     void readGuardrailDirs(sessionId).then((dirs) => ensureGuardrailReadmes(sessionId, dirs));
   }, [sessionId, worktreePath, isCreating, worktreeEditVersion]);
 
-  const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}`);
+  const followEnd = useFollowScroll(scrollRef, columnRef, `${sessionId}:${hasSession}:${shownSubagent?.sessionId ?? ""}`);
 
   /** Shows the file of `target` in this session's "Editor" tab, with its lines selected. */
   const openInEditor = useCallback(
@@ -254,24 +270,44 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         }
       />
 
+      {listedSubagents.length ? (
+        <AgentStrip
+          listed={listedSubagents}
+          selected={shownSubagent?.sessionId ?? null}
+          mainTokens={chat?.contextUsage?.used ?? null}
+          asking={askingAgent}
+          onSelect={(agentId) => selectAgent(sessionId, agentId)}
+        />
+      ) : null}
+
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-5 pr-12 pl-5">
         <div ref={columnRef} className="chat-column">
-          {session.selection && !session.selection.isFolder ? (
+          {shownSubagent ? (
+            <SubagentHeader
+              subagent={shownSubagent}
+              parent={subagents?.[shownSubagent.parentSessionId] ?? null}
+              onSelect={(agentId) => selectAgent(sessionId, agentId)}
+            />
+          ) : session.selection && !session.selection.isFolder ? (
             <div className="mb-5">
               <SelectionCard selection={session.selection} isOpen onOpen={openInEditor} />
             </div>
           ) : null}
           <FileModelContext value={loadFileModel}>
             <MessageList
-              items={chat?.items ?? []}
-              plan={chat?.plan ?? []}
-              isBusy={(isBusy && !chat?.isHiddenTurn) || (isCreating && Boolean(chat?.items.length))}
+              key={shownSubagent?.sessionId ?? "main"}
+              items={shownSubagent ? shownSubagent.items : (chat?.items ?? [])}
+              plan={shownSubagent ? shownSubagent.plan : (chat?.plan ?? [])}
+              isBusy={shownSubagent ? shownSubagent.state === "running" : (isBusy && !chat?.isHiddenTurn) || (isCreating && Boolean(chat?.items.length))}
               isVerbose={isVerbose}
               basePath={remote?.worktreePath ?? session.worktreePath}
               fileIndex={fileIndex}
               onOpenFile={openInEditor}
               readFile={readFile}
-              unreadAfterMessageId={unreadAfterMessageId}
+              unreadAfterMessageId={shownSubagent ? null : unreadAfterMessageId}
+              subagents={subagents}
+              askingSessionId={chat?.permission?.sessionId ?? null}
+              onOpenSubagent={(agentId) => selectAgent(sessionId, agentId)}
             />
           </FileModelContext>
           {chat?.isLoading ? (
@@ -279,6 +315,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           ) : null}
           {chat?.permission ? (
             <PermissionPrompt
+              agentName={askingAgent && subagents?.[askingAgent] ? subagentName(subagents[askingAgent]) : null}
               permission={chat.permission}
               onAnswer={(optionId) => void answerPermission(sessionId, chat.permission!.requestId, optionId)}
             />
@@ -369,14 +406,20 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         onDraftChange={(draft) => setPromptDraft(sessionId, draft)}
         isBusy={isBusy || Boolean(chat?.move) || isStarting}
         isStarting={isStarting}
+        steers={steersPrompt(chat)}
         isBlocked={hasPermission}
         queue={chat?.queue ?? []}
         onTakeQueue={() => takeQueue(sessionId)}
         onUnqueue={(promptId) => unqueuePrompt(sessionId, promptId)}
+        placeholder={shownSubagent ? "Message the main agent" : undefined}
         header={
           session.isLive ? (
             <div className="flex items-center gap-3">
-              {chat?.contextUsage ? <ContextMeter usage={chat.contextUsage} /> : null}
+              {shownSubagent ? (
+                <SubagentUsageLine subagent={shownSubagent} />
+              ) : chat?.contextUsage ? (
+                <ContextMeter usage={chat.contextUsage} tokensUsed={session.tokensUsed} />
+              ) : null}
               <SaveGuardrailButton
                 suggestion={guardrailSuggestion}
                 isDisabled={hasPermission}
@@ -388,12 +431,15 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         modeId={remote ? null : modeId}
         modes={modes}
         configSelects={configSelects}
+        context={session.acpSessionId ? <LoadedContextButton sessionId={sessionId} onOpenFile={(path) => openInEditor({ path })} /> : null}
         commands={[CLEAR_COMMAND, ...(chat?.commands ?? [])]}
         onSend={(text, images) => {
+          selectAgent(sessionId, null);
           followEnd();
           void sendPrompt(sessionId, text, images);
         }}
         onSendNow={(text, images) => {
+          selectAgent(sessionId, null);
           followEnd();
           void sendPromptNow(sessionId, text, images);
         }}

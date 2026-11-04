@@ -27,7 +27,9 @@ tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 # `preserve_order`: hunt.json is read, extended and written back as a `Value` (`agent/swf_skills.rs`), keeping its key order.
 serde_json = { version = "1", features = ["preserve_order"] }
-agent-client-protocol = { version = "3", features = ["process"] }
+# `unstable_subagents` gives the `subagent_update` session update the native subagent sessions map onto
+# (`agent/acp/subagents.rs`); pinned to the minor version, since an unstable feature may change within `3.x`.
+agent-client-protocol = { version = "~3.3", features = ["process", "unstable_subagents"] }
 tokio = { version = "1", features = ["full"] }
 notify-debouncer-full = "0.7"
 uuid = { version = "1", features = ["v4", "v5", "serde"] }
@@ -50,6 +52,8 @@ tokio-tungstenite = { version = "0.30", default-features = false, features = ["c
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 # Brings the Chrome of a local session to the front (`agent/browser.rs`).
 objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "libc", "NSRunningApplication"] }
+# Keeps wry from activating the debug build with every new webview (`platform/webview_activation.rs`).
+objc2 = "0.6"
 # The line diff of the editor's change markers and the diff views (`ide/line_diff.rs`).
 imara-diff = { version = "0.2", default-features = false }
 

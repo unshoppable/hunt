@@ -1,4 +1,4 @@
-import { DEFAULT_PANES, FONT_FAMILY_PRESETS, PANE_RANGES, useSettingsStore, type NumericPaneSetting, type PaneKey, type PaneSettings } from "../settings.store";
+import { DEFAULT_DIAGRAM_SAVE_DIR, DEFAULT_PANES, FONT_FAMILY_PRESETS, PANE_RANGES, useSettingsStore, type NumericPaneSetting, type PaneKey, type PaneSettings } from "../settings.store";
 import { FIELD_LABELS, SECTIONS, type Section } from "../pane-sections.data";
 import { PageHeader, TextRow } from "../SettingsFields";
 
@@ -7,19 +7,38 @@ function isPaneDefault(pane: PaneKey, settings: PaneSettings): boolean {
   return fields.every((field) => settings[field] === DEFAULT_PANES[pane][field]);
 }
 
+/** The pane's appearance fields; the Architecture page adds the folder diagrams are saved into, which its reset covers too. */
 export function PaneSettingsPage({ pane, title, hint, fields }: Section) {
   const settings = useSettingsStore((state) => state.panes[pane]);
   const resetPane = useSettingsStore((state) => state.resetPane);
+  const diagramSaveDir = useSettingsStore((state) => state.diagramSaveDir);
+  const setDiagramSaveDir = useSettingsStore((state) => state.setDiagramSaveDir);
+  const isArchitecture = pane === "architecture";
+  const isDefault = isPaneDefault(pane, settings) && (!isArchitecture || diagramSaveDir === DEFAULT_DIAGRAM_SAVE_DIR);
+  const reset = () => {
+    resetPane(pane);
+    if (isArchitecture) {
+      setDiagramSaveDir(DEFAULT_DIAGRAM_SAVE_DIR);
+    }
+  };
 
   return (
     <section>
-      <PageHeader title={title} hint={hint} isDefault={isPaneDefault(pane, settings)} onReset={() => resetPane(pane)} />
+      <PageHeader title={title} hint={hint} isDefault={isDefault} onReset={reset} />
       <div className="flex flex-col gap-2">
         {fields.map((field) => {
           if (field === "background") return <ColorRow key={field} pane={pane} />;
           if (field === "fontFamily") return <FontFamilyRow key={field} pane={pane} />;
           return <NumberRow key={field} pane={pane} field={field} />;
         })}
+        {isArchitecture ? (
+          <>
+            <TextRow label="Save diagrams in" ariaLabel="Folder the Save button of a diagram writes into" value={diagramSaveDir} onChange={setDiagramSaveDir} placeholder={DEFAULT_DIAGRAM_SAVE_DIR} isMonospace />
+            <p className="text-[13px] leading-snug text-neutral-500">
+              Worktree-relative folder the Save button of a C4, state, ERD or process diagram writes into. A <code>*</code> segment stands for every subfolder there, so <code>{DEFAULT_DIAGRAM_SAVE_DIR}</code> offers one folder per app.
+            </p>
+          </>
+        ) : null}
       </div>
     </section>
   );

@@ -1,54 +1,178 @@
-import { useEffect, useRef, useState } from "react";
-import { formatRelativeTime } from "../common/time/relative-time.utils";
+import { useRef, useState } from "react";
 import type { DiagramType } from "../common/diagram/diagram.types";
 import type { GraphStatus } from "./graph.types";
+import { commands } from "../ipc/commands";
 import { useSettingsStore } from "../settings/settings.store";
 import { BUTTON_BASE, PRIMARY, PRIMARY_BUTTON_LG, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { confirmDestructive } from "../ui/confirm.utils";
 import { Dropdown } from "../ui/Dropdown";
 import { ChevronDownIcon } from "../ui/Icons";
 import { useDismiss } from "../ui/dismiss.hook";
+import { errorText } from "../ui/error-text.utils";
+import { baseName, dirName } from "../common/path/path.utils";
 import { DIAGRAM_TYPES } from "./diagram-types.constants";
+import { defaultDiagramName, diagramFilePath, expandSaveFolders } from "./diagram-save.utils";
 
 const BADGE_BASE = "absolute top-3 left-3 z-10 rounded-md border px-2 py-0.5 text-[12px] font-medium";
 
 const DIAGRAM_OPTIONS = DIAGRAM_TYPES.map((type) => ({ id: type.id, name: type.name, description: type.description }));
 
-/** Picks which diagram the Architecture tab shows for `sessionId`; the choice is remembered per session. */
+/** Option id of the diagram file the tab shows, which no diagram type uses. */
+const FILE_OPTION = "file";
+
+/**
+ * Picks which diagram the Architecture tab shows for `sessionId`; the choice is remembered per session. While the tab
+ * shows a diagram file, the file is the first option, and picking a type returns to the generated diagrams.
+ */
 export function DiagramTypeDropdown({ sessionId }: { sessionId: string }) {
-  const value = useSettingsStore((state) => state.diagramTypes[sessionId] ?? "dependencies");
+  const diagramType = useSettingsStore((state) => state.diagramTypes[sessionId] ?? "dependencies");
+  const file = useSettingsStore((state) => state.diagramFiles[sessionId]);
   const setDiagramType = useSettingsStore((state) => state.setDiagramType);
-  return <Dropdown title="Diagram type" value={value} options={DIAGRAM_OPTIONS} onChange={(id) => setDiagramType(sessionId, id as DiagramType)} className={SECONDARY_BUTTON_XS} />;
+  const options = file ? [{ id: FILE_OPTION, name: baseName(file), description: file }, ...DIAGRAM_OPTIONS] : DIAGRAM_OPTIONS;
+  return (
+    <Dropdown
+      title={file ? `Diagram file ${file}` : "Diagram type"}
+      value={file ? FILE_OPTION : diagramType}
+      options={options}
+      onChange={(id) => {
+        if (id !== FILE_OPTION) {
+          setDiagramType(sessionId, id as DiagramType);
+        }
+      }}
+      className={SECONDARY_BUTTON_XS}
+    />
+  );
 }
 
 /**
- * "Outdated" while worktree files changed after the diagram was generated, "Up to date" otherwise, followed by how long
- * ago it was generated; nothing without a diagram. Floats in the top-left corner of the diagram canvas, so its parent
- * must be positioned.
+ * Saves a generated diagram into the repository: a popover offers the folders the save pattern from the settings
+ * names (one per app with the default `apps/*` pattern) and a file name, writes the file there as a worktree change
+ * and hands its path to `onSaved`. Overwriting an existing file asks first.
+ */
+export function SaveDiagramButton({ sessionId, diagram, content, onSaved }: { sessionId: string; diagram: { type: string; title?: string }; content: () => string; onSaved: (path: string) => void }) {
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const pattern = useSettingsStore((state) => state.diagramSaveDir);
+  const [isOpen, setIsOpen] = useState(false);
+  const [folders, setFolders] = useState<string[] | null>(null);
+  const [folder, setFolder] = useState("");
+  const [name, setName] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  const close = () => setIsOpen(false);
+  useDismiss(rootRef, close, { anchorRefs: [buttonRef], isEnabled: isOpen });
+
+  const open = () => {
+    setIsOpen(true);
+    setError(null);
+    setName(defaultDiagramName(diagram));
+    setFolders(null);
+    const listFolders = async (path: string) => (await commands.listDir(sessionId, path)).filter((entry) => entry.isDir).map((entry) => entry.name);
+    void expandSaveFolders(pattern, listFolders).then((found) => {
+      setFolders(found);
+      setFolder((current) => (found.includes(current) ? current : (found[0] ?? "")));
+    });
+  };
+
+  const save = async () => {
+    const path = diagramFilePath(folder, name);
+    setIsSaving(true);
+    try {
+      const existing = await commands.listDir(sessionId, dirName(path)).catch(() => []);
+      if (existing.some((entry) => entry.name === baseName(path)) && !(await confirmDestructive(`${path} exists already. Overwrite it?`, "Overwrite"))) return;
+      await commands.writeFile(sessionId, path, content());
+      close();
+      onSaved(path);
+    } catch (reason) {
+      setError(`Saving failed: ${errorText(reason)}`);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const canSave = Boolean(folder) && Boolean(name.trim()) && !isSaving;
+  return (
+    <div className="relative inline-flex shrink-0">
+      <button
+        ref={buttonRef}
+        type="button"
+        onClick={() => (isOpen ? close() : open())}
+        aria-haspopup="dialog"
+        aria-expanded={isOpen}
+        title="Save the diagram into the repository"
+        className={SECONDARY_BUTTON_XS}
+      >
+        Save…
+      </button>
+      {isOpen ? (
+        <div ref={rootRef} role="dialog" aria-label="Save diagram" className="absolute top-full left-0 z-20 mt-1 flex w-[28rem] max-w-[calc(100vw-2rem)] flex-col gap-2 rounded-md border border-neutral-600 bg-(--surface-inset) p-2 text-[13px] shadow-lg">
+          <div className="flex flex-col gap-1">
+            <span className="text-neutral-400">Folder</span>
+            {folders === null ? (
+              <span className="text-neutral-500">Looking for folders…</span>
+            ) : folders.length ? (
+              <div role="listbox" aria-label="Folder" className="flex max-h-48 flex-col overflow-y-auto rounded border border-neutral-600 bg-(--surface-input) p-0.5">
+                {folders.map((path) => (
+                  <button
+                    key={path}
+                    type="button"
+                    role="option"
+                    aria-selected={path === folder}
+                    onClick={() => setFolder(path)}
+                    className={`truncate rounded px-2 py-1 text-left font-mono text-[12px] ${path === folder ? "bg-blue-500/25 text-neutral-100" : "text-neutral-300 hover:bg-(--row-hover)"}`}
+                  >
+                    {path}
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <span className="text-amber-300/90">No folder matches {pattern}; change the pattern under Settings → Architecture.</span>
+            )}
+          </div>
+          <label className="flex flex-col gap-1">
+            <span className="text-neutral-400">File name</span>
+            <input
+              type="text"
+              value={name}
+              spellCheck={false}
+              autoFocus
+              onChange={(event) => setName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" && canSave) {
+                  event.preventDefault();
+                  void save();
+                }
+              }}
+              className="h-7 rounded border border-neutral-600 bg-(--surface-input) px-2"
+            />
+            {folder && name.trim() ? <span className="truncate text-[12px] text-neutral-500">{diagramFilePath(folder, name)}</span> : null}
+          </label>
+          {error ? <p className="text-red-300">{error}</p> : null}
+          <div className="flex justify-end">
+            <button type="button" disabled={!canSave} onClick={() => void save()} className={PRIMARY_BUTTON_XS}>
+              {isSaving ? "Saving…" : "Save"}
+            </button>
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * "Outdated" while worktree files changed after the diagram was generated, "Up to date" otherwise; nothing without a
+ * diagram. Floats in the top-left corner of the diagram canvas, so its parent must be positioned.
  */
 export function DiagramStatusBadge({ status, hasDiagram }: { status: GraphStatus | null; hasDiagram: boolean }) {
-  const [now, setNow] = useState(Date.now);
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(timer);
-  }, []);
-
   if (!hasDiagram) return null;
-  const generatedAt = status?.generatedAt ? new Date(status.generatedAt) : null;
-  const generatedAtText = generatedAt?.toLocaleString();
-  const age = generatedAt ? <span className="font-normal opacity-75"> · generated {formatRelativeTime(generatedAt.getTime(), now)}</span> : null;
   return status?.isOutdated ? (
-    <span
-      className={`${BADGE_BASE} border-amber-400/30 bg-amber-400/10 text-amber-300`}
-      title={generatedAtText ? `Generated ${generatedAtText}; files changed since.` : "Files changed since the diagram was generated."}
-    >
-      Outdated{age}
+    <span className={`${BADGE_BASE} border-amber-400/30 bg-amber-400/10 text-amber-300`} title="Files changed since the diagram was generated.">
+      Outdated
     </span>
   ) : (
-    <span
-      className={`${BADGE_BASE} border-emerald-400/30 bg-emerald-400/10 text-emerald-300`}
-      title={generatedAtText ? `Generated ${generatedAtText}; no files changed since.` : "No files changed since the diagram was generated."}
-    >
-      Up to date{age}
+    <span className={`${BADGE_BASE} border-emerald-400/30 bg-emerald-400/10 text-emerald-300`} title="No files changed since the diagram was generated.">
+      Up to date
     </span>
   );
 }

@@ -41,6 +41,7 @@ function session(id: string, parentId: string | null, reviewComments: ReviewComm
     mode: "edit",
     pushTarget: "main",
     dismissedGuardrails: [],
+    tokensUsed: 0,
   };
 }
 

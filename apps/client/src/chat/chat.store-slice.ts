@@ -3,7 +3,7 @@ import { emit } from "@tauri-apps/api/event";
 import type { AvailableCommand, PlanEntry, SessionConfigOption, SessionNotification } from "@agentclientprotocol/sdk";
 import { assetUrl, commands } from "../ipc/commands";
 import type { StoredBrowserAnnotation } from "../../../../libs/domain/src/review/browser-annotation.utils.ts";
-import type { ChatItem, MessageTimesEvent, PendingPermission, PermissionEvent, PermissionWithdrawnEvent, Screenshot } from "./chat.types";
+import type { ChatItem, MessageTimesEvent, PendingPermission, PermissionEvent, PermissionWithdrawnEvent, Screenshot, SteerOutcome, SubagentChat } from "./chat.types";
 import type { GuardrailDeclineReason } from "./guardrail/guardrail-suggestion.types";
 import type { GuardrailSuggestion } from "./guardrail/guardrail-suggestion.utils";
 import type { DiagramType } from "../common/diagram/diagram.types";
@@ -40,7 +40,10 @@ export const SESSION_MODES: SessionMode[] = [
 ];
 
 export type SessionChat = {
+  /** The main agent's chat; a subagent's card stands for its chat, which `subagents` holds. */
   items: ChatItem[];
+  /** The subagents of the conversation by their child session ID, in the order they started. */
+  subagents: Record<string, SubagentChat>;
   plan: PlanEntry[];
   commands: AvailableCommand[];
   modeId: string;
@@ -50,6 +53,11 @@ export type SessionChat = {
   /** Unknown until the agent finished its first turn. */
   contextUsage: ContextUsage | null;
   isBusy: boolean;
+  /**
+   * Whether the agent takes a prompt into the running turn (`_session/steering`), as the backend reported when it
+   * connected; then a prompt sent during a turn goes into it instead of the queue (see `steersPrompt`).
+   */
+  steers: boolean;
   /**
    * Prompts sent while a turn was running or the agent was starting, in sending order; each one starts the next turn as
    * soon as the previous turn ends or the agent runs. A stopped or failed turn, or a failed start, leaves them here for
@@ -122,9 +130,9 @@ export type ChatSlice = {
   /** Rebuilds the chat of a live session from the backend's history when this store has none (after a webview reload). */
   loadHistory: (id: string) => Promise<void>;
   /**
-   * Sends `text` with `images` as one turn. While a turn is running or the session moves, the prompt is queued instead
-   * and sent once the running turn or the move ended; the returned promise then resolves at once. `/clear` starts the
-   * conversation over instead.
+   * Sends `text` with `images` as one turn. While a turn is running the prompt goes into it when the agent steers (see
+   * `steersPrompt`); otherwise, and while the session moves, the prompt is queued and sent once the running turn or the
+   * move ended, and the returned promise resolves at once. `/clear` starts the conversation over instead.
    */
   sendPrompt: (id: string, text: string, images?: Screenshot[]) => Promise<void>;
   /**
@@ -199,6 +207,14 @@ export function hasPendingQuestion(chat: SessionChat): boolean {
   if (chat.isBusy || chat.queue.length > 0 || chat.permission) return false;
   const last = chat.items[chat.items.length - 1];
   return last?.kind === "agent" && asksQuestion(last.text);
+}
+
+/**
+ * Whether a prompt sent to `chat` now goes into the running turn instead of the queue: the agent steers and a turn of
+ * the user's runs with nothing queued ahead. A move, a starting agent and a hidden turn queue it.
+ */
+export function steersPrompt(chat: SessionChat | undefined): boolean {
+  return Boolean(chat?.steers && chat.isBusy && !chat.isHiddenTurn && !chat.move && !chat.isLoading && !chat.queue.length);
 }
 
 /** Stop reason the backend reports for a turn the user interrupted (the Debug form of the ACP `StopReason::Cancelled`). */
@@ -465,7 +481,27 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
 }
 
 export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): ChatSlice {
-  const { runningTurnIds, updateChat, applyUpdates, rememberCommandsOf, noteTurnEnded, updateChatTakingQueue, runPrompt, interruptToSend } = turns;
+  const { runningTurnIds, updateChat, applyUpdates, rememberCommandsOf, noteTurnEnded, updateChatTakingQueue, runPrompt, interruptToSend, ownPromptItem } = turns;
+
+  /**
+   * Sends `prompt` into the running turn of `id`, shown in the chat meanwhile; resolves with whether the turn took it in.
+   * Otherwise the chat is as before, for the caller to queue or send the prompt; an agent or relay that cannot steer
+   * gets no further prompts to steer.
+   */
+  async function steerPrompt(id: string, prompt: PromptDraft): Promise<boolean> {
+    const item = ownPromptItem(prompt);
+    updateChat(id, (chat) => ({ ...chat, items: [...chat.items, item] }));
+    let outcome: SteerOutcome | null = null;
+    try {
+      outcome = await commands.steerPrompt(id, prompt.text, prompt.images.map((image) => image.path), item.messageId);
+    } catch (error) {
+      // The prompt queues instead, as for an agent that cannot steer.
+      console.warn(`steering the turn of ${id} failed: ${String(error)}`);
+    }
+    if (outcome === "injected") return true;
+    updateChat(id, (chat) => ({ ...chat, items: chat.items.filter((candidate) => candidate !== item), steers: chat.steers && outcome !== "unsupported" }));
+    return false;
+  }
 
   /** Drops the "unread" line of the session `id`; a prompt the user sends there shows they read what the line marked. */
   function dropUnreadLine(id: string) {
@@ -505,6 +541,7 @@ export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): C
 
     sendPrompt: async (id, text, images = []) => {
       dropUnreadLine(id);
+      if (steersPrompt(get().chats[id]) && !isClearPrompt(text) && (await steerPrompt(id, { text, images }))) return;
       const chat = get().chats[id];
       const queued = { id: nextItemId(), text, images };
       // A running turn, a move or a starting agent (the session is loading or being created) gets the prompt once it ended.
@@ -691,7 +728,7 @@ export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): C
     applyPermission: (event) => {
       updateChat(event.huntSessionId, (chat) => ({
         ...chat,
-        permission: { requestId: event.requestId, toolCall: event.request.toolCall, options: event.request.options },
+        permission: { requestId: event.requestId, sessionId: event.request.sessionId, toolCall: event.request.toolCall, options: event.request.options },
       }));
     },
 

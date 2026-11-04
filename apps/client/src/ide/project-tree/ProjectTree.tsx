@@ -9,9 +9,13 @@ import { useHuntStore } from "../../sessions/hunt.store";
 import { AgentButton } from "../../ui/AgentButton";
 import { confirmDestructive } from "../../ui/confirm.utils";
 import { dirName, outermostPaths, renamedPath } from "../../common/path/path.utils";
+import { isDiagramFilePath } from "../../common/diagram/diagram-file.utils";
+import { showDiagramFile } from "../../sessions/diagram-file-requests.hook";
+import { useSettingsStore } from "../../settings/settings.store";
 import { shortcutCommand } from "../../ui/shortcuts.utils";
 import { useShortcutLabel } from "../../ui/shortcut-label.hook";
 import { UnsavedDot } from "../../ui/UnsavedDot";
+import { ChevronIcon as SubmenuChevronIcon } from "../../ui/Icons";
 import { useDismiss } from "../../ui/dismiss.hook";
 import { useLoad } from "../../ui/load.hook";
 import { errorText } from "../../ui/error-text.utils";
@@ -26,16 +30,20 @@ import { EMPTY_MARKS, FOLDER_COLORS, FOLDER_COLOR_NAMES, markedColor, useFolderC
 import { useIdeStore } from "../ide.store";
 import { selectionChatsFor } from "../selection/selection-chats.utils";
 import { useBusyChatIds, useUnseenChatIds } from "../selection/selection-chats.hook";
-import { NewFolderDialog } from "./NewFolderDialog";
+import { NewPathDialog } from "./NewPathDialog";
+import { NewPathMenuItems } from "./NewPathMenu";
 import { RenamePathDialog } from "./RenamePathDialog";
 
 type Row = { path: string; name: string; isDir: boolean; depth: number };
 
-/** The dialog open over the tree: a new folder inside `parent` (`""` is the worktree), or the rename of a row. */
-type TreeDialog = { type: "newFolder"; parent: string } | { type: "rename"; path: string; isDir: boolean };
+/** The dialog open over the tree: a new file or folder inside `parent` (`""` is the worktree), or the rename of a row. */
+type TreeDialog = { type: "new"; parent: string; isDir: boolean } | { type: "rename"; path: string; isDir: boolean };
 
 /** The shortcuts the tree takes while it has the focus; the rest navigate it. */
-const TREE_COMMANDS = ["changes.copyPath", "editor.deleteInTree", "editor.renameInTree", "editor.newFolderInTree"] as const;
+const TREE_COMMANDS = ["changes.copyPath", "editor.deleteInTree", "editor.renameInTree", "editor.newInTree", "editor.newFolderInTree"] as const;
+
+/** The New menu that ⌘N opens below the row `path`, at the left edge of its icon. */
+type NewMenuState = { x: number; y: number; path: string };
 
 /** The file or folder row whose agent button was clicked. */
 export type ProjectTreeTarget = { path: string; isFolder: boolean };
@@ -73,8 +81,9 @@ function deleteQuestion(entries: readonly Pick<Row, "path" | "isDir">[]): string
  * The project view: a lazily listed tree of the worktree with WebStorm's file icons, changelist colors and
  * file colors (a folder marked through its context menu tints itself and everything below it; the marks are
  * kept per repository, see folder-colors.store.ts). A click selects a row, ⇧-click every row from the last clicked one to it,
- * ⌘-click adds or removes a row. The context menu also copies the absolute paths of the selected rows (⌃⇧C), creates a
- * folder inside the row's folder, renames the row with its usages (⇧F6, see RenamePathDialog.tsx: its tabs, documents
+ * ⌘-click adds or removes a row. The context menu also copies the absolute paths of the selected rows (⌃⇧C), creates an
+ * empty file or a folder inside the row's folder through its New submenu (⌘N opens the same menu below the selected row;
+ * a new file opens in the editor), renames the row with its usages (⇧F6, see RenamePathDialog.tsx: its tabs, documents
  * and folder colors follow) and deletes the selected rows (⌘⌫), closing their tabs. The selection changes on click, with the arrow keys and on `revealRequest`
  * (⇧⌘2), never when the editor's active tab changes; Enter opens the selected file. `refreshVersion` relists every
  * open directory, or only those whose entries changed when `refreshChanges` names the paths behind its bump. Every file
@@ -116,8 +125,11 @@ export function ProjectTree({
   const [error, setError] = useState<string | null>(null);
   const [scrollTarget, setScrollTarget] = useState<string | null>(null);
   const [contextMenu, setContextMenu] = useState<ContextMenuState | null>(null);
+  const [isNewSubmenuOpen, setIsNewSubmenuOpen] = useState(false);
+  const [newMenu, setNewMenu] = useState<NewMenuState | null>(null);
   const [dialog, setDialog] = useState<TreeDialog | null>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+  const newMenuRef = useRef<HTMLDivElement>(null);
   const marks = useFolderColorStore((state) => state.marksByRepo[repoPath] ?? EMPTY_MARKS);
   const setFolderColor = useFolderColorStore((state) => state.setFolderColor);
   const renameFolderMarks = useFolderColorStore((state) => state.renameFolder);
@@ -131,6 +143,7 @@ export function ProjectTree({
   const copyPathShortcut = useShortcutLabel("changes.copyPath");
   const deleteShortcut = useShortcutLabel("editor.deleteInTree");
   const renameShortcut = useShortcutLabel("editor.renameInTree");
+  const newShortcut = useShortcutLabel("editor.newInTree");
   const newFolderShortcut = useShortcutLabel("editor.newFolderInTree");
 
   useDismiss(contextMenuRef, () => setContextMenu(null), { closeOnWindowBlur: true, isEnabled: !!contextMenu });
@@ -270,6 +283,7 @@ export function ProjectTree({
     if (paths.length === 1) {
       selectOnly(row.path);
     }
+    setIsNewSubmenuOpen(false);
     setContextMenu({ x: event.clientX, y: event.clientY, path: row.path, name: row.name, isDir: row.isDir, paths });
   };
 
@@ -322,16 +336,38 @@ export function ProjectTree({
     noteWorktreeChanged(sessionId);
   };
 
-  /** Opens the dialog for a new folder inside the folder `path`, or inside the folder of the file `path`. */
-  const openNewFolder = (path: string) => {
+  /** Opens the dialog for a new file or, with `isDir`, folder inside the folder `path`, or inside the folder of the file `path`. */
+  const openNew = (path: string, isDir: boolean) => {
     setContextMenu(null);
+    setNewMenu(null);
     if (isLocked) {
       setError(WORKTREE_LOCKED_MESSAGE);
       return;
     }
-    const isDir = !path || (rows.find((row) => row.path === path)?.isDir ?? false);
-    setDialog({ type: "newFolder", parent: isDir ? path : dirName(path) });
+    const isFolder = !path || (rows.find((row) => row.path === path)?.isDir ?? false);
+    setDialog({ type: "new", parent: isFolder ? path : dirName(path), isDir });
   };
+
+  /** Opens the New menu below the row `path`, as WebStorm's ⌘N does. */
+  const openNewMenu = (path: string) => {
+    if (isLocked) {
+      setError(WORKTREE_LOCKED_MESSAGE);
+      return;
+    }
+    const row = listRef.current?.querySelector<HTMLElement>(`[data-tree-key="${CSS.escape(path)}"]`);
+    if (!row) return;
+    const rowRect = row.getBoundingClientRect();
+    const iconLeft = row.querySelector("img")?.getBoundingClientRect().left ?? rowRect.left;
+    setNewMenu({ x: iconLeft, y: rowRect.bottom, path });
+  };
+
+  /** Closes the ⌘N menu and gives the focus back to the tree, which had it when the menu opened. */
+  const closeNewMenu = () => {
+    setNewMenu(null);
+    listRef.current?.focus({ preventScroll: true });
+  };
+
+  useDismiss(newMenuRef, closeNewMenu, { closeOnWindowBlur: true, isEnabled: !!newMenu });
 
   /** Opens the rename dialog for the row `path`; the project row cannot be renamed. */
   const openRename = (path: string) => {
@@ -344,8 +380,8 @@ export function ProjectTree({
     setDialog({ type: "rename", path, isDir: rows.find((row) => row.path === path)?.isDir ?? false });
   };
 
-  /** Shows the new folder `path`: its ancestors are relisted and expanded, and it is selected. */
-  const folderCreated = async (path: string) => {
+  /** Shows the new file or folder `path`: its ancestors are relisted and expanded, and it is selected; a file opens. */
+  const pathCreated = async (path: string, isDir: boolean) => {
     const folders = parentPaths(path);
     try {
       for (const folder of folders) {
@@ -358,6 +394,9 @@ export function ProjectTree({
     selectOnly(path);
     setScrollTarget(path);
     noteWorktreeChanged(sessionId);
+    if (!isDir) {
+      onOpen(path);
+    }
   };
 
   /**
@@ -371,6 +410,7 @@ export function ProjectTree({
     workspace.discardDeleted(from);
     renamePaths(sessionId, from, to);
     renameFolderMarks(repoPath, from, to);
+    useSettingsStore.getState().moveDiagramFile(sessionId, from, to);
     list(dirName(to)).catch((reason) => setError(errorText(reason)));
     selectOnly(to);
     setScrollTarget(to);
@@ -393,7 +433,8 @@ export function ProjectTree({
         {...nav.listProps}
         onKeyDown={(event) => {
           const command = shortcutCommand(event, TREE_COMMANDS);
-          if (!command || (!selectedPaths.length && command !== "editor.newFolderInTree")) {
+          const isNewCommand = command === "editor.newInTree" || command === "editor.newFolderInTree";
+          if (!command || (!selectedPaths.length && !isNewCommand)) {
             nav.listProps.onKeyDown(event);
             return;
           }
@@ -406,8 +447,10 @@ export function ProjectTree({
             if (selectedPaths.length === 1) {
               openRename(selectedPaths[0]);
             }
+          } else if (command === "editor.newInTree") {
+            openNewMenu(selectedPaths.length === 1 ? selectedPaths[0] : "");
           } else {
-            openNewFolder(selectedPaths.length === 1 ? selectedPaths[0] : "");
+            openNew(selectedPaths.length === 1 ? selectedPaths[0] : "", true);
           }
         }}
         className="min-h-0 flex-1 overflow-auto py-1 outline-none font-(family-name:--changelist-font-family) text-(length:--changelist-font-size)"
@@ -478,20 +521,51 @@ export function ProjectTree({
               Reveal in Finder
             </button>
           ) : null}
+          {contextMenu.paths.length === 1 && !contextMenu.isDir && isDiagramFilePath(contextMenu.path) ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setContextMenu(null);
+                showDiagramFile({ sessionId, path: contextMenu.path });
+              }}
+              className="flex w-full items-center rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover)"
+            >
+              Show in Architecture
+            </button>
+          ) : null}
           {contextMenu.paths.length === 1 ? (
             <>
               <div role="separator" className="my-1 border-t border-(--line)" />
-              <button
-                type="button"
-                role="menuitem"
-                onClick={() => openNewFolder(contextMenu.path)}
-                aria-disabled={isLocked}
-                title={isLocked ? WORKTREE_LOCKED_MESSAGE : undefined}
-                className={`flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover) ${isLocked ? "opacity-40" : ""}`}
-              >
-                New folder…
-                {newFolderShortcut ? <span className="text-neutral-500">{newFolderShortcut}</span> : null}
-              </button>
+              <div className="relative" onMouseEnter={() => setIsNewSubmenuOpen(true)} onMouseLeave={() => setIsNewSubmenuOpen(false)}>
+                <button
+                  type="button"
+                  role="menuitem"
+                  aria-haspopup="menu"
+                  aria-expanded={isNewSubmenuOpen}
+                  onClick={() => setIsNewSubmenuOpen(true)}
+                  className={`flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover) ${isNewSubmenuOpen ? "bg-(--row-hover)" : ""}`}
+                >
+                  New
+                  <span className="flex items-center gap-2 text-neutral-500">
+                    {newShortcut}
+                    <SubmenuChevronIcon expanded={false} className="size-3" />
+                  </span>
+                </button>
+                {isNewSubmenuOpen ? (
+                  // The padding bridges the menu's edge, so the pointer stays inside while it moves over to the submenu.
+                  <div className="absolute top-0 left-full -mt-[5px] pl-[5px]">
+                    <div role="menu" aria-label="New" className="min-w-36 rounded border border-neutral-600 bg-(--surface-inset) p-1 shadow-lg">
+                      <NewPathMenuItems
+                        folderShortcut={newFolderShortcut}
+                        isDisabled={isLocked}
+                        disabledReason={WORKTREE_LOCKED_MESSAGE}
+                        onPick={(isDir) => openNew(contextMenu.path, isDir)}
+                      />
+                    </div>
+                  </div>
+                ) : null}
+              </div>
               {contextMenu.path ? (
                 <button
                   type="button"
@@ -548,7 +622,21 @@ export function ProjectTree({
           ) : null}
         </div>
       ) : null}
-      {dialog?.type === "newFolder" ? <NewFolderDialog sessionId={sessionId} parent={dialog.parent} onClose={() => setDialog(null)} onCreated={(path) => void folderCreated(path)} /> : null}
+      {newMenu ? (
+        <div
+          ref={newMenuRef}
+          role="menu"
+          aria-label="New"
+          style={{ left: newMenu.x, top: newMenu.y }}
+          className="fixed z-50 min-w-36 rounded border border-neutral-600 bg-(--surface-inset) p-1 text-[13px] shadow-lg"
+        >
+          <div className="mb-1 border-b border-(--line) px-2 pb-1 text-[12px] text-neutral-500">New</div>
+          <NewPathMenuItems folderShortcut={newFolderShortcut} isDisabled={isLocked} disabledReason={WORKTREE_LOCKED_MESSAGE} autoFocus onPick={(isDir) => openNew(newMenu.path, isDir)} />
+        </div>
+      ) : null}
+      {dialog?.type === "new" ? (
+        <NewPathDialog sessionId={sessionId} parent={dialog.parent} isDir={dialog.isDir} onClose={() => setDialog(null)} onCreated={(path) => void pathCreated(path, dialog.isDir)} />
+      ) : null}
       {dialog?.type === "rename" ? <RenamePathDialog workspace={workspace} path={dialog.path} isDir={dialog.isDir} onClose={() => setDialog(null)} onRenamed={pathRenamed} /> : null}
     </div>
   );

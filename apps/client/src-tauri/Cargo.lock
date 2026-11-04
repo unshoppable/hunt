@@ -1879,6 +1879,7 @@ dependencies = [
  "libc",
  "memchr",
  "notify-debouncer-full",
+ "objc2",
  "objc2-app-kit",
  "portable-pty",
  "regex",

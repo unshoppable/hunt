@@ -231,9 +231,15 @@ fn stamp_history(history: &mut [SessionNotification], transcript: &Transcript) -
     times
 }
 
-/// Whether a message chunk from `start` on still waits for its time.
-fn has_unstamped(history: &mut [SessionNotification], start: usize) -> bool {
-    history.iter_mut().skip(start).filter_map(message_chunk).any(|chunk| chunk.message_id.is_some() && time_in(chunk.meta.as_ref()).is_none())
+/// Whether a message chunk of the session `acp_session_id` from `start` on still waits for its time; a subagent's
+/// messages are in a transcript of their own, which `Transcript` does not read.
+fn has_unstamped(history: &mut [SessionNotification], acp_session_id: &str, start: usize) -> bool {
+    history
+        .iter_mut()
+        .skip(start)
+        .filter(|notification| &*notification.session_id.0 == acp_session_id)
+        .filter_map(message_chunk)
+        .any(|chunk| chunk.message_id.is_some() && time_in(chunk.meta.as_ref()).is_none())
 }
 
 #[derive(Clone, Serialize)]
@@ -263,7 +269,7 @@ pub fn resolve(app: AppHandle, hunt_session_id: Uuid, acp_session_id: String, hi
             let (times, is_done) = {
                 let mut history = history.lock().unwrap();
                 let times = stamp_history(&mut history, &transcript);
-                (times, !has_unstamped(&mut history, turn_start))
+                (times, !has_unstamped(&mut history, &acp_session_id, turn_start))
             };
             if !times.is_empty() {
                 let _ = app.emit("acp:message-times", MessageTimesEvent { hunt_session_id, times });
@@ -367,7 +373,14 @@ not json"#;
         let times = stamp_history(&mut history, &transcript);
         assert_eq!(times, HashMap::from([("hunt-1".to_string(), "T1".to_string()), ("msg_2".to_string(), "T4".to_string())]));
         assert_eq!(time_of(&mut history[1]).as_deref(), Some("T1"));
-        assert!(has_unstamped(&mut history, 4));
-        assert!(!has_unstamped(&mut history[..4], 0));
+        assert!(has_unstamped(&mut history, "s", 4));
+        assert!(!has_unstamped(&mut history[..4], "s", 0));
+    }
+
+    #[test]
+    fn a_subagent_message_waits_for_no_time() {
+        let mut history = vec![SessionNotification::new(SessionId::new("child"), SessionUpdate::AgentMessageChunk(chunk(Some("msg_9"), None)))];
+        assert!(!has_unstamped(&mut history, "s", 0));
+        assert!(has_unstamped(&mut history, "child", 0));
     }
 }

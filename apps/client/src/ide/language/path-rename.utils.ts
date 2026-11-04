@@ -42,10 +42,14 @@ export function renamedTo(path: string, name: string): string {
   return dir ? `${dir}/${name}` : name;
 }
 
-/** Why a folder named `name` cannot be created, or null when it can; `a/b` creates nested folders. */
-export function newFolderProblem(name: string): string | null {
+/**
+ * Why a file or, with `isDir`, a folder named `name` cannot be created, or null when it can; `a/b` creates the folder `a`
+ * on the way.
+ */
+export function newPathProblem(name: string, isDir: boolean): string | null {
+  const noun = isDir ? "folder" : "file";
   const segments = name.split("/");
-  if (!name || segments.some((segment) => !segment.trim())) return "Enter a folder name.";
-  if (segments.some((segment) => segment === "." || segment === "..")) return "A folder name is neither '.' nor '..'.";
+  if (!name || segments.some((segment) => !segment.trim())) return `Enter a ${noun} name.`;
+  if (segments.some((segment) => segment === "." || segment === "..")) return `A ${noun} name is neither '.' nor '..'.`;
   return null;
 }

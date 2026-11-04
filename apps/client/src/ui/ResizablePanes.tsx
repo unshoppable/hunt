@@ -240,7 +240,10 @@ export function PaneSeparator({ orientation = "horizontal" }: { orientation?: "h
     <Separator
       className={`group relative shrink-0 bg-(--line) transition-colors hover:bg-blue-500 data-[separator=active]:bg-blue-500 ${isHorizontal ? "w-px cursor-col-resize" : "h-px cursor-row-resize"}`}
     >
-      <span className={`absolute ${isHorizontal ? "-left-1 top-0 h-full w-2" : "-top-1 left-0 h-2 w-full"}`} />
+      {/* The grab area reaches into the preceding pane only. It overlaps that pane's scroller, a compositing layer, so WebKit
+          composites it too; reaching into the following pane as well would draw that whole pane into its layer, which on a
+          1x display taller than 2048 px is tiled and paints its bottom-right tile lighter (see `.changelist > *` in index.css). */}
+      <span className={`absolute ${isHorizontal ? "top-0 right-0 h-full w-2" : "bottom-0 left-0 h-2 w-full"}`} />
     </Separator>
   );
 }

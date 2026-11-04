@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 
 import { useHuntStore } from "../sessions/hunt.store";
-import { SESSION, notification } from "../sessions/hunt.store.fixtures";
+import { ACP_SESSION, SESSION, notification } from "../sessions/hunt.store.fixtures";
 
 describe("acp update reducer", () => {
   beforeEach(() => {
@@ -220,5 +220,96 @@ describe("acp update reducer", () => {
     expect(useHuntStore.getState().chats[SESSION].permission?.requestId).toBe("second");
     applyPermissionWithdrawn({ huntSessionId: "other", requestId: "second" });
     expect(useHuntStore.getState().chats.other).toBeUndefined();
+  });
+});
+
+describe("subagents", () => {
+  const CHILD = "a84ac2fc8a50f5d9a";
+
+  /** The `subagent_update` `agent/acp/subagents.rs` makes of claude-agent-acp's `subagent_spawned`, on `parent`. */
+  function spawned(child: string, subagent: Record<string, unknown>, parent = ACP_SESSION) {
+    return notification({ sessionUpdate: "subagent_update", sessionId: child, title: "Count files", description: "Run `ls | wc -l`.", _meta: { hunt: { subagent } } }, parent);
+  }
+
+  /** A tool call of the subagent `child`, recorded from claude-agent-acp 0.89.1 with native subagent sessions. */
+  function childToolCall(child: string, toolCallId: string, kind = "execute") {
+    return notification({ sessionUpdate: "tool_call", toolCallId, title: "ls | wc -l", kind, status: "pending", _meta: { claudeCode: { toolName: "Bash", parentToolUseId: "toolu_01Scc" } } }, child);
+  }
+
+  beforeEach(() => {
+    useHuntStore.setState({ chats: {}, sessions: [], activeSessionId: null });
+  });
+
+  it("puts a card into the main chat and the subagent's prompt and output into its own chat", () => {
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, spawned(CHILD, { state: "running", prompt: "Run `ls | wc -l` and report the number." }));
+    applyUpdate(SESSION, childToolCall(CHILD, "toolu_015W"));
+    applyUpdate(SESSION, notification({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "All three run." } }));
+
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.items.map((item) => item.kind)).toEqual(["subagent", "agent"]);
+    expect(chat.items[0]).toMatchObject({ sessionId: CHILD });
+    expect(chat.subagents[CHILD]).toMatchObject({ title: "Count files", parentSessionId: ACP_SESSION, state: "running", usage: null });
+    expect(chat.subagents[CHILD].items.map((item) => item.kind)).toEqual(["user", "tool"]);
+  });
+
+  it("leaves the hidden launch result of the Agent call out of the main chat", () => {
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, spawned(CHILD, { state: "running" }));
+    const launched = { isAsync: true, status: "async_launched", agentId: CHILD };
+    applyUpdate(SESSION, notification({ sessionUpdate: "tool_call_update", toolCallId: "toolu_01Scc", _meta: { claudeCode: { toolResponse: launched, toolName: "Agent" } } }));
+    expect(useHuntStore.getState().chats[SESSION].items.map((item) => item.kind)).toEqual(["subagent"]);
+  });
+
+  it("takes the state and usage changes of a subagent", () => {
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, spawned(CHILD, { state: "running" }));
+    const usage = { totalTokens: 19354, toolUses: 2, durationMs: 4421 };
+    applyUpdate(SESSION, notification({ sessionUpdate: "subagent_update", sessionId: CHILD, _meta: { hunt: { subagent: { usage } } } }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "subagent_update", sessionId: CHILD, _meta: { hunt: { subagent: { state: "completed" } } } }));
+    expect(useHuntStore.getState().chats[SESSION].subagents[CHILD]).toMatchObject({ title: "Count files", state: "completed", usage });
+  });
+
+  it("puts the card of a nested subagent into the chat of the subagent that started it", () => {
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, spawned(CHILD, { state: "running" }));
+    applyUpdate(SESSION, spawned("nested", { state: "running" }, CHILD));
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.items).toHaveLength(1);
+    expect(chat.subagents[CHILD].items).toMatchObject([{ kind: "subagent", sessionId: "nested" }]);
+  });
+
+  it("opens a replayed subagent's chat with its replayed prompt", () => {
+    const { applyReplay } = useHuntStore.getState();
+    const child = `${ACP_SESSION}:replay-subagent:toolu_01Scc`;
+    applyReplay(SESSION, [
+      spawned(child, { state: "running", usage: { totalTokens: 19085, toolUses: 2, durationMs: 4500 } }),
+      notification({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "Run `ls | wc -l`." }, messageId: "f40e" }, child),
+      notification({ sessionUpdate: "subagent_update", sessionId: child, _meta: { hunt: { subagent: { state: "completed" } } } }),
+    ]);
+    const subagent = useHuntStore.getState().chats[SESSION].subagents[child];
+    expect(subagent).toMatchObject({ state: "completed", usage: { totalTokens: 19085 } });
+    expect(subagent.items).toMatchObject([{ kind: "user", text: "Run `ls | wc -l`." }]);
+  });
+
+  it("keeps a subagent's context usage out of the main agent's and refetches the diff after its edit", () => {
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, spawned(CHILD, { state: "running" }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "usage_update", used: 900, size: 200_000 }, CHILD));
+    applyUpdate(SESSION, childToolCall(CHILD, "toolu_edit", "edit"));
+    applyUpdate(SESSION, notification({ sessionUpdate: "tool_call_update", toolCallId: "toolu_edit", status: "completed" }, CHILD));
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.contextUsage).toBeNull();
+    expect(chat.editVersion).toBe(1);
+  });
+
+  it("shows no card for a subagent of a turn Hunt sent itself", () => {
+    const { applyUpdate } = useHuntStore.getState();
+    applyUpdate(SESSION, notification({ sessionUpdate: "user_message_chunk", content: { type: "text", text: "refresh" }, _meta: { hunt: { hidden: true } } }));
+    applyUpdate(SESSION, spawned(CHILD, { state: "running" }));
+    applyUpdate(SESSION, childToolCall(CHILD, "toolu_015W"));
+    const chat = useHuntStore.getState().chats[SESSION];
+    expect(chat.items).toEqual([]);
+    expect(chat.subagents[CHILD]).toMatchObject({ isHidden: true });
   });
 });

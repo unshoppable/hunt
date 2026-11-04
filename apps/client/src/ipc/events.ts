@@ -1,6 +1,7 @@
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import type { ClosedEvent, MessageTimesEvent, PermissionEvent, PermissionWithdrawnEvent, ReplayEvent, UpdateEvent } from "../chat/chat.types";
+import type { DiagramFileRequest } from "../common/diagram/diagram.types";
 import type { ControlCommandEvent } from "../control/control-command.types";
 import type { DiffOpenRequest } from "../diff/diff.types";
 import type { GraphChangedEvent } from "../graph/graph.types";
@@ -87,6 +88,8 @@ type EventPayloads = {
   "terminal:run-script": ScriptRunRequest;
   /** A `hunt-client` command of an agent, sent to the main window, which answers it (see control/control-commands.hook.ts). */
   "control:command": ControlCommandEvent;
+  /** Sent by any window to the main window to show a diagram file in its Architecture tab (see sessions/diagram-file-requests.hook.ts). */
+  "architecture:show-file": DiagramFileRequest;
 };
 
 /**

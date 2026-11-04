@@ -1,7 +1,7 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react";
 import type { Cardinality, ShapeChange, ShapeDiagram, ShapeGroup, ShapeKind, ShapeNode } from "./shape-diagram.types";
 import type { LayoutInput, LayoutNode, LayoutPort, LayoutSpacing } from "../layout.utils";
-import { edgeMarker, layoutGraph } from "../layout.utils";
+import { GROUP_PADDING as BOUNDARY_PADDING, edgeMarker, layoutGraph } from "../layout.utils";
 
 /**
  * The style contract of the shape diagrams: Hunt sizes every element from its content with these constants, so a
@@ -60,7 +60,8 @@ export type BoundaryFlowNode = Node<BoundaryNodeData, "boundary">;
 export type ShapeDiagramFlowNode = ShapeFlowNode | BoundaryFlowNode;
 /**
  * `points` is ELK's orthogonal route from source to target, `labelCenter` the middle of the label box ELK reserved
- * on that route (null when the edge was laid out without one); `cardinality` and the columns are set on ERD
+ * on that route (null when the edge was laid out without one); `hasInlineLabel` puts the label on the middle of the
+ * path React Flow draws when there is no route (a manual layout); `cardinality` and the columns are set on ERD
  * relationships only.
  */
 export type ShapeEdgeData = {
@@ -68,6 +69,7 @@ export type ShapeEdgeData = {
   description?: string;
   points: XYPosition[];
   labelCenter: XYPosition | null;
+  hasInlineLabel?: boolean;
   sourceColumn?: string;
   targetColumn?: string;
   cardinality?: { source: Cardinality; target: Cardinality };
@@ -143,7 +145,7 @@ export function erdMarkers(edge: Pick<ShapeEdgeData, "cardinality" | "change">, 
 }
 
 /** Unique layout and React Flow id of an edge; ERD relationships add their columns, since two tables may share several. */
-function edgeId(diagram: ShapeDiagram, edge: ShapeDiagram["edges"][number]): string {
+export function shapeEdgeId(diagram: Pick<ShapeDiagram, "type">, edge: ShapeDiagram["edges"][number]): string {
   return diagram.type === "erd" ? `${edge.source}.${edge.sourceColumn}->${edge.target}.${edge.targetColumn}` : `${edge.source}->${edge.target}`;
 }
 
@@ -169,7 +171,7 @@ export function toLayoutInput(diagram: ShapeDiagram): LayoutInput {
     nodes,
     groups: (diagram.groups ?? []).map((group) => ({ id: group.id })),
     edges: diagram.edges.map((edge) => ({
-      id: edgeId(diagram, edge),
+      id: shapeEdgeId(diagram, edge),
       source: isErd ? columnPortId(edge.source, edge.sourceColumn ?? "", "out") : edge.source,
       target: isErd ? columnPortId(edge.target, edge.targetColumn ?? "", "in") : edge.target,
       label: isErd ? undefined : edge.label,
@@ -181,25 +183,78 @@ export function toLayoutInput(diagram: ShapeDiagram): LayoutInput {
   };
 }
 
+/** True once the user placed an element by hand: the diagram then keeps its positions instead of ELK's layout. */
+export function hasManualLayout(diagram: ShapeDiagram): boolean {
+  return diagram.nodes.some((node) => node.position);
+}
+
+/**
+ * Where every element and boundary goes. ELK lays out the whole diagram; in a manual layout each placed element moves
+ * to its `position`, the others keep ELK's place, and every boundary is fitted around its elements again. Shape
+ * positions are relative to their boundary, like React Flow expects for a `parentId`.
+ */
+function placeElements(
+  diagram: ShapeDiagram,
+  positions: Map<string, XYPosition>,
+  groupSizes: Map<string, { width: number; height: number }>,
+): { shapes: Map<string, XYPosition>; boundaries: Map<string, { position: XYPosition; width: number; height: number }> } {
+  const groupOrigin = (id: string | undefined) => (id ? (positions.get(id) ?? { x: 0, y: 0 }) : { x: 0, y: 0 });
+  const boundaries = new Map((diagram.groups ?? []).map((group) => [group.id, { position: groupOrigin(group.id), ...(groupSizes.get(group.id) ?? { width: 0, height: 0 }) }]));
+  if (!hasManualLayout(diagram)) {
+    return { shapes: new Map(diagram.nodes.map((node) => [node.id, positions.get(node.id) ?? { x: 0, y: 0 }])), boundaries };
+  }
+
+  const absolute = new Map(
+    diagram.nodes.map((node) => {
+      if (node.position) return [node.id, node.position];
+      const relative = positions.get(node.id) ?? { x: 0, y: 0 };
+      const origin = node.parent && boundaries.has(node.parent) ? groupOrigin(node.parent) : { x: 0, y: 0 };
+      return [node.id, { x: origin.x + relative.x, y: origin.y + relative.y }];
+    }),
+  );
+  for (const [groupId, boundary] of boundaries) {
+    const members = diagram.nodes.filter((node) => node.parent === groupId);
+    if (!members.length) continue;
+    const boxes = members.map((node) => ({ ...(absolute.get(node.id) ?? { x: 0, y: 0 }), ...shapeNodeSize(node) }));
+    const left = Math.min(...boxes.map((box) => box.x)) - BOUNDARY_PADDING.left;
+    const top = Math.min(...boxes.map((box) => box.y)) - BOUNDARY_PADDING.top;
+    const right = Math.max(...boxes.map((box) => box.x + box.width)) + BOUNDARY_PADDING.right;
+    const bottom = Math.max(...boxes.map((box) => box.y + box.height)) + BOUNDARY_PADDING.bottom;
+    Object.assign(boundary, { position: { x: left, y: top }, width: right - left, height: bottom - top });
+  }
+  const shapes = new Map(
+    diagram.nodes.map((node) => {
+      const position = absolute.get(node.id) ?? { x: 0, y: 0 };
+      const boundary = node.parent ? boundaries.get(node.parent) : undefined;
+      return [node.id, boundary ? { x: position.x - boundary.position.x, y: position.y - boundary.position.y } : position];
+    }),
+  );
+  return { shapes, boundaries };
+}
+
 /**
  * Lays the diagram out and returns React Flow nodes (boundaries before the shapes inside them) and edges. Shape
- * positions are relative to their boundary; edge routes are absolute. Waits and aborts like `layoutGraph`.
+ * positions are relative to their boundary; edge routes are absolute. In a manual layout the edges drop ELK's routes,
+ * which no longer fit the moved elements, and React Flow draws them between their handles. Waits and aborts like
+ * `layoutGraph`.
  */
 export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSignal): Promise<{ nodes: ShapeDiagramFlowNode[]; edges: ShapeFlowEdge[] }> {
   const isErd = diagram.type === "erd";
+  const isManual = hasManualLayout(diagram);
   const { positions, groupSizes, routes } = await layoutGraph(toLayoutInput(diagram), signal);
+  const { shapes, boundaries } = placeElements(diagram, positions, groupSizes);
 
   const boundaryNodes: BoundaryFlowNode[] = (diagram.groups ?? []).map((group) => {
-    const size = groupSizes.get(group.id) ?? { width: 0, height: 0 };
+    const { position, width, height } = boundaries.get(group.id) ?? { position: { x: 0, y: 0 }, width: 0, height: 0 };
     return {
       id: group.id,
       type: "boundary",
-      position: positions.get(group.id) ?? { x: 0, y: 0 },
+      position,
       data: group,
-      width: size.width,
-      height: size.height,
+      width,
+      height,
       // The area must not catch the mouse, or the edges and labels inside it could not be hovered.
-      style: { width: size.width, height: size.height, pointerEvents: "none" },
+      style: { width, height, pointerEvents: "none" },
       selectable: false,
       draggable: false,
       focusable: false,
@@ -211,24 +266,25 @@ export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSi
     return {
       id: node.id,
       type: node.kind,
-      position: positions.get(node.id) ?? { x: 0, y: 0 },
-      parentId: node.parent,
+      position: shapes.get(node.id) ?? { x: 0, y: 0 },
+      parentId: node.parent && boundaries.has(node.parent) ? node.parent : undefined,
       data: { ...node, ...size },
       width: size.width,
       height: size.height,
       selectable: true,
-      draggable: false,
+      draggable: true,
     };
   });
 
   const edges: ShapeFlowEdge[] = diagram.edges.map((edge) => {
-    const id = edgeId(diagram, edge);
-    const route = routes.get(id);
+    const id = shapeEdgeId(diagram, edge);
+    const route = isManual ? undefined : routes.get(id);
     const data: ShapeEdgeData = {
       label: edge.label,
       description: edge.description,
       points: route?.points ?? [],
       labelCenter: route?.labelCenter ?? null,
+      hasInlineLabel: isManual && !isErd,
       sourceColumn: edge.sourceColumn,
       targetColumn: edge.targetColumn,
       cardinality: edge.cardinality,
@@ -260,8 +316,8 @@ export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSi
   return { nodes: [...boundaryNodes, ...shapeNodes], edges };
 }
 
-/** What the mouse is on and which table the editor shows; every id null when nothing is. */
-export type ShapeFocus = { hoveredEdgeId: string | null; hoveredNodeId: string | null; selectedNodeId: string | null };
+/** What the mouse is on and which element or connection the editor shows; every id null when nothing is. */
+export type ShapeFocus = { hoveredEdgeId: string | null; hoveredNodeId: string | null; selectedNodeId: string | null; selectedEdgeId?: string | null };
 
 /**
  * The flow nodes and edges with the interaction flags of `focus`: the hovered edge and the edges of the hovered
@@ -271,7 +327,8 @@ export type ShapeFocus = { hoveredEdgeId: string | null; hoveredNodeId: string |
  */
 export function decorateShapeFlow(nodes: ShapeDiagramFlowNode[], edges: ShapeFlowEdge[], focus: ShapeFocus, isErd: boolean): { nodes: ShapeDiagramFlowNode[]; edges: ShapeFlowEdge[] } {
   const isFocusing = Boolean(focus.hoveredEdgeId) || Boolean(focus.hoveredNodeId);
-  const isLit = (edge: ShapeFlowEdge) => edge.id === focus.hoveredEdgeId || edge.source === focus.hoveredNodeId || edge.target === focus.hoveredNodeId;
+  const isLit = (edge: ShapeFlowEdge) =>
+    edge.id === focus.hoveredEdgeId || (Boolean(focus.selectedEdgeId) && edge.id === focus.selectedEdgeId) || edge.source === focus.hoveredNodeId || edge.target === focus.hoveredNodeId;
   const litEdges = edges.filter(isLit);
   const litNodeIds = new Set(litEdges.flatMap((edge) => [edge.source, edge.target]));
   if (focus.hoveredNodeId) {
@@ -293,7 +350,8 @@ export function decorateShapeFlow(nodes: ShapeDiagramFlowNode[], edges: ShapeFlo
         isMuted: Boolean(focus.hoveredNodeId) && !litNodeIds.has(node.id),
         litColumns: litColumns.get(node.id),
       };
-      return { ...node, data: { ...node.data, ...flags } };
+      // Tables mark their selection themselves; every other shape gets the outline of `.shape-node-selected`.
+      return { ...node, className: flags.isSelected && node.type !== "table" ? "shape-node-selected" : undefined, data: { ...node.data, ...flags } };
     }),
     edges: edges.map((edge) => {
       const lit = isLit(edge);

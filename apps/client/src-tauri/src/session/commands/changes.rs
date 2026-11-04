@@ -1,5 +1,5 @@
 //! The commands of a session's changelist: the changed files with the sessions that touched them, their diffs and edit
-//! history, writing, moving, deleting and reverting worktree files, writing the skills of the swf steps from Hunt's
+//! history, writing, creating, moving, deleting and reverting worktree files, writing the skills of the swf steps from Hunt's
 //! templates, shelves, and committing and pushing the session's branch, which the branch on a remote session's VM follows.
 
 use std::path::Path;
@@ -144,6 +144,31 @@ pub async fn create_dir(app: AppHandle, id: Uuid, path: String) -> Result<(), St
         return Err(format!("{path} already exists"));
     }
     std::fs::create_dir_all(&target).map_err(|error| format!("failed to create {path}: {error}"))?;
+    store::note_worktree_changed(&app, id)
+}
+
+/// Creates the empty file `path` inside the session's worktree, with its missing parent folders; `path` must be relative
+/// and must not leave the worktree, and nothing may exist at it yet. The new file counts as the session's own change.
+#[tauri::command]
+pub async fn create_file(app: AppHandle, id: Uuid, path: String) -> Result<(), String> {
+    link::ensure_writable(&app, id, &format!("create {path}"))?;
+    let (record, target) = session_file(&app, id, &path)?;
+    if path.is_empty() {
+        return Err("refusing to create the worktree itself".to_string());
+    }
+    attribution::record_write(&app, &record.worktree_path, id, || {
+        if let Some(parent) = target.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| format!("failed to create the folder of {path}: {error}"))?;
+        }
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&target) {
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Err(format!("{path} already exists")),
+            Err(error) => Err(format!("failed to create {path}: {error}")),
+        }
+    })
+    .await?;
+    store::add_touched_files(&app, id, std::slice::from_ref(&path))?;
+    sync::note_local_change(&app, id);
     store::note_worktree_changed(&app, id)
 }
 

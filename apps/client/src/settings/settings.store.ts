@@ -3,6 +3,7 @@ import { persist } from "zustand/middleware";
 import responseStylePrompt from "../../prompts/session/response-style.system-prompt.md?raw";
 import { isSessionMachineType } from "../../../../libs/domain/src/session/session-machine-type.types.ts";
 import type { DiagramType, ReviewLevel } from "../common/diagram/diagram.types";
+import { renamedPath } from "../common/path/path.utils";
 import type { VmSettings } from "./settings.types";
 import type { CommandId } from "../common/keymap/keymap-commands.data";
 import { Keymap, type StoredKeymap } from "../common/keymap/keymap.value-object";
@@ -87,7 +88,7 @@ export type ChangelistScope = "own" | "downstream" | "all";
 export type PopupSize = { width: number; height: number };
 
 /** The floating popups and dialogs whose size the user may drag; each remembers its last size (see ui/popup-size.hook.ts). */
-export type PopupKey = "usages" | "fileSearch" | "findInFiles" | "subChat" | "screenshots" | "fileFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch" | "push" | "reset" | "rename" | "renamePreview" | "renamePath" | "newFolder";
+export type PopupKey = "usages" | "fileSearch" | "findInFiles" | "subChat" | "screenshots" | "fileFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch" | "push" | "reset" | "rename" | "renamePreview" | "renamePath" | "newPath" | "loadedContext" | "contextText";
 
 /**
  * Size each popup opens with until the user resizes it. A popup that is as tall as its content treats the height as
@@ -129,7 +130,9 @@ export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
   rename: { width: 560, height: 320 },
   renamePreview: { width: 1100, height: 760 },
   renamePath: { width: 560, height: 320 },
-  newFolder: { width: 460, height: 320 },
+  newPath: { width: 460, height: 320 },
+  loadedContext: { width: 440, height: 480 },
+  contextText: { width: 960, height: 760 },
 };
 
 /** The work popups that can show in a native window of their own instead of inside their app window (see ui/detached-popup.hook.ts). */
@@ -158,6 +161,12 @@ export type GraphFilter = {
 };
 
 export const DEFAULT_GRAPH_FILTER: GraphFilter = { minReview: 1, hiddenGlobs: "" };
+
+/**
+ * Worktree-relative folder a shape diagram is saved into, where a `*` segment stands for every subfolder there (one
+ * per app), so the save dialog offers one target per app.
+ */
+export const DEFAULT_DIAGRAM_SAVE_DIR = "apps/*/docs/diagrams";
 
 function roundedSize(size: PopupSize): PopupSize {
   return { width: Math.round(size.width), height: Math.round(size.height) };
@@ -336,6 +345,10 @@ type SettingsState = {
   graphExcludedFiles: Record<string, string[]>;
   /** Diagram type the Architecture tab shows, keyed by session id; a session without an entry shows the dependencies. */
   diagramTypes: Record<string, DiagramType>;
+  /** Worktree-relative diagram file the Architecture tab shows instead of a generated diagram, keyed by session id. */
+  diagramFiles: Record<string, string>;
+  /** Folder pattern the save dialog offers; see `DEFAULT_DIAGRAM_SAVE_DIR`. */
+  diagramSaveDir: string;
   popupSizes: Record<PopupKey, PopupSize>;
   detachedPopups: Record<DetachablePopupKey, boolean>;
   gitLogColumns: GitLogColumns;
@@ -370,6 +383,11 @@ type SettingsState = {
   setChangelistScope: (sessionId: string, scope: ChangelistScope) => void;
   setGraphExcludedFiles: (sessionId: string, paths: string[]) => void;
   setDiagramType: (sessionId: string, diagramType: DiagramType) => void;
+  /** Shows the diagram file `path` in the Architecture tab of `sessionId`; null returns to the chosen diagram type. */
+  setDiagramFile: (sessionId: string, path: string | null) => void;
+  /** Follows a move or rename from `from` to `to` (a file or a folder) in every shown diagram file of `sessionId`. */
+  moveDiagramFile: (sessionId: string, from: string, to: string) => void;
+  setDiagramSaveDir: (pattern: string) => void;
   setPopupSize: (key: PopupKey, size: PopupSize) => void;
   setPopupDetached: (key: DetachablePopupKey, isDetached: boolean) => void;
   resetDetachedPopups: () => void;
@@ -418,6 +436,8 @@ export type PersistedState = {
   changelistScopes?: Record<string, ChangelistScope>;
   graphExcludedFiles?: Record<string, string[]>;
   diagramTypes?: Record<string, DiagramType>;
+  diagramFiles?: Record<string, string>;
+  diagramSaveDir?: string;
   popupSizes?: Partial<Record<PopupKey, PopupSize>>;
   detachedPopups?: Partial<Record<DetachablePopupKey, boolean>>;
   gitLogColumns?: Partial<GitLogColumns>;
@@ -651,6 +671,8 @@ export const useSettingsStore = create<SettingsState>()(
       changelistScopes: {},
       graphExcludedFiles: {},
       diagramTypes: {},
+      diagramFiles: {},
+      diagramSaveDir: DEFAULT_DIAGRAM_SAVE_DIR,
       popupSizes: DEFAULT_POPUP_SIZES,
       detachedPopups: DEFAULT_DETACHED_POPUPS,
       gitLogColumns: DEFAULT_GIT_LOG_COLUMNS,
@@ -699,8 +721,21 @@ export const useSettingsStore = create<SettingsState>()(
       setDiagramType: (sessionId, diagramType) =>
         set((state) => {
           const { [sessionId]: _previous, ...rest } = state.diagramTypes;
-          return { diagramTypes: diagramType === "dependencies" ? rest : { ...rest, [sessionId]: diagramType } };
+          const { [sessionId]: _file, ...files } = state.diagramFiles;
+          return { diagramTypes: diagramType === "dependencies" ? rest : { ...rest, [sessionId]: diagramType }, diagramFiles: files };
         }),
+      setDiagramFile: (sessionId, path) =>
+        set((state) => {
+          const { [sessionId]: _previous, ...rest } = state.diagramFiles;
+          return { diagramFiles: path ? { ...rest, [sessionId]: path } : rest };
+        }),
+      moveDiagramFile: (sessionId, from, to) =>
+        set((state) => {
+          const path = state.diagramFiles[sessionId];
+          const moved = path ? renamedPath(path, from, to) : path;
+          return moved === path ? state : { diagramFiles: { ...state.diagramFiles, [sessionId]: moved } };
+        }),
+      setDiagramSaveDir: (pattern) => set({ diagramSaveDir: pattern.trim().replace(/^\/+|\/+$/g, "") || DEFAULT_DIAGRAM_SAVE_DIR }),
       setPopupSize: (key, size) => set((state) => ({ popupSizes: { ...state.popupSizes, [key]: roundedSize(size) } })),
       setPopupDetached: (key, isDetached) => set((state) => ({ detachedPopups: { ...state.detachedPopups, [key]: isDetached } })),
       resetDetachedPopups: () => set({ detachedPopups: DEFAULT_DETACHED_POPUPS }),
@@ -738,6 +773,8 @@ export const useSettingsStore = create<SettingsState>()(
         changelistScopes: state.changelistScopes,
         graphExcludedFiles: state.graphExcludedFiles,
         diagramTypes: state.diagramTypes,
+        diagramFiles: state.diagramFiles,
+        diagramSaveDir: state.diagramSaveDir,
         popupSizes: state.popupSizes,
         detachedPopups: state.detachedPopups,
         gitLogColumns: state.gitLogColumns,

@@ -6,7 +6,8 @@ import remarkGfm from "remark-gfm";
 import { CodeBlock } from "../../editor/CodeBlock";
 import { monacoLanguage, monacoLanguageForFence } from "../../editor/language-id.utils";
 import type { PlanEntry } from "@agentclientprotocol/sdk";
-import type { ChatItem } from "../chat.types";
+import type { ChatItem, SubagentChat } from "../chat.types";
+import { SubagentCard } from "../subagents/SubagentCard";
 import { ChatImages } from "../ChatImages";
 import { FileReferenceList, FileReferenceRow } from "../FileReferenceList";
 import { resolveFileLink, resolveFileReference, type FileIndex } from "../file-links.utils";
@@ -53,6 +54,9 @@ export function MessageList({
   onOpenFile,
   readFile,
   unreadAfterMessageId = null,
+  subagents = {},
+  askingSessionId = null,
+  onOpenSubagent,
 }: {
   items: ChatItem[];
   plan: PlanEntry[];
@@ -68,6 +72,12 @@ export function MessageList({
   readFile?: (path: string) => Promise<string>;
   /** The `messageId` of the prompt below which the "unread" line runs; none when no prompt has it. */
   unreadAfterMessageId?: string | null;
+  /** The subagents the `subagent` items stand for, by their session ID. */
+  subagents?: Record<string, SubagentChat>;
+  /** The session whose permission request waits for an answer; marks its subagent's card. */
+  askingSessionId?: string | null;
+  /** Shows the chat of the subagent `sessionId`; without it the cards are not shown. */
+  onOpenSubagent?: (sessionId: string) => void;
 }) {
   const blocks = groupItems(items);
   const unreadIndex = unreadAfterMessageId ? blocks.findIndex((block) => block.kind === "message" && block.item.kind === "user" && block.item.messageId === unreadAfterMessageId) + 1 : 0;
@@ -77,6 +87,11 @@ export function MessageList({
       return <ActivityCard items={block.items} isLive={isBusy && block === blocks[blocks.length - 1]} isVerbose={isVerbose} basePath={basePath} onOpenFile={onOpenFile} />;
     }
     const item = block.item;
+    if (item.kind === "subagent") {
+      const subagent = subagents[item.sessionId];
+      if (!subagent || !onOpenSubagent) return null;
+      return <SubagentCard subagent={subagent} asks={askingSessionId === item.sessionId} onOpen={() => onOpenSubagent(item.sessionId)} />;
+    }
     if (item.kind === "user") {
       const notice = huntPromptNotice(item.text);
       if (notice) {

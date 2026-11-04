@@ -25,10 +25,13 @@ export function PermissionPrompt({
   permission,
   onAnswer,
   keyTarget,
+  agentName = null,
 }: {
   permission: PendingPermission;
   onAnswer: (optionId: string) => void;
   keyTarget?: RefObject<HTMLElement | null>;
+  /** The subagent that asks, named in the title; `null` when the main agent asks. */
+  agentName?: string | null;
 }) {
   const toolCall = permission.toolCall;
   const options = permission.options;
@@ -76,7 +79,10 @@ export function PermissionPrompt({
 
   return (
     <div className="my-4 rounded-md border border-(--chat-orange) px-4 py-3">
-      <div className="font-semibold text-neutral-100">{TITLE_BY_KIND[toolCall.kind ?? "other"] ?? "Tool use"}</div>
+      <div className="font-semibold text-neutral-100">
+        {TITLE_BY_KIND[toolCall.kind ?? "other"] ?? "Tool use"}
+        {agentName ? <span className="font-normal text-neutral-400"> · asked by the subagent {agentName}</span> : null}
+      </div>
       <div className="mt-3 flex flex-col gap-1 pl-2">
         <div className="break-words whitespace-pre-wrap text-neutral-100">{toolCall.title ?? toolCall.toolCallId}</div>
         {description ? <div className="text-neutral-400">{description}</div> : null}

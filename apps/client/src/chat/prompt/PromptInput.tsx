@@ -49,13 +49,15 @@ const MAX_PROMPT_HEIGHT_SHARE = 0.6;
  * slash-command suggestions and a toolbar of model, effort and mode pills. Dragging its top edge makes the text area
  * taller; the height is remembered until it is dragged back to the two lines the box starts with. Used inside a session
  * and, with an `extension` bar for repository and branch, as the start view's composer. The screenshot picker sits in the left margin of the box. While the agent
- * is busy, sending queues the prompt (shown above the box) for the end of the running turn; the send button therefore
+ * is busy, sending adds the prompt to the running turn when the agent steers, and otherwise queues it (shown above the
+ * box) for the end of the running turn; the send button therefore
  * never turns into a stop button, Escape stops the turn. The send-now shortcut (⌃↩, ⌘↩) sends the prompt at once, stopping
  * the running turn; while the box is empty it sends the first queued prompt instead.
  */
 export function PromptInput({
   isBusy,
   isStarting = false,
+  steers = false,
   isBlocked,
   queue = [],
   onTakeQueue = () => [],
@@ -64,6 +66,7 @@ export function PromptInput({
   modeId,
   modes,
   configSelects,
+  context,
   commands,
   onSend,
   onSendNow = onSend,
@@ -85,6 +88,8 @@ export function PromptInput({
   isBusy: boolean;
   /** The agent is starting (also `isBusy` then): prompts queue until it runs, and there is no turn to interrupt or stop. */
   isStarting?: boolean;
+  /** A prompt sent while the agent is busy goes into the running turn instead of the queue (see `steersPrompt`). */
+  steers?: boolean;
   /** A pending permission request owns the keyboard; the prompt is disabled until it is answered. */
   isBlocked: boolean;
   /** Prompts sent while the agent was busy, waiting for the running turn to end. */
@@ -101,6 +106,8 @@ export function PromptInput({
   modeId: string | null;
   modes: DropdownOption[];
   configSelects: ConfigSelect[];
+  /** Toolbar control right of the mode pill, e.g. the button listing the guardrails in the agent's context. */
+  context?: ReactNode;
   commands: AvailableCommand[];
   onSend: (text: string, images: Screenshot[]) => void;
   /** Clears the conversation like typing `/clear`; the clear button is only shown when this is given. */
@@ -396,7 +403,9 @@ export function PromptInput({
             onKeyDown={onKeyDown}
             onPaste={onPaste}
             rows={2}
-            placeholder={isStarting ? "Enter queues the prompt until the agent runs" : isBusy ? "Enter queues the prompt for after this turn" : placeholder}
+            placeholder={
+              isStarting ? "Enter queues the prompt until the agent runs" : !isBusy ? placeholder : steers ? "Enter adds the prompt to the running turn" : "Enter queues the prompt for after this turn"
+            }
             className="block w-full resize-none bg-transparent px-4 py-3 outline-none placeholder:text-neutral-600 disabled:opacity-50"
           />
           {suggestions.length ? (
@@ -442,6 +451,12 @@ export function PromptInput({
                 className={MODE_CLASS[modeId] ?? ""}
               />
             ) : null}
+            {context ? (
+              <>
+                {modeId ? <PillSeparator /> : null}
+                {context}
+              </>
+            ) : null}
             <span className="flex-1" />
             {pullRequest ? (
               <button
@@ -470,7 +485,13 @@ export function PromptInput({
               type="button"
               onClick={() => submit()}
               disabled={!canSend}
-              title={isStarting ? "Queue until the agent runs (enter)" : isBusy ? `Queue for after this turn (enter)${sendNowShortcut ? `; ${sendNowShortcut} sends now` : ""}${interruptShortcut ? `, ${interruptShortcut} stops the turn` : ""}` : "Send (enter)"}
+              title={
+                isStarting
+                  ? "Queue until the agent runs (enter)"
+                  : isBusy
+                    ? `${steers ? "Add to the running turn" : "Queue for after this turn"} (enter)${sendNowShortcut ? `; ${sendNowShortcut} sends now` : ""}${interruptShortcut ? `, ${interruptShortcut} stops the turn` : ""}`
+                    : "Send (enter)"
+              }
               className={SEND_BUTTON}
             >
               <SendIcon />

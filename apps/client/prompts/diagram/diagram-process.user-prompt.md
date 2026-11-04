@@ -2,7 +2,7 @@ Update the Hunt process diagram for this session. The session's changes are the 
 `git diff --name-only {{diffBase}}` lists plus untracked files (`git ls-files --others --exclude-standard`); use
 exactly this base, whatever earlier diagrams covered.
 
-Rebuild `.hunt/diagram.process.json` (`"type": "process"`, schema in `.hunt/diagram.schema.json`) as described in
+Rebuild `.hunt/diagrams/process.react-flow.json` (`"type": "process"`, schema in `.hunt/diagrams/diagram.schema.json`) as described in
 your instructions:
 
 - Scope: the diagram shows the one process the session's changes belong to (a checkout, an import, a deployment, a

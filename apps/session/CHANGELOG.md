@@ -1,3 +1,9 @@
+## 0.33.8 (2026-11-04)
+
+### 🚀 Features
+
+- **client:** show subagents as chats of their own with per-agent tokens ([dd37419](https://github.com/unshoppable/hunt/commit/dd37419))
+
 ## 0.33.7 (2026-11-02)
 
 This was a version bump only for session to align it with other projects, there were no code changes.

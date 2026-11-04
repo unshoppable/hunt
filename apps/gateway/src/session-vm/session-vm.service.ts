@@ -482,18 +482,19 @@ export class SessionVmService {
     const snapshot = sessionId.vm.snapshotName;
     let type = machineType ?? (instance.machineType || "its machine type");
     reporter.progress("movingVm");
-    reporter.log(`${type} is unavailable in ${oldZone}; moving ${sessionId.vm.name} to another zone`);
+    reporter.log(`${type} is unavailable in ${oldZone}; moving ${sessionId.vm.name} to another zone with a copy of its disk, which takes 3 to 4 minutes`);
     const bootDisk = instance.disks.find((disk) => disk.boot);
     if (!bootDisk) throw new ApiError("unavailable", `failed to move ${sessionId.vm.name}: it has no boot disk`);
     const diskName = bootDisk.source || sessionId.vm.name;
     await this.discardSnapshot(snapshot, reporter, true);
     const disk = await this.deps.compute.getDisk(oldZone, diskName);
-    reporter.log(`snapshotting the disk ${diskName} of ${sessionId.vm.name} in ${oldZone} as ${snapshot}`);
+    reporter.log(`copying the ${disk.sizeGb} GB disk of ${sessionId.vm.name} in ${oldZone} as the snapshot ${snapshot}, which takes 1 to 2 minutes`);
     const snapshotOperation = await this.deps.compute.createSnapshot(oldZone, diskName, snapshot);
     const snapshotError = await this.waitForOperation(snapshotOperation, SNAPSHOT_TIMEOUT_MS, `snapshot the disk of ${sessionId.vm.name}`);
     if (snapshotError) {
       throw new ApiError("unavailable", `failed to move ${sessionId.vm.name}: snapshotting its disk failed: ${snapshotError.message || snapshotError.code}`);
     }
+    reporter.log(`renaming ${sessionId.vm.name} to ${moving} to free its name for the new VM, which takes about a minute`);
     try {
       await this.rename(oldZone, sessionId.vm.name, moving);
     } catch (error) {
@@ -545,7 +546,7 @@ export class SessionVmService {
     let error: OperationError | null;
     try {
       const operation = await this.deps.compute.insert(zone, request);
-      reporter.log(`creating ${sessionId.vm.name} from ${DEFAULT_TEMPLATE} in ${zone} with a disk from ${snapshot}`);
+      reporter.log(`creating ${sessionId.vm.name} in ${zone} with a disk from the snapshot ${snapshot}`);
       error = await this.waitForOperation(operation, CREATE_TIMEOUT_MS, `create ${sessionId.vm.name} in ${zone}`);
     } catch (thrown) {
       if (!isStockout(messageOf(thrown))) throw thrown;

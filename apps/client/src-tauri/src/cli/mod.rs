@@ -168,7 +168,7 @@ fn step_text(step: RemoteStep) -> Option<&'static str> {
     match step {
         RemoteStep::StartingVm => Some("starting the VM"),
         RemoteStep::ResumingVm => Some("resuming the VM"),
-        RemoteStep::MovingVm => Some("moving the VM to another zone"),
+        RemoteStep::MovingVm => Some("moving the VM to another zone, which takes 3 to 4 minutes"),
         RemoteStep::CreatingVm => Some("creating the VM"),
         RemoteStep::WaitingForVm => Some("waiting for the VM"),
         RemoteStep::Connecting => Some("connecting"),

@@ -8,7 +8,7 @@ import type { SessionChat } from "../../chat/chat.store-slice";
 export const REMOTE_STEP_LABELS: Record<RemoteStep, string> = {
   startingVm: "Starting the stopped VM…",
   resumingVm: "Waking the suspended VM…",
-  movingVm: "Moving the VM to a zone with capacity…",
+  movingVm: "The VM's zone has no capacity; moving it with a copy of its disk to another zone, this takes 3 to 4 minutes…",
   creatingVm: "Creating the session's VM…",
   waitingForVm: "Waiting for the VM to finish its setup, the first boot takes a few minutes…",
   connecting: "Connecting to the VM…",

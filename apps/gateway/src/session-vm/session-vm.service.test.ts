@@ -716,9 +716,10 @@ describe("SessionVmService.start moving the VM", () => {
     expect(vmZones).toEqual([ZONE_B]);
     expect(logs).toEqual([
       `starting ${VM}`,
-      `c4d-standard-8 is unavailable in ${ZONE}; moving ${VM} to another zone`,
-      `snapshotting the disk ${VM} of ${VM} in ${ZONE} as ${SNAPSHOT}`,
-      `creating ${VM} from tpl-hunt-session in ${ZONE_B} with a disk from ${SNAPSHOT}`,
+      `c4d-standard-8 is unavailable in ${ZONE}; moving ${VM} to another zone with a copy of its disk, which takes 3 to 4 minutes`,
+      `copying the 50 GB disk of ${VM} in ${ZONE} as the snapshot ${SNAPSHOT}, which takes 1 to 2 minutes`,
+      `renaming ${VM} to ${MOVING} to free its name for the new VM, which takes about a minute`,
+      `creating ${VM} in ${ZONE_B} with a disk from the snapshot ${SNAPSHOT}`,
       `moved ${VM} from ${ZONE} to ${ZONE_B}; deleting the VM it replaced and the snapshot`,
       `${VM} is ready; checking its release`,
       `put the remote secrets on ${VM} (1)`,
@@ -834,7 +835,7 @@ describe("SessionVmService.start moving the VM", () => {
       `resuming ${VM}`,
       `c4d-standard-8 is unavailable in ${ZONE}; stopping ${VM} to move it`,
       `starting ${VM}`,
-      `c4d-standard-8 is unavailable in ${ZONE}; moving ${VM} to another zone`,
+      `c4d-standard-8 is unavailable in ${ZONE}; moving ${VM} to another zone with a copy of its disk, which takes 3 to 4 minutes`,
     ]);
   });
 

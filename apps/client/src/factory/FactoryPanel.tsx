@@ -14,7 +14,7 @@ import { errorText } from "../ui/error-text.utils";
 import { ExternalIcon, GitHubIcon, Spinner } from "../ui/Icons";
 import { useLoad } from "../ui/load.hook";
 import { FACTORY_EDGE_TYPES, FACTORY_NODE_TYPES } from "./FactoryNodes";
-import { formatRunDuration, OUTCOME_LABELS, pipelineGraph, pipelineLinks, runDuration, STEP_LABELS } from "./pipeline-graph.utils";
+import { formatRunDuration, OUTCOME_LABELS, pipelineGraph, pipelineLinks, runDuration, STEP_LABELS, transitionText, type Transition } from "./pipeline-graph.utils";
 import { layoutPipeline, type PipelineFlowEdge, type StepFlowNode } from "./pipeline-layout.utils";
 
 /** How often the duration of a running run counts up. */
@@ -93,7 +93,7 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
     <div className="flex h-full min-h-0 flex-col">
       <div className={`${HEADER_BAR} gap-2 border-b border-(--line) px-4`}>
         <span className="text-sm font-medium text-neutral-100">Factory</span>
-        {pipeline ? <span className="min-w-0 truncate text-[13px] text-neutral-400">{statusText(pipeline)}</span> : null}
+        {pipeline ? <span className="min-w-0 truncate text-[13px] text-neutral-400">{statusText(pipeline, graph?.lastTransition ?? null)}</span> : null}
         <span className="flex-1" />
         {record.isLoading ? <Spinner /> : null}
         {links.map((link) => (
@@ -166,9 +166,15 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
   );
 }
 
-/** One line on where the pipeline stands, for the header: the step, the returns of each step that sent the issue back and whether a person reviews. */
-function statusText(pipeline: Pipeline): string {
+/**
+ * One line on where the pipeline stands, for the header: the step, the last transition, the returns of each step that
+ * sent the issue back and whether a person reviews.
+ */
+function statusText(pipeline: Pipeline, lastTransition: Transition | null): string {
   const parts = [`At ${STEP_LABELS[pipeline.step]}`];
+  if (lastTransition) {
+    parts.push(lastTransition.source === lastTransition.target ? `last ${STEP_LABELS[lastTransition.target]} started over` : `last ${transitionText(lastTransition)}`);
+  }
   for (const step of RETURNING_STEPS) {
     if (pipeline.returnsOf(step) > 0) {
       parts.push(`${pipeline.returnCountOf(step)} (${STEP_LABELS[step]})`);

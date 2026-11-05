@@ -640,8 +640,10 @@ which a Tauri app cannot satisfy, and its elbow arrows cross other shapes.
 A session of the gateway's swf poller (`mode: "swf"` in `sessions.json`, see "Remote sessions") has the Factory tab
 after Terminal. It shows the pipeline of the session's issue: the steps plan → implement → verify → review → pr →
 checks → human-review → merge as a graph (`@xyflow/react`, laid out by ELK like the architecture diagrams), each with its run
-count, the current step marked and every return to implement as an amber edge labelled with the findings that caused
-it; below the graph the runs in order with outcome, start and duration, and under them the step result of the selected
+count and how often it was repeated (`↻n`), the current step marked and every return to implement as an amber edge labelled
+with the findings that caused it; the edge of the last transition (from the step of the last run but one to that of the
+last run) is blue, drawn over the steps' tops when no edge connects them (such as checks → merge), and the header names
+it (`last Review → Implement`); below the graph the runs in order with outcome, start and duration, and under them the step result of the selected
 run rendered as markdown. The data is the record the poller mirrors into `.hunt/swf/pipeline.json` of the worktree on
 the VM (`hunt-ctl swf-record`, schema in `libs/domain/src/swf/pipeline.domain.ts`) plus `.hunt/swf/steps/<nn>-<step>.md`
 with the result that ended run `nn`; Hunt pulls that folder into the local worktree when it opens the session, whenever

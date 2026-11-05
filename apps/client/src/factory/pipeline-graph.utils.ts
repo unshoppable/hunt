@@ -23,6 +23,8 @@ export type StepNode = {
   id: SwfStep;
   label: string;
   runs: Run[];
+  /** How often the step ran again after its first run. */
+  repeats: number;
   /** The pipeline's current step, running or not. */
   isCurrent: boolean;
   /** A run of the step is under way. */
@@ -35,14 +37,21 @@ export type StepNode = {
 export type FlowEdge = { id: string; kind: "flow"; source: SwfStep; target: SwfStep };
 /** A run that sent the issue back to implement: from the step of the run `cause` to the step of the run `n` it caused. */
 export type ReturnEdge = { id: string; kind: "return"; source: SwfStep; target: SwfStep; cause: number; n: number; findings: number; label: string };
-export type PipelineEdge = FlowEdge | ReturnEdge;
+/** The last transition when neither the baseline nor a return connects its steps, such as checks → merge or merge → human-review. */
+export type JumpEdge = { id: string; kind: "jump"; source: SwfStep; target: SwfStep };
+export type PipelineEdge = FlowEdge | ReturnEdge | JumpEdge;
 
-export type PipelineGraph = { nodes: StepNode[]; edges: PipelineEdge[] };
+/** The move from the step of the last run but one (`source`) to the step of the last run `n`. */
+export type Transition = { source: SwfStep; target: SwfStep; n: number };
+
+/** `lastEdgeId` names the edge of `lastTransition`; null without one or for a step that started over (`source` = `target`). */
+export type PipelineGraph = { nodes: StepNode[]; edges: PipelineEdge[]; lastTransition: Transition | null; lastEdgeId: string | null };
 
 /**
  * The graph of the pipeline: every step of the baseline plan → … → merge as a node with its runs, the current step
  * marked, plus one return edge per implement run that a `returned` run caused, labelled with that run's findings. A
- * `cause` that names no run of the record (a record cut by hand) draws no edge.
+ * `cause` that names no run of the record (a record cut by hand) draws no edge. The last transition is marked on the
+ * return edge of the last run, else on the baseline edge between its steps, else on a jump edge drawn for it alone.
  */
 export function pipelineGraph(record: PipelineRecord): PipelineGraph {
   const nodes: StepNode[] = SWF_STEPS.map((step) => {
@@ -52,6 +61,7 @@ export function pipelineGraph(record: PipelineRecord): PipelineGraph {
       id: step,
       label: STEP_LABELS[step],
       runs,
+      repeats: Math.max(0, runs.length - 1),
       isCurrent: record.step === step,
       isRunning: last?.outcome === "running",
       outcome: last && last.outcome !== "running" ? last.outcome : null,
@@ -74,10 +84,36 @@ export function pipelineGraph(record: PipelineRecord): PipelineGraph {
       label: `${findings} ${findings === 1 ? "finding" : "findings"}`,
     });
   }
-  return { nodes, edges };
+  const lastTransition = pipelineLastTransition(record);
+  return { nodes, edges, lastTransition, lastEdgeId: lastTransition ? lastTransitionEdge(lastTransition, edges) : null };
 }
 
-export const STEP_NODE_WIDTH = 116;
+/** The transition into the last run of `record`; null before the second run. */
+export function pipelineLastTransition(record: PipelineRecord): Transition | null {
+  const target = record.runs[record.runs.length - 1];
+  const source = record.runs[record.runs.length - 2];
+  if (!target || !source) return null;
+  return { source: source.step, target: target.step, n: target.n };
+}
+
+/** The id of the edge that shows `transition`, adding a jump edge to `edges` when no edge connects its steps. */
+function lastTransitionEdge(transition: Transition, edges: PipelineEdge[]): string | null {
+  if (transition.source === transition.target) return null;
+  const returned = edges.find((edge) => edge.kind === "return" && edge.n === transition.n);
+  if (returned) return returned.id;
+  const flow = edges.find((edge) => edge.kind === "flow" && edge.source === transition.source && edge.target === transition.target);
+  if (flow) return flow.id;
+  const jump: JumpEdge = { id: `jump:${transition.source}->${transition.target}`, kind: "jump", source: transition.source, target: transition.target };
+  edges.push(jump);
+  return jump.id;
+}
+
+/** `transition` in words for the Factory tab's header: `Review → Implement`. */
+export function transitionText(transition: Transition): string {
+  return `${STEP_LABELS[transition.source]} → ${STEP_LABELS[transition.target]}`;
+}
+
+export const STEP_NODE_WIDTH = 132;
 export const STEP_NODE_HEIGHT = 52;
 
 /** Keeps the baseline pointing forward when ELK breaks the cycles the return edges make, so the steps stay one line. */
@@ -90,7 +126,8 @@ export function stepPortId(step: SwfStep, side: "in" | "out" | "top"): string {
 
 /**
  * The graph as ELK lays it out: the steps left to right in one line, the baseline between their left and right sides,
- * every return between the top sides of its two steps so that it arcs over the baseline with its label; nothing grouped.
+ * every return and the jump between the top sides of their two steps so that they arc over the baseline, a return with
+ * its label; nothing grouped.
  */
 export function pipelineLayoutInput(graph: PipelineGraph): LayoutInput {
   return {
@@ -105,11 +142,11 @@ export function pipelineLayoutInput(graph: PipelineGraph): LayoutInput {
       ],
     })),
     groups: [],
-    edges: graph.edges.map((edge) =>
-      edge.kind === "return"
-        ? { id: edge.id, source: stepPortId(edge.source, "top"), target: stepPortId(edge.target, "top"), label: edge.label }
-        : { id: edge.id, source: stepPortId(edge.source, "out"), target: stepPortId(edge.target, "in"), priority: BASELINE_PRIORITY },
-    ),
+    edges: graph.edges.map((edge) => {
+      if (edge.kind === "return") return { id: edge.id, source: stepPortId(edge.source, "top"), target: stepPortId(edge.target, "top"), label: edge.label };
+      if (edge.kind === "jump") return { id: edge.id, source: stepPortId(edge.source, "top"), target: stepPortId(edge.target, "top") };
+      return { id: edge.id, source: stepPortId(edge.source, "out"), target: stepPortId(edge.target, "in"), priority: BASELINE_PRIORITY };
+    }),
     direction: "RIGHT",
     mergeEdges: false,
     spacing: { nodeNode: 32, betweenLayers: 40 },

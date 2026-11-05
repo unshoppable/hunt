@@ -1,3 +1,9 @@
+## 0.143.0 (2026-11-05)
+
+### 🚀 Features
+
+- **client:** drop the key hint below the prompt of a new session ([79fce7b](https://github.com/unshoppable/hunt/commit/79fce7b))
+
 ## 0.142.1 (2026-11-05)
 
 ### 🩹 Fixes

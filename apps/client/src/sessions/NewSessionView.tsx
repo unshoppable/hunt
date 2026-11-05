@@ -565,13 +565,7 @@ export function NewSessionView({
               onDraftChange={(draft) => {
                 draftRef.current = draft;
               }}
-              hint={
-                startsWhenLoaded
-                  ? "Starting the session…"
-                  : !hasTarget
-                    ? "Choose a repository to start the session right away"
-                    : "enter starts the session · shift+enter adds a line · choosing a repository or a base branch starts one right away"
-              }
+              hint={startsWhenLoaded ? "Starting the session…" : !hasTarget ? "Choose a repository to start the session right away" : undefined}
             />
             {error || branchError ? (
               <div className="chat-column px-5">

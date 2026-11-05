@@ -1,3 +1,9 @@
+## 0.142.1 (2026-11-05)
+
+### 🩹 Fixes
+
+- **client:** diff a pull request review against its target branch on origin ([36680a2](https://github.com/unshoppable/hunt/commit/36680a2))
+
 ## 0.142.0 (2026-11-05)
 
 ### 🚀 Features

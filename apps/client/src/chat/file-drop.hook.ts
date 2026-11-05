@@ -3,21 +3,21 @@ import { commands } from "../ipc/commands";
 import { listenToFileDrag } from "../ipc/events";
 import type { Screenshot } from "./chat.types";
 
-type ImageDropHandlers = {
-  /** The image files dropped inside the zone, in drop order. */
-  onDrop: (images: Screenshot[]) => void;
-  /** Files were dropped inside the zone, but none of them is an image. */
-  onNoImages: () => void;
+type FileDropHandlers = {
+  /** Whether the zone takes files other than images; without it a drag highlights the zone only when it carries an image. */
+  acceptsFiles: boolean;
+  /** The image files dropped inside the zone and the paths of the other dropped files and folders, each in drop order. */
+  onDrop: (images: Screenshot[], others: string[]) => void;
 };
 
 type Point = { x: number; y: number };
 
 /**
  * Takes native file drops inside `zoneRef`, resolving the image files among the dragged paths through the backend.
- * Returns whether a drag that carries at least one image is over the zone right now, for highlighting the target.
+ * Returns whether a drag the zone takes is over it right now, for highlighting the target.
  * The handlers are read when the drop happens, so they may be fresh closures.
  */
-export function useImageDrop(zoneRef: RefObject<HTMLElement | null>, handlers: ImageDropHandlers): boolean {
+export function useFileDrop(zoneRef: RefObject<HTMLElement | null>, handlers: FileDropHandlers): boolean {
   const [isOver, setIsOver] = useState(false);
   const handlersRef = useRef(handlers);
   handlersRef.current = handlers;
@@ -25,7 +25,7 @@ export function useImageDrop(zoneRef: RefObject<HTMLElement | null>, handlers: I
   useEffect(() => {
     /** The images among the files of the current drag; null between drags. */
     let dragged: Promise<Screenshot[]> | null = null;
-    let hasImages = false;
+    let isTaken = false;
     let position: Point = { x: -1, y: -1 };
 
     const isInside = (point: Point) => {
@@ -35,7 +35,7 @@ export function useImageDrop(zoneRef: RefObject<HTMLElement | null>, handlers: I
     };
     const reset = () => {
       dragged = null;
-      hasImages = false;
+      isTaken = false;
       setIsOver(false);
     };
 
@@ -47,21 +47,26 @@ export function useImageDrop(zoneRef: RefObject<HTMLElement | null>, handlers: I
       position = event.position;
       if (event.type === "enter") {
         const images = commands.imageFiles(event.paths).catch(() => []);
+        const hasFiles = event.paths.length > 0;
         dragged = images;
         void images.then((found) => {
           if (dragged !== images) return;
-          hasImages = found.length > 0;
-          setIsOver(hasImages && isInside(position));
+          isTaken = found.length > 0 || (hasFiles && handlersRef.current.acceptsFiles);
+          setIsOver(isTaken && isInside(position));
         });
         return;
       }
       if (event.type === "over") {
-        setIsOver(hasImages && isInside(position));
+        setIsOver(isTaken && isInside(position));
         return;
       }
       const images = dragged ?? commands.imageFiles(event.paths).catch(() => []);
+      const paths = event.paths;
       if (isInside(position)) {
-        void images.then((found) => (found.length ? handlersRef.current.onDrop(found) : handlersRef.current.onNoImages()));
+        void images.then((found) => {
+          const imagePaths = new Set(found.map((image) => image.path));
+          handlersRef.current.onDrop(found, paths.filter((path) => !imagePaths.has(path)));
+        });
       }
       reset();
     });

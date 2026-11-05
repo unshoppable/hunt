@@ -93,6 +93,7 @@ command_handler![
     chat::steer_prompt,
     chat::list_screenshots,
     chat::image_files,
+    chat::attach_files,
     chat::session_history,
     chat::loaded_context,
     chat::context_parts,

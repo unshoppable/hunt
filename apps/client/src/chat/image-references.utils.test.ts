@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { insertImageReference, removeImageReference, shiftImageReferences } from "./image-references.utils";
+import { fileReference, insertImageReference, insertReference, removeImageReference, shiftImageReferences } from "./image-references.utils";
 
 describe("insertImageReference", () => {
   it("inserts at the caret with a space on each side", () => {
@@ -10,6 +10,17 @@ describe("insertImageReference", () => {
     expect(insertImageReference("", 0, 1)).toEqual({ text: "[Image #1] ", caret: 11 });
     expect(insertImageReference("look ", 5, 2)).toEqual({ text: "look [Image #2] ", caret: 16 });
     expect(insertImageReference("look\nhere", 4, 1)).toEqual({ text: "look [Image #1]\nhere", caret: 15 });
+  });
+});
+
+describe("insertReference", () => {
+  it("inserts a file reference after the text, keeping a path with spaces in one piece", () => {
+    const reference = fileReference("/w/.hunt/attachments/Nacht 0126.xlsx");
+    expect(insertReference("compare", 7, reference)).toEqual({ text: "compare `/w/.hunt/attachments/Nacht 0126.xlsx` ", caret: 46 });
+  });
+
+  it("inserts into empty text without a leading space", () => {
+    expect(insertReference("", 0, "`/a.csv`")).toEqual({ text: "`/a.csv` ", caret: 9 });
   });
 });
 

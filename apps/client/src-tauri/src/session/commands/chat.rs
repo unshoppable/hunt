@@ -1,6 +1,6 @@
 //! The commands of a session's chat: sending a prompt with its images (and, in a sub chat about a file, the file's
 //! current text) as a turn or into the running one, the conversation so far, cancelling a turn, the agent's permission mode and config options, the
-//! answers to its permission requests, the screenshots and image files a prompt attaches, the guardrails in the agent's
+//! answers to its permission requests, the screenshots, image files and other files a prompt attaches, the guardrails in the agent's
 //! context, and declining a guardrail the agent suggested.
 
 use std::path::{Path, PathBuf};
@@ -21,7 +21,9 @@ use crate::agent::acp::{message_time, publish_update, token_usage, turn, LiveHan
 use crate::agent::claude_config::claude_dir;
 use crate::agent::{context_parts, declined_guardrails, loaded_context};
 use crate::platform::screenshots::{self, Screenshot};
+use crate::remote::sync::Direction;
 use crate::remote::transcript::local_project;
+use crate::session::attachments;
 use crate::session::attribution;
 use crate::session::link;
 use crate::session::store::{self, SessionRecord};
@@ -67,7 +69,7 @@ pub async fn steer_prompt(
 
 /// The content blocks of a prompt to the agent of `id`. A sub chat about writing a file (a selection with a task) gets
 /// the file's current content ahead of the text, so the agent always sees the version on disk; a remote session's local
-/// edits reach its VM first.
+/// edits and the attached files the text names reach its VM first.
 async fn prompt_content(app: &AppHandle, id: Uuid, text: &str, images: &[String]) -> Result<Vec<ContentBlock>, String> {
     let mut blocks = prompt_blocks(text, images)?;
     if blocks.is_empty() {
@@ -88,6 +90,12 @@ async fn prompt_content(app: &AppHandle, id: Uuid, text: &str, images: &[String]
     }
     // The agent on a VM sees the files saved here before it reads the prompt.
     sync::flush(app, id).await;
+    if record.remote.is_some() {
+        let named = attachments::named_in(&record.worktree_path, text);
+        if !named.is_empty() {
+            sync::copy_files(app, id, Direction::Push, &named).await?;
+        }
+    }
     Ok(blocks)
 }
 
@@ -188,6 +196,16 @@ pub async fn list_screenshots() -> Result<Vec<Screenshot>, String> {
 #[tauri::command]
 pub fn image_files(paths: Vec<String>) -> Vec<Screenshot> {
     screenshots::image_files(&paths)
+}
+
+/// Copies the dropped files among `paths` into the worktree of `id` (`attachments::attach`) and returns the absolute
+/// paths the agent knows them by, on its VM for a remote session; folders are left out.
+#[tauri::command]
+pub fn attach_files(app: AppHandle, id: Uuid, paths: Vec<String>) -> Result<Vec<String>, String> {
+    let record = worktree_session(&app, id)?;
+    let attached = attachments::attach(&record.worktree_path, &paths)?;
+    let root = record.remote.as_ref().map_or(&record.worktree_path, |host| &host.worktree_path);
+    Ok(attached.iter().map(|path| root.join(path).display().to_string()).collect())
 }
 
 /// Every notification of a running session so far, for rebuilding its chat in the UI.

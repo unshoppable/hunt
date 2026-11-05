@@ -411,6 +411,7 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         queue={chat?.queue ?? []}
         onTakeQueue={() => takeQueue(sessionId)}
         onUnqueue={(promptId) => unqueuePrompt(sessionId, promptId)}
+        onAttachFiles={(paths) => commands.attachFiles(sessionId, paths)}
         placeholder={shownSubagent ? "Message the main agent" : undefined}
         header={
           session.isLive ? (

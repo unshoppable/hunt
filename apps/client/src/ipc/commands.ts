@@ -336,6 +336,11 @@ export const commands = {
   listScreenshots: () => invoke<Screenshot[]>("list_screenshots"),
   /** The image files among `paths` (e.g. files dropped into the chat) as attachments; other files are left out. */
   imageFiles: (paths: string[]) => invoke<Screenshot[]>("image_files", { paths }),
+  /**
+   * Copies the dropped files among `paths` that the prompt of session `id` attaches into its worktree's `.hunt/attachments/`
+   * and resolves with the absolute paths the agent reads them from (on its VM for a remote session); folders are left out.
+   */
+  attachFiles: (id: string, paths: string[]) => invoke<string[]>("attach_files", { id, paths }),
   openWorktreeInWebstorm: (id: string) => invoke<void>("open_worktree_in_webstorm", { id }),
   /** Opens a worktree file in WebStorm with the caret on `line`:`column` (1-based). */
   openFileInWebstorm: (id: string, path: string, line: number, column: number) =>

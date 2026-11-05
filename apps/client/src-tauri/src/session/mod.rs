@@ -1,3 +1,4 @@
+pub mod attachments;
 pub mod attribution;
 pub mod commands;
 pub mod dependencies;

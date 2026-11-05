@@ -15,11 +15,24 @@ export function imageReference(index: number): string {
  * and returns the text with the caret placed after the reference.
  */
 export function insertImageReference(text: string, caret: number, index: number): { text: string; caret: number } {
+  return insertReference(text, caret, imageReference(index));
+}
+
+/** The mention of an attached file at the absolute `path` the agent reads it from, in backticks so a space cannot split it. */
+export function fileReference(path: string): string {
+  return `\`${path}\``;
+}
+
+/**
+ * Inserts `reference` at `caret`, separated from neighbouring text by a space on each side, and returns the text with
+ * the caret placed after the reference.
+ */
+export function insertReference(text: string, caret: number, reference: string): { text: string; caret: number } {
   const before = text.slice(0, caret);
   const after = text.slice(caret);
   const needsSpaceBefore = before.length > 0 && !/\s$/.test(before);
   const needsSpaceAfter = !/^\s/.test(after);
-  const inserted = `${needsSpaceBefore ? " " : ""}${imageReference(index)}${needsSpaceAfter ? " " : ""}`;
+  const inserted = `${needsSpaceBefore ? " " : ""}${reference}${needsSpaceAfter ? " " : ""}`;
   return { text: before + inserted + after, caret: before.length + inserted.length };
 }
 

@@ -19,8 +19,8 @@ import { isShortcut } from "../../ui/shortcuts.utils";
 import { useShortcutLabel } from "../../ui/shortcut-label.hook";
 import { matchCommands, slashQueryOf } from "./slash-commands.utils";
 import { codePasteText, EDITOR_CLIPBOARD_TYPE, editorCopyLanguage } from "../code-paste.utils";
-import { insertImageReference, removeImageReference, shiftImageReferences } from "../image-references.utils";
-import { useImageDrop } from "../image-drop.hook";
+import { fileReference, insertImageReference, insertReference, removeImageReference, shiftImageReferences } from "../image-references.utils";
+import { useFileDrop } from "../file-drop.hook";
 import { annotationElementLabel, annotationTooltip, promptWithAnnotations } from "./annotation-prompt.utils";
 
 /** One agent config dropdown (model, effort, …) shown in the prompt toolbar. */
@@ -81,6 +81,7 @@ export function PromptInput({
   placeholder = "Ask anything, / for commands",
   hint = "",
   dropZoneRef,
+  onAttachFiles,
   annotations = [],
   onRemoveAnnotation = () => {},
   onAnnotationsSent = () => {},
@@ -126,8 +127,13 @@ export function PromptInput({
   placeholder?: string;
   /** Text under the box, e.g. what is still missing before a session can start; none inside a session. */
   hint?: string;
-  /** Element whose area takes dropped image files as attachments; the box itself without it. */
+  /** Element whose area takes dropped files as attachments; the box itself without it. */
   dropZoneRef?: RefObject<HTMLElement | null>;
+  /**
+   * Copies dropped files that are not images to where the agent reads them and resolves with the paths the prompt names
+   * them by; without it the box takes dropped images only.
+   */
+  onAttachFiles?: (paths: string[]) => Promise<string[]>;
   /**
    * Annotations of the review widget on the session's preview page, shown as chips above the text; the next prompt takes
    * them along (`promptWithAnnotations`), also without text, unless it is a slash command.
@@ -184,12 +190,21 @@ export function PromptInput({
     textareaRef.current?.setSelectionRange(caret, caret);
   }, [text]);
 
-  const isDropTarget = useImageDrop(dropZoneRef ?? rootRef, {
-    onDrop: (images) => {
+  const isDropTarget = useFileDrop(dropZoneRef ?? rootRef, {
+    acceptsFiles: Boolean(onAttachFiles),
+    onDrop: (images, others) => {
       setDropError(null);
       addAttachments(images);
+      if (!others.length) return;
+      if (!onAttachFiles) {
+        setDropError(images.length ? "Only the images were attached: other files can be attached once the session runs." : "Only images can be attached here: PNG, JPEG, GIF or WebP.");
+        return;
+      }
+      void onAttachFiles(others).then(
+        (paths) => (paths.length ? addFileReferences(paths) : setDropError("Folders cannot be attached, only files.")),
+        (error: unknown) => setDropError(String(error)),
+      );
     },
-    onNoImages: () => setDropError("Only images can be attached: PNG, JPEG, GIF or WebP."),
   });
 
   useEffect(() => {
@@ -244,6 +259,18 @@ export function PromptInput({
       setAttachments([...attachments, ...added]);
     }
     return added;
+  }
+
+  /** Writes a reference to each attached file at `paths` at the caret, into the text the box holds by then. */
+  function addFileReferences(paths: string[]) {
+    let next = textareaRef.current?.value ?? text;
+    let caret = textareaRef.current?.selectionStart ?? next.length;
+    for (const path of paths) {
+      ({ text: next, caret } = insertReference(next, caret, fileReference(path)));
+    }
+    setText(next);
+    pendingCaretRef.current = caret;
+    textareaRef.current?.focus();
   }
 
   /** Attaches `screenshots`, writes a `[Image #n]` reference for each at the caret and returns the focus to the text. */
@@ -347,7 +374,7 @@ export function PromptInput({
         >
           {isDropTarget ? (
             <div className="pointer-events-none absolute inset-0 z-30 flex items-center justify-center rounded-2xl bg-(--surface-input)/90 text-sm text-neutral-200">
-              Drop images to attach them
+              {onAttachFiles ? "Drop files to attach them" : "Drop images to attach them"}
             </div>
           ) : null}
           {annotations.length ? (

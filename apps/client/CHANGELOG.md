@@ -1,3 +1,9 @@
+## 0.142.0 (2026-11-05)
+
+### 🚀 Features
+
+- **client:** attach dropped files that are not images to a prompt ([af610ec](https://github.com/unshoppable/hunt/commit/af610ec))
+
 ## 0.141.1 (2026-11-04)
 
 ### 🩹 Fixes

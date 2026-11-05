@@ -1,3 +1,9 @@
+## 0.144.0 (2026-11-05)
+
+### 🚀 Features
+
+- **client:** show how often a step repeated and the last transition in the Factory graph ([31d08ce](https://github.com/unshoppable/hunt/commit/31d08ce))
+
 ## 0.143.0 (2026-11-05)
 
 ### 🚀 Features

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PullRequest } from "./pull-requests.types";
-import { NO_PULL_REQUEST_FILTER, filterPullRequests, findPullRequestBranch, pullRequestAuthors } from "./pull-requests.utils";
+import { NO_PULL_REQUEST_FILTER, filterPullRequests, findPullRequestBranch, findPullRequestTargetBranch, pullRequestAuthors } from "./pull-requests.utils";
 
 function pullRequest(number: number, title: string, author: string, headRefName: string, labels: string[] = []): PullRequest {
   return {
@@ -93,5 +93,19 @@ describe("findPullRequestBranch", () => {
 
   it("is null for a branch that was never fetched", () => {
     expect(findPullRequestBranch(branches, "feat/image-focus")).toBeNull();
+  });
+});
+
+describe("findPullRequestTargetBranch", () => {
+  const branches = ["main", "develop", "origin/main", "fork/release"];
+
+  it("prefers the copy on origin over a local branch that may lag behind it", () => {
+    expect(findPullRequestTargetBranch(branches, "main")).toBe("origin/main");
+  });
+
+  it("falls back to the local branch, then any remote, then null", () => {
+    expect(findPullRequestTargetBranch(branches, "develop")).toBe("develop");
+    expect(findPullRequestTargetBranch(branches, "release")).toBe("fork/release");
+    expect(findPullRequestTargetBranch(branches, "trunk")).toBeNull();
   });
 });

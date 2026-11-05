@@ -23,7 +23,7 @@ import { BranchIcon, ChevronDownIcon, CloseIcon, CloudIcon, FolderIcon, GitHubIc
 import { NewBranchPopover } from "./NewBranchPopover";
 import { PullRequestList } from "./PullRequestList";
 import { RepositoryMenu } from "./RepositoryMenu";
-import { findPullRequestBranch } from "./pull-requests.utils";
+import { findPullRequestBranch, findPullRequestTargetBranch } from "./pull-requests.utils";
 import { SessionVmList } from "./remote/SessionVmList";
 import { titleFromPrompt } from "./session-labels.utils";
 import { useStartRepoPath } from "./start-repo-path.hook";
@@ -241,8 +241,9 @@ export function NewSessionView({
    * Starts the review session of a pull request right away, without a prompt: a worktree on the pull request's own
    * branch (a local branch of that name, created from its copy on a remote when missing; a session branch off it while
    * another worktree has it checked out), titled after the pull request and marked as its review, with the diff pane
-   * showing the pull request's changes against its target branch. A branch the repository lacks is fetched from
-   * `origin` first.
+   * showing the pull request's changes against its target branch on `origin`, as GitHub shows them. The target branch
+   * is always fetched from `origin` first, so the diff base is its merge base with the current target rather than with
+   * a stale copy; the pull request's branch only when the repository lacks it.
    */
   async function selectPullRequest(selected: PullRequest) {
     setView("start");
@@ -258,22 +259,20 @@ export function NewSessionView({
       setError(errorText(reason));
       return;
     }
-    const missingBranches = [selected.headRefName, selected.baseRefName].filter((name) => !findPullRequestBranch(knownBranches, name));
-    if (missingBranches.length) {
-      try {
-        // One fetch after the other: concurrent fetches into one repository contend for its ref locks.
-        for (const name of missingBranches) {
-          await commands.fetchRepoBranch(repoPath, name);
-        }
-        knownBranches = await commands.listBranches(repoPath);
-      } catch (reason) {
-        setError(errorText(reason));
-        return;
+    const fetchedBranches = findPullRequestBranch(knownBranches, selected.headRefName) ? [selected.baseRefName] : [selected.headRefName, selected.baseRefName];
+    try {
+      // One fetch after the other: concurrent fetches into one repository contend for its ref locks.
+      for (const name of fetchedBranches) {
+        await commands.fetchRepoBranch(repoPath, name);
       }
-      setBranches(knownBranches);
+      knownBranches = await commands.listBranches(repoPath);
+    } catch (reason) {
+      setError(errorText(reason));
+      return;
     }
+    setBranches(knownBranches);
     const branch = findPullRequestBranch(knownBranches, selected.headRefName);
-    const targetBranch = findPullRequestBranch(knownBranches, selected.baseRefName);
+    const targetBranch = findPullRequestTargetBranch(knownBranches, selected.baseRefName);
     if (!branch || !targetBranch) {
       setError(`Branch "${branch ? selected.baseRefName : selected.headRefName}" of #${selected.number} is not on origin.`);
       return;

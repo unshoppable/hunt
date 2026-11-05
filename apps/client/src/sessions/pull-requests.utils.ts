@@ -47,3 +47,13 @@ export function findPullRequestBranch(branches: string[], headRefName: string): 
   if (branches.includes(origin)) return origin;
   return branches.find((branch) => branch.endsWith(`/${headRefName}`)) ?? null;
 }
+
+/**
+ * The name under which the target branch of a pull request is known in the repository: its copy on `origin` first,
+ * which GitHub compares the pull request against, since a local branch of that name may lag behind it by any number
+ * of commits; else as `findPullRequestBranch` finds it.
+ */
+export function findPullRequestTargetBranch(branches: string[], baseRefName: string): string | null {
+  const origin = `origin/${baseRefName}`;
+  return branches.includes(origin) ? origin : findPullRequestBranch(branches, baseRefName);
+}

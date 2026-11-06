@@ -16,7 +16,7 @@ describe("insertImageReference", () => {
 describe("insertReference", () => {
   it("inserts a file reference after the text, keeping a path with spaces in one piece", () => {
     const reference = fileReference("/w/.hunt/attachments/Nacht 0126.xlsx");
-    expect(insertReference("compare", 7, reference)).toEqual({ text: "compare `/w/.hunt/attachments/Nacht 0126.xlsx` ", caret: 46 });
+    expect(insertReference("compare", 7, reference)).toEqual({ text: "compare `/w/.hunt/attachments/Nacht 0126.xlsx` ", caret: 47 });
   });
 
   it("inserts into empty text without a leading space", () => {

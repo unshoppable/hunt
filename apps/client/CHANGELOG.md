@@ -1,3 +1,9 @@
+## 0.147.0 (2026-11-06)
+
+### 🚀 Features
+
+- **client:** let the user color diagram elements and keep them apart, with smooth dragging and hovering ([f71d526](https://github.com/unshoppable/hunt/commit/f71d526))
+
 ## 0.146.0 (2026-11-06)
 
 ### 🚀 Features

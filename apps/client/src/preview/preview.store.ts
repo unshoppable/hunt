@@ -16,7 +16,7 @@ export type SessionPreview = {
   status: PreviewStatus | null;
   error: string | null;
   isRefreshing: boolean;
-  /** The agent was asked to start the services: the Preview tab polls often until one of them answers. */
+  /** The agent was asked to start the services: the Terminal tab says so until one of them answers. */
   awaitingStart: boolean;
 };
 
@@ -29,16 +29,13 @@ type PreviewState = {
    * `awaitingStart` once a service answers.
    */
   refresh: (id: string) => Promise<void>;
-  /** Sends the agent `START_APP_PROMPT` and shows the Preview tab, which polls often until a service answers. */
+  /** Sends the agent `START_APP_PROMPT` and shows the Terminal tab, which waits until a service answers. */
   startApp: (id: string) => void;
   /** Ends `awaitingStart` before a service answers. */
   stopWaiting: (id: string) => void;
 };
 
-/**
- * The previews of remote sessions; the Preview and Terminal tabs poll them (see preview/PreviewPanel.tsx and
- * terminal/TerminalPanel.tsx).
- */
+/** The previews of remote sessions; the Terminal tab polls them (see terminal/TerminalPanel.tsx). */
 export const usePreviewStore = create<PreviewState>((set) => {
   function update(id: string, change: (preview: SessionPreview) => SessionPreview) {
     set((state) => ({ previews: { ...state.previews, [id]: change(state.previews[id] ?? EMPTY_PREVIEW) } }));
@@ -66,7 +63,7 @@ export const usePreviewStore = create<PreviewState>((set) => {
 
     startApp: (id) => {
       update(id, (current) => ({ ...current, error: null, awaitingStart: true }));
-      useSessionViewStore.getState().setTab(id, "preview");
+      useSessionViewStore.getState().setTab(id, "terminal");
       // The normal prompt path: it starts a VM that is off and queues the prompt while the agent is busy.
       void useHuntStore.getState().sendPrompt(id, START_APP_PROMPT);
     },

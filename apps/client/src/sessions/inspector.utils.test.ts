@@ -10,10 +10,8 @@ describe("hasInspectorTab", () => {
     }
   });
 
-  it("gives Preview and Desktop only to a session on a VM", () => {
-    expect(hasInspectorTab("preview", localSession)).toBe(false);
+  it("gives Desktop only to a session on a VM", () => {
     expect(hasInspectorTab("desktop", localSession)).toBe(false);
-    expect(hasInspectorTab("preview", { ...localSession, isOnVm: true })).toBe(true);
     expect(hasInspectorTab("desktop", { ...localSession, isOnVm: true })).toBe(true);
   });
 

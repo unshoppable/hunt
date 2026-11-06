@@ -1,12 +1,12 @@
-import type { PreviewService, PreviewServiceState, PreviewStatus } from "./preview.types";
+import type { PreviewService, PreviewStatus } from "./preview.types";
 import handoffStartPrompt from "../../prompts/chat/handoff-start.user-prompt.md?raw";
 
-/** How a state reads in the Preview tab: answering, on its way, needing a look, broken, or at rest. */
+/** How a state reads in the Terminal tab: answering, on its way, needing a look, broken, or at rest. */
 export type Tone = "ok" | "pending" | "warning" | "error" | "idle";
 
 export type Description = { text: string; tone: Tone };
 
-/** A service's state as the Preview tab shows it; while the VM is off, enabled services start again with it. */
+/** A service's state as the Terminal tab shows it; while the VM is off, enabled services start again with it. */
 export function describeService(service: PreviewService, isVmRunning: boolean): Description {
   if (!isVmRunning) return { text: service.enabled ? "Starts with the VM" : "Stopped", tone: "idle" };
   switch (service.state) {
@@ -21,35 +21,9 @@ export function describeService(service: PreviewService, isVmRunning: boolean): 
   }
 }
 
-/**
- * Whether the Preview and Terminal tabs list a service: it runs, starts or failed; while the VM is off, it starts with
- * the VM. Stopped services stay hidden.
- */
-export function isServiceInUse(service: PreviewService, isVmRunning: boolean): boolean {
-  return isVmRunning ? service.state !== "stopped" : service.enabled;
-}
-
-/** The preview as the Preview tab's header sums it up: whether the VM runs and how many services run, start or failed. */
-export function describePreview(status: PreviewStatus | null): Description {
-  if (!status) return { text: "…", tone: "idle" };
-  if (!status.vmRunning) return { text: "VM off", tone: "idle" };
-  const { services } = status;
-  if (!services.length) return { text: "No services in hunt.json", tone: "idle" };
-  const running = countInState(services, "running");
-  const starting = countInState(services, "starting");
-  const failed = countInState(services, "failed");
-  const parts: string[] = [];
-  if (running) {
-    parts.push(`${running} of ${services.length} running`);
-  }
-  if (starting) {
-    parts.push(`${starting} starting`);
-  }
-  if (failed) {
-    parts.push(`${failed} failed`);
-  }
-  if (!parts.length) return { text: "No service running", tone: "idle" };
-  return { text: parts.join(", "), tone: failed ? "error" : running ? "ok" : "pending" };
+/** Whether the unit of `service` runs or is about to, so that its tab offers Stop rather than Start. */
+export function isServiceRunning(service: PreviewService): boolean {
+  return service.state === "running" || service.state === "starting";
 }
 
 /**
@@ -60,10 +34,10 @@ export const HANDOFF_START_PROMPT = handoffStartPrompt.trim();
 
 /** Whether a service of hunt.json runs or is starting. */
 export function hasRunningService(status: PreviewStatus): boolean {
-  return status.services.some((service) => service.state === "running" || service.state === "starting");
+  return status.services.some(isServiceRunning);
 }
 
-/** Whether the Preview tab carries a green dot: a service of hunt.json runs or starts on the running VM. */
+/** Whether a service of hunt.json runs or starts on the running VM, for the Terminal tab's green dot. */
 export function isPreviewActive(status: PreviewStatus | null): boolean {
   return Boolean(status?.vmRunning && hasRunningService(status));
 }
@@ -74,7 +48,7 @@ export function hasRespondingService(status: PreviewStatus): boolean {
 }
 
 /**
- * Whether the Preview tab offers to have the agent start the app: no service runs or starts, and hunt.json declares
+ * Whether the Terminal tab offers to have the agent start the app: no service runs or starts, and hunt.json declares
  * services or the VM is off, so its services are not known yet.
  */
 export function offersStart(status: PreviewStatus): boolean {
@@ -87,14 +61,5 @@ export function offersStart(status: PreviewStatus): boolean {
  */
 export function withLastKnown(previous: PreviewStatus | null, next: PreviewStatus): PreviewStatus {
   if (next.vmRunning || next.services.length || !previous?.services.length) return next;
-  return { ...next, services: previous.services.map((service) => ({ ...service, state: "stopped", responds: false })) };
-}
-
-/** Whether the Preview tab polls often: while it waits for the agent to start the app or while a service starts. */
-export function shouldPollFast(status: PreviewStatus | null, isAwaitingStart: boolean): boolean {
-  return isAwaitingStart || Boolean(status?.services.some((service) => service.state === "starting"));
-}
-
-function countInState(services: PreviewService[], state: PreviewServiceState): number {
-  return services.filter((service) => service.state === state).length;
+  return { ...next, services: previous.services.map((service) => ({ ...service, state: "stopped", responds: false, invocation: null })) };
 }

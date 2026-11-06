@@ -10,7 +10,7 @@ import { Keymap, type StoredKeymap } from "../common/keymap/keymap.value-object"
 import type { Shortcut } from "../common/keymap/shortcut.value-object";
 
 /** The configurable panes of the window; every tab of the inspector has one. */
-export type PaneKey = "sidebar" | "chat" | "changelist" | "diff" | "git" | "editor" | "architecture" | "pullRequest" | "preview" | "terminal";
+export type PaneKey = "sidebar" | "chat" | "changelist" | "diff" | "git" | "editor" | "architecture" | "pullRequest" | "terminal";
 
 export type PaneSettings = {
   /** Text size in px. */
@@ -56,7 +56,6 @@ export const DEFAULT_PANES: Record<PaneKey, PaneSettings> = {
   editor: { fontSize: 16, lineHeight: 2, indent: 0, background: "#33373f", fontFamily: CODE_FONT_FAMILY },
   architecture: { fontSize: 12, lineHeight: 1.5, indent: 0, background: "#272c35", fontFamily: UI_FONT_FAMILY },
   pullRequest: { fontSize: 14, lineHeight: 1.6, indent: 0, background: "#272c35", fontFamily: UI_FONT_FAMILY },
-  preview: { fontSize: 13, lineHeight: 1.5, indent: 0, background: "#272c35", fontFamily: UI_FONT_FAMILY },
   // Full-screen programs (tmux's borders and status line) need terminal rows close to the font size.
   terminal: { fontSize: 16, lineHeight: 1.2, indent: 0, background: "#33373f", fontFamily: CODE_FONT_FAMILY },
 };

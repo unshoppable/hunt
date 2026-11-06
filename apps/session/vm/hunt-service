@@ -1,18 +1,32 @@
 #!/usr/bin/env bash
-# Runs the service $1 of the session's hunt.json as the user agent; hunt-service@.service starts it with the service's
-# environment, in which HUNT_SERVICE_DIR names the folder to run in and HUNT_SERVICE_COMMAND the command line. The
-# output goes to ~/logs/<name>.log, with a header line for every start; above 20 MiB the log moves to <name>.log.1 at
-# the next start. The script opens the log itself, as the agent: systemd would open it as root and follow a symlink the
-# agent put there. The command runs in a plain bash, not a login shell, so the service's environment is all it gets.
+# Runs the service $1 of the session's hunt.json as the user agent in a terminal of its own; hunt-service@.service
+# starts it with the service's environment, in which HUNT_SERVICE_DIR names the folder to run in and
+# HUNT_SERVICE_COMMAND the command line.
+#
+# `hunt-service <name>`, the unit's main process, starts a tmux server of its own at $RUNTIME_DIRECTORY/tmux
+# (/run/hunt-service-<name>/tmux), whose session <name> holds the window <name> that runs `hunt-service --run <name>`,
+# and waits until that ends; it exits with the code of the command, 1 when the server ended without one. The tmux server
+# inherits the unit's environment, which reaches the window, and stays in the unit's cgroup. Hunt's Terminal tab attaches
+# to the session, so the user watches the command and can type into it. /etc/tmux.conf pipes the window to
+# ~/logs/<name>.log, which it moves to <name>.log.1 above 20 MiB.
+#
+# `hunt-service --run <name>`, inside the window, prints a header line for the start and runs the command in a plain
+# bash, not a login shell, so the service's environment is all it gets; then it records the command's exit code in
+# $RUNTIME_DIRECTORY/exit and wakes the waiting main process through `tmux wait-for`.
 #
 # Not named hunt-ctl: hunt-idle-check keeps the VM up while a process of that name runs.
 set -euo pipefail
 
 readonly NAME_PATTERN='^[a-z][a-z0-9-]{0,31}$'
-readonly MAX_LOG_BYTES=$((20 * 1024 * 1024))
+readonly CHANNEL=hunt-service-exit
 
+inner=false
+if [[ ${1-} == --run ]]; then
+  inner=true
+  shift
+fi
 name=${1-}
-if [[ ! $name =~ $NAME_PATTERN ]]; then
+if [[ $# -ne 1 || ! $name =~ $NAME_PATTERN ]]; then
   echo "usage: hunt-service <name>" >&2
   exit 2
 fi
@@ -20,20 +34,39 @@ if [[ -z ${HUNT_SERVICE_DIR-} || -z ${HUNT_SERVICE_COMMAND-} ]]; then
   echo "hunt-service: HUNT_SERVICE_DIR and HUNT_SERVICE_COMMAND must be set; run hunt-ctl session-config" >&2
   exit 2
 fi
+runtime=${RUNTIME_DIRECTORY:-/run/hunt-service-$name}
+socket=$runtime/tmux
+exit_file=$runtime/exit
 
-log_dir=${HOME:?}/logs
-log=$log_dir/$name.log
-mkdir -p -- "$log_dir"
-if [[ -f $log ]] && (( $(stat -c %s -- "$log") > MAX_LOG_BYTES )); then
-  mv -f -- "$log" "$log.1"
+if $inner; then
+  printf '==== %s: starting %s in %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$HUNT_SERVICE_COMMAND" "$HUNT_SERVICE_DIR"
+  dir=$HUNT_SERVICE_DIR
+  command=$HUNT_SERVICE_COMMAND
+  unset HUNT_SERVICE_DIR HUNT_SERVICE_COMMAND RUNTIME_DIRECTORY TMUX TMUX_PANE
+  # Ctrl-C in the terminal sends SIGINT to this script too; the trap keeps it alive to record the command's exit code,
+  # and, being a handler rather than an ignored signal, leaves SIGINT at its default in the command.
+  trap : INT
+  status=0
+  cd -- "$dir" && /bin/bash -c "$command" || status=$?
+  echo "$status" >"$exit_file"
+  tmux -S "$socket" wait-for -S "$CHANNEL"
+  exit "$status"
 fi
-exec >>"$log" 2>&1
 
-printf '==== %s: starting %s in %s\n' "$(date '+%Y-%m-%d %H:%M:%S %Z')" "$HUNT_SERVICE_COMMAND" "$HUNT_SERVICE_DIR"
-cd -- "$HUNT_SERVICE_DIR"
-command=$HUNT_SERVICE_COMMAND
-unset HUNT_SERVICE_DIR HUNT_SERVICE_COMMAND
-# Output goes to a file, not a terminal; Hunt shows the log in a terminal, so tools that honor FORCE_COLOR keep their
-# colors. A FORCE_COLOR in the service's env wins.
-export FORCE_COLOR=${FORCE_COLOR-1}
-exec /bin/bash -c "$command"
+rm -f -- "$exit_file"
+# The window starts with a placeholder, so that the after-new-session hook of /etc/tmux.conf opens the log pipe before
+# the command prints anything; the pipe stays open when respawn-pane replaces the placeholder. The pipe-pane without a
+# command closes what is left of it all the same, and the after-pipe-pane hook opens it again, as tmux 3.8 closes a
+# pipe when the pane's program ends and 3.3a keeps it.
+tmux -S "$socket" new-session -d -s "$name" -n "$name" -x 200 -y 50 'exec sleep 2147483647' \; \
+  respawn-pane -k -t "=$name:" "$(realpath -- "${BASH_SOURCE[0]}")" --run "$name" \; \
+  pipe-pane -t "=$name:"
+# A signal sent before the wait begins is kept for it; the wait also ends when the tmux server ends, which it may have
+# done already when the command ended at once.
+tmux -S "$socket" wait-for "$CHANNEL" 2>/dev/null || true
+status=$(cat -- "$exit_file" 2>/dev/null || true)
+if [[ ! $status =~ ^[0-9]+$ ]]; then
+  echo "hunt-service: the tmux server of $name ended before the command" >&2
+  exit 1
+fi
+exit "$status"

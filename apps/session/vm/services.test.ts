@@ -90,11 +90,17 @@ const DECLARED = {
   ui: { port: 4400, tls: true, guarded: true },
 };
 
+/** The InvocationID the fake systemctl reports for the service `name` while it runs or starts. */
+function invocationOf(name: string): string {
+  return createHash("md5").update(`hunt-service@${name}.service`).digest("hex");
+}
+
 /** A service as `hunt-ctl service` reports it, from its declaration and state. */
 function reported(name: keyof typeof DECLARED, state: Partial<{ enabled: boolean; state: string; responds: boolean }> = {}) {
   const declared = DECLARED[name];
   const host = declared.guarded ? `7c0c6f2e-${declared.port}` : `7c0c6f2e-${declared.port}-open`;
-  return { name, ...declared, url: `https://${host}.${DOMAIN}`, enabled: false, state: "stopped", responds: false, ...state };
+  const report = { name, ...declared, url: `https://${host}.${DOMAIN}`, enabled: false, state: "stopped", responds: false, ...state };
+  return { ...report, invocation: report.state === "running" || report.state === "starting" ? invocationOf(name) : null };
 }
 
 function docker(args: string[], input?: string) {
@@ -147,6 +153,15 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     return huntCtlJson("session-config", ID, "--domain", DOMAIN);
   }
 
+  /** Waits until the log `name` holds `count` lines with `text` and returns the log. */
+  function waitForLog(name: string, text: string, count = 1) {
+    return sh(`for _ in $(seq 100); do [ "$(grep -c -- "$2" "$1" 2>/dev/null)" -ge "$3" ] && break; sleep 0.1; done; cat "$1"`, [
+      `/home/agent/logs/${name}.log`,
+      text,
+      String(count),
+    ]).stdout;
+  }
+
   beforeAll(() => {
     if (docker(["image", "inspect", IMAGE]).status !== 0) {
       const built = docker(["build", "--quiet", "--tag", IMAGE, "-"], DOCKERFILE);
@@ -192,7 +207,8 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(sh("stat -c '%a %U' /etc/sudoers.d/hunt-service; test -x /srv/hunt/current/vm/hunt-service && echo runnable").stdout).toBe("440 root\nrunnable\n");
     const unit = sh("cat /etc/systemd/system/hunt-service@.service").stdout;
     expect(unit).toContain("\nUser=agent\n");
-    expect(unit).toContain("\nExecStart=/srv/hunt/current/vm/hunt-service %i\n");
+    expect(unit).toContain("\nExecStart=/srv/hunt/current/vm/hunt-service %i\nRuntimeDirectory=hunt-service-%i\n");
+    expect(unit).toContain("\nRestart=on-failure\nSuccessExitStatus=130 SIGINT\n");
     expect(unit).toContain(
       "\nEnvironmentFile=/srv/hunt/current/vm/agent.env\nEnvironmentFile=-/etc/hunt/session.env\nEnvironmentFile=/etc/hunt/services/%i.env\n",
     );
@@ -208,13 +224,6 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
   it("logs every tmux window of the agent to ~/logs, through a pipe-pane -o and a grouped session, and rotates a big log", () => {
     expect(sh("stat -c '%a %U' /etc/tmux.conf").stdout).toBe("644 root\n");
     const tmux = (args: string) => sh(`runuser -u agent -- tmux ${args}`);
-    /** Waits until the log `name` holds `count` lines with `text` and returns the log. */
-    const waitForLog = (name: string, text: string, count = 1) =>
-      sh(`for _ in $(seq 100); do [ "$(grep -c -- "$2" "$1" 2>/dev/null)" -ge "$3" ] && break; sleep 0.1; done; cat "$1"`, [
-        `/home/agent/logs/${name}.log`,
-        text,
-        String(count),
-      ]).stdout;
     const isLogging = (window: string) => tmux(`display-message -p -t app:${window} '#{pane_pipe}'`).stdout;
     sh("install -d -o agent -g agent /home/agent/logs && truncate -s 21M /home/agent/logs/web.log && chown agent:agent /home/agent/logs/web.log");
 
@@ -417,7 +426,7 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(systemctlCalls()).toEqual([
       "systemctl reset-failed hunt-service@api.service hunt-service@admin.service",
       "systemctl enable --quiet --now hunt-service@api.service hunt-service@admin.service",
-      "systemctl show --property Id,ActiveState,SubState,UnitFileState hunt-service@api.service hunt-service@admin.service hunt-service@ui.service",
+      "systemctl show --property Id,ActiveState,SubState,UnitFileState,InvocationID hunt-service@api.service hunt-service@admin.service hunt-service@ui.service",
     ]);
 
     sh("echo failed >/run/fake-systemd/hunt-service@api.service; echo activating >/run/fake-systemd/hunt-service@ui.service");
@@ -488,9 +497,9 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     huntCtlJson("service", "start", "admin");
     const expected = {
       services: [
-        { name: "api", port: 3000, tls: false, guarded: false, enabled: false, state: "stopped", responds: false },
-        { name: "admin", port: 4200, tls: false, guarded: true, enabled: true, state: "running", responds: true },
-        { name: "ui", port: 4400, tls: true, guarded: true, enabled: false, state: "stopped", responds: false },
+        { name: "api", port: 3000, tls: false, guarded: false, enabled: false, state: "stopped", responds: false, invocation: null },
+        { name: "admin", port: 4200, tls: false, guarded: true, enabled: true, state: "running", responds: true, invocation: invocationOf("admin") },
+        { name: "ui", port: 4400, tls: true, guarded: true, enabled: false, state: "stopped", responds: false, invocation: null },
       ],
       listening: [4200],
     };
@@ -537,38 +546,64 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     expect(sh(`test -e /etc/hunt/services || test -e /srv/hunt/sessions/${ID} || echo removed`).stdout).toBe("removed\n");
   });
 
-  it("runs a service's command as the agent in its folder, without the HUNT_SERVICE_ variables, and logs to ~/logs in color", () => {
-    const run = (command: string, env: string[] = []) =>
+  it("runs a service's command as the agent in a tmux server of its own, in its folder, without the HUNT_SERVICE_ variables, logging to ~/logs", () => {
+    const runtime = "/run/hunt-service-admin";
+    const environment = ["HOME=/home/agent", `RUNTIME_DIRECTORY=${runtime}`, "HUNT_SERVICE_DIR=/home/agent/app/admin", "API_URL=http://api"];
+    const run = (command: string) =>
       docker([
         "exec",
         "--user",
         "agent",
-        ...env.flatMap((variable) => ["--env", variable]),
-        "--env",
-        "HOME=/home/agent",
-        "--env",
-        "HUNT_SERVICE_DIR=/home/agent/app/admin",
-        "--env",
-        `HUNT_SERVICE_COMMAND=${command}`,
+        ...[...environment, `HUNT_SERVICE_COMMAND=${command}`].flatMap((variable) => ["--env", variable]),
         container,
         "/srv/hunt/current/vm/hunt-service",
         "admin",
       ]);
-    sh("install -d -o agent -g agent /home/agent/logs && truncate -s 21M /home/agent/logs/admin.log && chown agent:agent /home/agent/logs/admin.log");
-    expect(run('echo "$(id -un) in $PWD: [${HUNT_SERVICE_DIR-}${HUNT_SERVICE_COMMAND-}] color=${FORCE_COLOR-}"; shopt -q login_shell || echo plain')).toEqual({
-      status: 0,
-      stdout: "",
-      stderr: "",
-    });
-    expect(sh("stat -c %s /home/agent/logs/admin.log.1").stdout).toBe(`${21 * 1024 * 1024}\n`);
-    const log = sh("cat /home/agent/logs/admin.log").stdout;
-    expect(log).toMatch(/^==== \d{4}-\d\d-\d\d \d\d:\d\d:\d\d \S+: starting echo .* in \/home\/agent\/app\/admin\n/);
-    expect(log.slice(log.indexOf("\n") + 1)).toBe("agent in /home/agent/app/admin: [] color=1\nplain\n");
+    /**
+     * Starts the service with `command` in the background, waits until its log shows `started`, prints the session and
+     * window of its tmux server, runs the tmux command `action` there and prints the service's exit status.
+     */
+    const interrupted = (command: string, action: string) =>
+      sh(
+        String.raw`
+          command=$1 action=$2
+          shift 2
+          runuser -u agent -- env "$@" HUNT_SERVICE_COMMAND="$command" /srv/hunt/current/vm/hunt-service admin &
+          service=$!
+          for _ in $(seq 100); do grep -q '^started' /home/agent/logs/admin.log 2>/dev/null && break; sleep 0.1; done
+          runuser -u agent -- tmux -S /run/hunt-service-admin/tmux list-windows -a -F '#{session_name}:#{window_name} #{pane_pipe}'
+          runuser -u agent -- tmux -S /run/hunt-service-admin/tmux $action
+          status=0
+          wait "$service" || status=$?
+          echo "status=$status"`,
+        [command, action, ...environment],
+      );
+    sh(`rm -rf ${runtime} && install -d -o agent -g agent ${runtime} /home/agent/logs`);
+    sh("truncate -s 21M /home/agent/logs/admin.log && chown agent:agent /home/agent/logs/admin.log");
 
-    expect(run("exit 7").status).toBe(7);
-    expect(sh("grep -c '^==== ' /home/agent/logs/admin.log").stdout).toBe("2\n");
-    expect(run('echo "color=$FORCE_COLOR"', ["FORCE_COLOR=0"]).status).toBe(0);
-    expect(sh("tail -n 1 /home/agent/logs/admin.log").stdout).toBe("color=0\n");
+    const command = 'echo "$(id -un) in $PWD: [${HUNT_SERVICE_DIR-}${HUNT_SERVICE_COMMAND-}${RUNTIME_DIRECTORY-}${TMUX-}] api=$API_URL"; ' +
+      'tty -s && echo "terminal ${TERM%%-*}"; shopt -q login_shell || echo plain';
+    expect(run(command)).toEqual({ status: 0, stdout: "", stderr: "" });
+    expect(sh("stat -c %s /home/agent/logs/admin.log.1").stdout).toBe(`${21 * 1024 * 1024}\n`);
+    const log = waitForLog("admin", "plain");
+    expect(log).toMatch(/^==== \d{4}-\d\d-\d\d \d\d:\d\d:\d\d \S+: starting echo .* in \/home\/agent\/app\/admin\r\n/);
+    expect(log.slice(log.indexOf("\n") + 1)).toMatch(/^agent in \/home\/agent\/app\/admin: \[\] api=http:\/\/api\r\nterminal (tmux|screen)\r\nplain\r\n$/);
+    expect(sh(`cat ${runtime}/exit`).stdout).toBe("0\n");
+
+    expect(run("exit 3")).toEqual({ status: 3, stdout: "", stderr: "" });
+    expect(run("echo bye; exit 130").status).toBe(130);
+    expect(waitForLog("admin", "^==== ", 3).match(/^==== /gm)).toHaveLength(3);
+
+    // Ctrl-C typed into the terminal ends the command, which exits with 130.
+    expect(interrupted("echo started; sleep 30", "send-keys -t =admin: C-c")).toMatchObject({ status: 0, stdout: "admin:admin 1\nstatus=130\n", stderr: "" });
+    sh("rm -f /home/agent/logs/admin.log");
+    // A tmux server that ends leaves no exit code; the service fails.
+    expect(interrupted("echo started; sleep 30", "kill-server")).toMatchObject({
+      status: 0,
+      stdout: "admin:admin 1\nstatus=1\n",
+      stderr: "hunt-service: the tmux server of admin ended before the command\n",
+    });
+
     const invalid = docker(["exec", "--user", "agent", container, "/srv/hunt/current/vm/hunt-service", "../x"]);
     expect(invalid).toMatchObject({ status: 2, stderr: "usage: hunt-service <name>\n" });
   });

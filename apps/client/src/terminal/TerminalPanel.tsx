@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { commands } from "../ipc/commands";
 import type { PreviewService } from "../preview/preview.types";
 import type { LocalService, Machine, ScriptRunRequest, TmuxWindow } from "./terminal.types";
 import { ownerLabel } from "../diff/attribution.utils";
-import { describeService, isServiceInUse } from "../preview/preview-services.utils";
+import { describeService, hasRespondingService, isServiceRunning, offersStart, type Description } from "../preview/preview-services.utils";
 import { sessionMarks } from "../sessions/session-labels.utils";
 import { usePreviewStore } from "../preview/preview.store";
 import { useHuntStore } from "../sessions/hunt.store";
 import { NO_SESSION_WINDOWS, useTerminalStore } from "./terminals.store";
 import { useServicesStore } from "./services.store";
-import { ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { GHOST_BUTTON_XS, ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
 import { confirmDestructive } from "../ui/confirm.utils";
 import { PlusIcon, Spinner } from "../ui/Icons";
 import { errorText } from "../ui/error-text.utils";
@@ -42,9 +43,11 @@ type FocusRequest = { key: string | null; count: number };
 /**
  * The Terminal tab of a session: one tab per process, each a window of a tmux session `app` that logs its output. A
  * local session shows the windows of its family's tmux server on this Mac, in which its agents and its sub chats' agents
- * run their processes. A remote session shows the services of the repository's hunt.json that are in use, as read-only
- * logs, and the windows on its VM, plus "(Mac)" the windows its sub chats opened on this Mac. A local session lists the
- * services of its hunt.json first, each a tab that starts and stops the service in a window of its own. "+" opens a shell in a
+ * run their processes. A remote session shows the windows on its VM, plus "(Mac)" the windows its sub chats opened on
+ * this Mac. Both list the services of their hunt.json first, each a tab that starts and stops the service and shows its
+ * terminal: on this Mac a window of its own, on the VM the tmux session the service's systemd unit runs it in, or its
+ * log while it does not run; a VM's service also links its preview URL, and "Start the app" asks the agent to start the
+ * services the task needs. "+" opens a shell in a
  * new window where the session's agent runs, × ends a window and its process; a package.json script run from the editor
  * gets a window of its own, which stays after the script ended and offers "Run again". A window of another session of
  * the family carries that session's mark. The first time a local session's panel shows without windows, it opens a
@@ -60,8 +63,10 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
   const parentId = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.parentId ?? null);
   const sessions = useHuntStore((state) => state.sessions);
   const marks = useMemo(() => sessionMarks(sessions), [sessions]);
-  const services = usePreviewStore((state) => state.previews[sessionId]?.status?.services ?? NO_SERVICES);
-  const isVmRunning = usePreviewStore((state) => state.previews[sessionId]?.status?.vmRunning ?? true);
+  const previewStatus = usePreviewStore((state) => state.previews[sessionId]?.status ?? null);
+  const isAwaitingStart = usePreviewStore((state) => Boolean(state.previews[sessionId]?.awaitingStart));
+  const services = previewStatus?.services ?? NO_SERVICES;
+  const isVmRunning = previewStatus?.vmRunning ?? true;
   const windows = useTerminalStore((state) => state.windows[sessionId] ?? NO_SESSION_WINDOWS);
   const refreshServices = usePreviewStore((state) => state.refresh);
   const localServices = useServicesStore((state) => (isRemote ? NO_LOCAL_SERVICES : (state.services[sessionId]?.status?.services ?? NO_LOCAL_SERVICES)));
@@ -79,14 +84,8 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
   const shellMachine: Machine = isRemote ? "vm" : "desktop";
   const tabs = useMemo(
     () =>
-      terminalTabs(
-        services.filter((service) => isServiceInUse(service, isVmRunning)),
-        windows.vm ?? NO_WINDOWS,
-        windows.desktop ?? NO_WINDOWS,
-        isRemote,
-        localServices,
-      ),
-    [services, isVmRunning, windows, isRemote, localServices],
+      terminalTabs(services, windows.vm ?? NO_WINDOWS, windows.desktop ?? NO_WINDOWS, isRemote, localServices),
+    [services, windows, isRemote, localServices],
   );
   const activeTab = tabs.find((tab) => tab.key === activeKey) ?? null;
   const endedScript = activeTab ? endedScriptWindow(activeTab) : null;
@@ -214,12 +213,19 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
     await loadWindows([machine]);
   };
 
-  /** Starts the local service `name`, or every one without a name, and shows the tab of `name`. */
+  /** Starts the service `name` here or on the VM, or every local one without a name, and shows the tab of `name`. */
   const startService = async (name?: string) => {
     try {
       await useServicesStore.getState().start(sessionId, name);
+      setError(null);
     } catch (reason) {
       setError(errorText(reason));
+    }
+    if (isRemote) {
+      if (name) {
+        activate(`service:${name}`);
+      }
+      return;
     }
     await loadWindows(["desktop"]);
     if (name) {
@@ -230,10 +236,17 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
   const stopService = async (name: string) => {
     try {
       await useServicesStore.getState().stop(sessionId, name);
+      setError(null);
     } catch (reason) {
       setError(errorText(reason));
     }
-    await loadWindows(["desktop"]);
+    if (!isRemote) {
+      await loadWindows(["desktop"]);
+    }
+  };
+
+  const openPreview = (url: string) => {
+    void openUrl(url).catch((reason) => setError(errorText(reason)));
   };
 
   const runAgain = async (tab: TerminalTab, scriptWindow: TmuxWindow) => {
@@ -286,6 +299,21 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
             <div role="group" aria-label="Services" className="flex shrink-0 items-center gap-1 rounded-md bg-white/[0.04] py-0.5 pr-0.5 pl-2">
               <span className="text-[12px] font-semibold tracking-wide text-neutral-500 uppercase">Services</span>
               {serviceTabs.map(renderTab)}
+              {isRemote && previewStatus && isAwaitingStart && !hasRespondingService(previewStatus) ? (
+                <span className="flex shrink-0 items-center gap-1.5 px-1 text-neutral-400" title="The agent was asked to start the app">
+                  <Spinner />
+                  Starting the app…
+                </span>
+              ) : isRemote && previewStatus && offersStart(previewStatus) ? (
+                <button
+                  type="button"
+                  onClick={() => usePreviewStore.getState().startApp(sessionId)}
+                  title="Asks the agent to start the services this task needs, as the repository's hunt.agent.md describes"
+                  className={GHOST_BUTTON_XS}
+                >
+                  Start the app
+                </button>
+              ) : null}
             </div>
           ) : null}
           {serviceTabs.length && otherTabs.length ? <span aria-hidden className="mx-1 h-4 w-px shrink-0 bg-(--line)" /> : null}
@@ -299,10 +327,25 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
       {servicesProblem ? <p className="border-b border-(--line) px-3 py-2 text-[13px] text-red-400">{servicesProblem}</p> : null}
       {activeTab?.localService ? (
         <ServiceBar
-          service={activeTab.localService}
-          window={activeTab.window}
+          state={localServiceState(activeTab.localService, activeTab.window)}
+          address={activeTab.localService.port !== null ? <span className="text-neutral-500">localhost:{activeTab.localService.port}</span> : null}
+          isRunning={Boolean(activeTab.window && !activeTab.window.isDead)}
+          startLabel={activeTab.window ? "Start again" : "Start"}
           onStart={() => void startService(activeTab.localService?.name)}
           onStop={() => void stopService(activeTab.localService?.name ?? "")}
+        />
+      ) : activeTab?.service ? (
+        <ServiceBar
+          state={describeService(activeTab.service, isVmRunning)}
+          address={
+            <button type="button" onClick={() => openPreview(activeTab.service?.url ?? "")} className="min-w-0 truncate font-mono text-sky-300 hover:underline">
+              {activeTab.service.url}
+            </button>
+          }
+          isRunning={isServiceRunning(activeTab.service)}
+          startLabel={activeTab.service.state === "failed" ? "Start again" : "Start"}
+          onStart={() => void startService(activeTab.service?.name)}
+          onStop={() => void stopService(activeTab.service?.name ?? "")}
         />
       ) : null}
       {activeTab && endedScript ? (
@@ -317,9 +360,9 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
       <div className="min-h-0 flex-1">
         {tabs.map((tab) =>
           tab.target && openedKeys.includes(tab.key) ? (
-            // A local service's tab keeps its key while its window changes; its terminal follows the window.
+            // A service's tab keeps its key while its window, on a VM its unit's run, changes; its terminal follows it.
             <TerminalView
-              key={`${tab.key}|${tab.window?.id ?? ""}`}
+              key={`${tab.key}|${tab.window?.id ?? tab.service?.invocation ?? ""}`}
               sessionId={sessionId}
               target={tab.target}
               isVisible={isVisible && tab.key === activeKey}
@@ -351,26 +394,30 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
 }
 
 /**
- * The bar above a local service's terminal: its state, "Stop" while it runs, "Start" or "Start again" otherwise.
+ * The bar above a service's terminal: its state, where it answers (`address`), "Stop" while it runs, `startLabel`
+ * otherwise.
  */
 function ServiceBar({
-  service,
-  window,
+  state,
+  address,
+  isRunning,
+  startLabel,
   onStart,
   onStop,
 }: {
-  service: LocalService;
-  window: TmuxWindow | null;
+  state: Description;
+  address: ReactNode;
+  isRunning: boolean;
+  startLabel: string;
   onStart: () => void;
   onStop: () => void;
 }) {
-  const state = localServiceState(service, window);
-  const isRunning = Boolean(window && !window.isDead);
-  const toneClass = state.tone === "error" ? "text-red-300" : state.tone === "ok" ? "text-emerald-300" : "text-neutral-400";
+  const toneClass =
+    state.tone === "error" ? "text-red-300" : state.tone === "ok" ? "text-emerald-300" : state.tone === "warning" ? "text-amber-300" : "text-neutral-400";
   return (
     <div className="flex h-[36px] shrink-0 items-center gap-2 border-b border-(--line) px-3 text-[13px]">
-      <span className={`min-w-0 truncate ${toneClass}`}>{state.text}</span>
-      {service.port !== null ? <span className="text-neutral-500">localhost:{service.port}</span> : null}
+      <span className={`min-w-0 shrink-0 truncate ${toneClass}`}>{state.text}</span>
+      {address}
       <span className="flex-1" />
       {isRunning ? (
         <button type="button" onClick={onStop} className={SECONDARY_BUTTON_XS}>
@@ -378,7 +425,7 @@ function ServiceBar({
         </button>
       ) : (
         <button type="button" onClick={onStart} className={SECONDARY_BUTTON_XS}>
-          {window ? "Start again" : "Start"}
+          {startLabel}
         </button>
       )}
     </div>

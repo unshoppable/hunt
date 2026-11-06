@@ -2,8 +2,8 @@
 //! and the agent starts those its task needs. The gateway routes `https://<short>-<port>.<domain>` to any port of the
 //! VM behind Google login, and `https://<short>-<port>-open.<domain>` to the port of a service marked
 //! `"guarded": false`, which only the app's own login protects. `hunt-ctl preview-status` reports the services with
-//! their state and every port that listens; this module builds every URL from the session id, the domain and the port,
-//! so a URL the VM sends is ignored.
+//! their state; this module builds every URL from the session id, the domain and the port, so a URL the VM sends is
+//! ignored.
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -66,8 +66,6 @@ pub struct PreviewStatus {
     pub vm_running: bool,
     /// The services of the repository's hunt.json, in its order.
     pub services: Vec<PreviewService>,
-    /// The other ports something listens on, in ascending order; the services' ports are not among them.
-    pub listening: Vec<PreviewPort>,
 }
 
 /// A service of the repository's hunt.json and the state of its unit on the VM.
@@ -86,6 +84,9 @@ pub struct PreviewService {
     pub state: PreviewServiceState,
     /// Whether its port listens on the VM.
     pub responds: bool,
+    /// systemd's ID of the unit's current run, new with every start and restart; `None` while the unit does not run or
+    /// the VM's hunt-ctl predates it. The Terminal tab connects to the service's terminal again when it changes.
+    pub invocation: Option<String>,
 }
 
 /// The state of a service's unit.
@@ -98,17 +99,9 @@ pub enum PreviewServiceState {
     Stopped,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct PreviewPort {
-    pub port: u16,
-    pub url: String,
-}
-
 #[derive(Deserialize)]
 struct StatusOutput {
     services: Vec<ServiceOutput>,
-    listening: Vec<u16>,
 }
 
 #[derive(Deserialize)]
@@ -120,6 +113,8 @@ struct ServiceOutput {
     enabled: bool,
     state: PreviewServiceState,
     responds: bool,
+    #[serde(default)]
+    invocation: Option<String>,
 }
 
 /// Reads the output of `hunt-ctl preview-status` for session `id` with its URLs on `domain`.
@@ -141,19 +136,15 @@ pub fn parse_status(output: &serde_json::Value, id: Uuid, domain: &str) -> Resul
             enabled: service.enabled,
             state: service.state,
             responds: service.responds,
+            invocation: service.invocation.filter(|invocation| !invocation.is_empty()),
         });
     }
-    let mut ports = output.listening;
-    ports.retain(|port| !services.iter().any(|service| service.port == *port));
-    ports.sort_unstable();
-    ports.dedup();
-    let listening = ports.into_iter().map(|port| PreviewPort { port, url: port_url(id, domain, port) }).collect();
-    Ok(PreviewStatus { vm_running: true, services, listening })
+    Ok(PreviewStatus { vm_running: true, services })
 }
 
-/// The status of a session whose VM is off: nothing runs and nothing listens.
+/// The status of a session whose VM is off: nothing runs.
 pub fn stopped_status() -> PreviewStatus {
-    PreviewStatus { vm_running: false, services: Vec::new(), listening: Vec::new() }
+    PreviewStatus { vm_running: false, services: Vec::new() }
 }
 
 #[cfg(test)]
@@ -207,15 +198,16 @@ mod tests {
     }
 
     #[test]
-    fn parse_status_builds_the_urls_here_and_lists_only_the_other_ports_as_listening() {
+    fn parse_status_builds_the_urls_here_and_reads_the_unit_runs() {
         let id = Uuid::parse_str(ID).unwrap();
         let output = json!({
             "services": [
                 {"name": "med-backend", "port": 3000, "tls": true, "guarded": false, "enabled": true, "state": "running",
-                 "responds": true, "url": "https://evil.example"},
-                {"name": "med-ui", "port": 4400, "tls": false, "guarded": true, "enabled": false, "state": "stopped", "responds": false}
+                 "responds": true, "url": "https://evil.example", "invocation": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"},
+                {"name": "med-ui", "port": 4400, "tls": false, "guarded": true, "enabled": false, "state": "stopped", "responds": false,
+                 "invocation": ""}
             ],
-            "listening": [5432, 3000, 9229, 5432],
+            "listening": [5432, 3000],
         });
         let status = parse_status(&output, id, "p.example.com").unwrap();
         assert!(status.vm_running);
@@ -231,6 +223,7 @@ mod tests {
                     enabled: true,
                     state: PreviewServiceState::Running,
                     responds: true,
+                    invocation: Some("0f1e2d3c4b5a69788796a5b4c3d2e1f0".into()),
                 },
                 PreviewService {
                     name: "med-ui".into(),
@@ -241,11 +234,10 @@ mod tests {
                     enabled: false,
                     state: PreviewServiceState::Stopped,
                     responds: false,
+                    invocation: None,
                 },
             ]
         );
-        let ports: Vec<(u16, &str)> = status.listening.iter().map(|port| (port.port, port.url.as_str())).collect();
-        assert_eq!(ports, [(5432, "https://ab12cd34-5432.p.example.com"), (9229, "https://ab12cd34-9229.p.example.com")]);
     }
 
     #[test]
@@ -257,7 +249,7 @@ mod tests {
             ("failed", PreviewServiceState::Failed),
             ("stopped", PreviewServiceState::Stopped),
         ] {
-            let status = parse_status(&json!({"services": [service("api", text)], "listening": []}), id, "p.example.com").unwrap();
+            let status = parse_status(&json!({"services": [service("api", text)]}), id, "p.example.com").unwrap();
             assert_eq!(status.services[0].state, state);
             assert_eq!(serde_json::to_value(state).unwrap(), json!(text));
         }
@@ -267,25 +259,25 @@ mod tests {
     fn parse_status_rejects_invalid_names_and_shapes() {
         let id = Uuid::parse_str(ID).unwrap();
         assert_eq!(
-            parse_status(&json!({"services": [service("../api", "running")], "listening": []}), id, "p.example.com"),
+            parse_status(&json!({"services": [service("../api", "running")]}), id, "p.example.com"),
             Err("failed to read the preview status: \"../api\" is not a service name".to_string())
         );
         for invalid in [
-            json!({"services": [service("api", "stopping")], "listening": []}),
-            json!({"services": [], "listening": ["3000"]}),
+            json!({"services": [service("api", "stopping")]}),
+            json!({"services": [{"name": "api", "port": "3000"}]}),
             json!({"main": 4200, "listening": [4200], "mainResponds": true}),
         ] {
             let error = parse_status(&invalid, id, "p.example.com").unwrap_err();
             assert!(error.starts_with("failed to read the preview status: "), "{error}");
         }
 
-        let idle = parse_status(&json!({"services": [], "listening": []}), id, "p.example.com").unwrap();
+        let idle = parse_status(&json!({"services": []}), id, "p.example.com").unwrap();
         assert_eq!(stopped_status(), PreviewStatus { vm_running: false, ..idle });
     }
 
     #[test]
     fn preview_status_serializes_in_camel_case() {
-        let status = PreviewStatus { vm_running: false, services: Vec::new(), listening: Vec::new() };
-        assert_eq!(serde_json::to_value(status).unwrap(), json!({"vmRunning": false, "services": [], "listening": []}));
+        let status = PreviewStatus { vm_running: false, services: Vec::new() };
+        assert_eq!(serde_json::to_value(status).unwrap(), json!({"vmRunning": false, "services": []}));
     }
 }

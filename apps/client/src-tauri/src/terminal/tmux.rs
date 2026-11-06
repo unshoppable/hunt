@@ -292,13 +292,19 @@ pub fn script_of<'a>(windows: &'a [TmuxWindow], window_id: &str) -> Result<(&'a 
 /// locale.
 pub fn view_args(view: &str, window_id: &str) -> Result<Vec<String>, String> {
     ensure_window_id(window_id)?;
-    let mut args = vec!["-u", "new-session", "-t", APP_TARGET, "-s", view];
+    let mut args = session_view_args(APP_TARGET, view);
+    args.extend([";", "select-window", "-t", &format!("{view}:{window_id}")].map(str::to_string));
+    Ok(args)
+}
+
+/// The tmux arguments that show the tmux session `session` (a target such as `=web`) in the tmux session `view` of its
+/// own, grouped with it, as `view_args` does with `app`.
+pub fn session_view_args(session: &str, view: &str) -> Vec<String> {
+    let mut args = vec!["-u", "new-session", "-t", session, "-s", view];
     for (option, value) in [("destroy-unattached", "on"), ("status", "off"), ("mouse", "on")] {
         args.extend([";", "set-option", "-t", view, option, value]);
     }
-    let window = format!("{view}:{window_id}");
-    args.extend([";", "select-window", "-t", &window]);
-    Ok(args.into_iter().map(str::to_string).collect())
+    args.into_iter().map(str::to_string).collect()
 }
 
 /// The name of the tmux session that shows a terminal's window.

@@ -1,14 +1,20 @@
-//! The commands of the services of a local session: the services the worktree's hunt.json declares with the state of
-//! their windows, and starting and stopping them in windows of the family's tmux server on this Mac. A session on a VM
-//! has none of them: its VM runs its services. `services:changed` tells the main window about every start and stop.
+//! The commands of the services of hunt.json: of a local session the services the worktree's hunt.json declares with
+//! the state of their windows, and starting and stopping them in windows of the family's tmux server on this Mac; of a
+//! session on a VM starting and stopping one through `hunt-ctl service`, whose systemd unit runs it in a tmux server
+//! of its own (`preview_status` reports their state). `services:changed` tells the main window about every start and
+//! stop.
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
-use super::{local_session, worktree_file};
+use super::{local_session, running_remote, worktree_file};
+use crate::agent::acp::SessionRegistry;
+use crate::remote::preview::is_service_name;
+use crate::remote::ssh::{ssh_dir, Ssh};
+use crate::remote;
 use crate::services::{self, ServiceDefinition, ServiceView};
-use crate::session::store::SessionRecord;
+use crate::session::store::{self, SessionRecord};
 use crate::terminal::tmux::{service_command, service_window, LocalTmux};
 
 /// The services of a local session as the Terminal tab shows them: those the worktree's hunt.json declares (none and
@@ -47,9 +53,13 @@ pub async fn services_status(app: AppHandle, id: Uuid) -> Result<ServicesStatus,
 
 /// Starts the service `name` of the worktree's hunt.json, or every service without a name, each in its window of the
 /// family's tmux server; a service that runs already stays as it is. Every service that can start starts; the first
-/// error is returned after.
+/// error is returned after. A session on a VM starts the one service `name` there.
 #[tauri::command]
-pub async fn start_services(app: AppHandle, id: Uuid, name: Option<String>) -> Result<(), String> {
+pub async fn start_services(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, name: Option<String>) -> Result<(), String> {
+    if store::find_session(&app, id)?.remote.is_some() {
+        let name = name.ok_or("failed to start the services: a session on a VM starts them one at a time")?;
+        return remote_service(&app, &registry, id, "start", &name).await;
+    }
     let record = local_session(&app, id)?;
     let definitions = services::read_services(&record.worktree_path)?;
     let chosen: Vec<&ServiceDefinition> = match &name {
@@ -76,9 +86,13 @@ async fn start_one(record: &SessionRecord, tmux: &LocalTmux, definition: &Servic
     tmux.start_service_window(&folder, &definition.name, &command, record.id).await
 }
 
-/// Stops the service `name` if it runs; its window stays with the output so far.
+/// Stops the service `name` if it runs; its window stays with the output so far. On a VM its unit stops, and its log
+/// keeps the output.
 #[tauri::command]
-pub async fn stop_service(app: AppHandle, id: Uuid, name: String) -> Result<(), String> {
+pub async fn stop_service(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid, name: String) -> Result<(), String> {
+    if store::find_session(&app, id)?.remote.is_some() {
+        return remote_service(&app, &registry, id, "stop", &name).await;
+    }
     let record = local_session(&app, id)?;
     let tmux = family_tmux(&record).await?;
     let windows = tmux.list_windows().await?;
@@ -87,6 +101,19 @@ pub async fn stop_service(app: AppHandle, id: Uuid, name: String) -> Result<(), 
     }
     emit_services_changed(&app, id);
     Ok(())
+}
+
+/// Runs `hunt-ctl service <action> <name>` on the running VM of the remote session `id`.
+async fn remote_service(app: &AppHandle, registry: &SessionRegistry, id: Uuid, action: &str, name: &str) -> Result<(), String> {
+    if !is_service_name(name) {
+        return Err(format!("failed to {action} the service: {name:?} is no service name"));
+    }
+    let what = format!("{action} the service {name}");
+    let target = running_remote(app, registry, id, &what).await?;
+    let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+    let result = remote::hunt_ctl(&ssh, &["service", action, name]).await.map_err(|error| format!("failed to {what}: {error}"));
+    emit_services_changed(app, id);
+    result.map(|_| ())
 }
 
 /// The tmux server of the family of the local session `record`.

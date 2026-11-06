@@ -2,7 +2,12 @@
 # starts it, so that it comes back when the VM boots, and `hunt-ctl service stop` stops and disables it. It runs the
 # service's command as the user agent through vm/hunt-service, with agent.env of the installed release, the session's
 # variables and the service's own environment, which `hunt-ctl session-config` writes to /etc/hunt/services/<name>.env.
-# The output goes to /home/agent/logs/<name>.log. %i, not %I: the unescaped instance name would turn `-` into `/`.
+# The command runs in the window <name> of the session <name> of a tmux server of its own, at the socket
+# /run/hunt-service-<name>/tmux (RuntimeDirectory, owned by the agent and removed when the unit stops), to which Hunt's
+# Terminal tab attaches; /etc/tmux.conf logs the window to /home/agent/logs/<name>.log. The tmux server runs in the
+# unit's cgroup, so stopping the unit ends it with the command. A command that ends with 130 or by SIGINT (Ctrl-C typed
+# into the terminal) counts as success: the unit stays enabled but does not restart. %i, not %I: the unescaped instance
+# name would turn `-` into `/`.
 [Unit]
 Description=Service %i of the session's hunt.json
 After=network-online.target docker.service google-startup-scripts.service
@@ -22,7 +27,9 @@ EnvironmentFile=/srv/hunt/current/vm/agent.env
 EnvironmentFile=-/etc/hunt/session.env
 EnvironmentFile=/etc/hunt/services/%i.env
 ExecStart=/srv/hunt/current/vm/hunt-service %i
+RuntimeDirectory=hunt-service-%i
 Restart=on-failure
+SuccessExitStatus=130 SIGINT
 RestartSec=5s
 TimeoutStopSec=20s
 LimitNOFILE=1048576

@@ -36,8 +36,6 @@ import { ChecksPanel } from "../checks/ChecksPanel";
 import { isAnyCheckRunning } from "../checks/checks.utils";
 import type { ChecksStatus } from "../checks/checks.types";
 import { DesktopPanel } from "../desktop/DesktopPanel";
-import { PreviewPanel } from "../preview/PreviewPanel";
-import { isPreviewActive } from "../preview/preview-services.utils";
 import { useAppPages } from "../preview/app-pages.hook";
 import { browserButtonTitle } from "../preview/app-pages.utils";
 import { keepPopupWindowsWarm } from "../ui/detached-popup.utils";
@@ -55,7 +53,7 @@ import { FactoryPanel } from "../factory/FactoryPanel";
 import { isTerminalActive } from "../terminal/terminal-tabs.utils";
 import { HEADER_BAR } from "../ui/bars.constants";
 import { TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons.constants";
-import { BranchIcon, CodeIcon, DiagramIcon, DiffIcon, EyeIcon, FactoryIcon, GlobeIcon, MonitorIcon, PullRequestIcon, TaskListIcon, TerminalIcon } from "../ui/Icons";
+import { BranchIcon, CodeIcon, DiagramIcon, DiffIcon, FactoryIcon, GlobeIcon, MonitorIcon, PullRequestIcon, TaskListIcon, TerminalIcon } from "../ui/Icons";
 import { shortcutCommand } from "../ui/shortcuts.utils";
 import { StatusToasts } from "../ui/StatusToasts";
 import { TabButton, type TabDot } from "../ui/TabButton";
@@ -89,7 +87,7 @@ export function App() {
    * the placeholder listed until then reports no worktree.
    */
   const isCreatingActive = useHuntStore((state) => Boolean(state.activeSessionId && state.creatingIds.includes(state.activeSessionId))) && !hasActiveWorktree;
-  /** The VM the active session runs on; it adds the Preview and Desktop tabs, puts the Terminal tab on the VM and hides the Browser button. */
+  /** The VM the active session runs on; it adds the Desktop tab, puts the Terminal tab on the VM and hides the Browser button. */
   const activeRemoteInstance = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.remote?.vm.instance ?? null);
   /** Whether the active session reviews a pull request; only then does the PR Description tab show. */
   const isReviewingPullRequest = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === state.activeSessionId)?.pullRequest));
@@ -97,8 +95,6 @@ export function App() {
   const isFactory = useHuntStore((state) => state.sessions.find((session) => session.id === state.activeSessionId)?.mode === "swf");
   const activePreviewStatus = usePreviewStore((state) => (activeSessionId && state.previews[activeSessionId]?.status) || null);
   const activeWindows = useTerminalStore((state) => (activeSessionId && state.windows[activeSessionId]) || NO_SESSION_WINDOWS);
-  /** Something runs on the active session's VM: a green dot marks the Preview tab. */
-  const isPreviewBusy = isPreviewActive(activePreviewStatus);
   /** A service or a process in a tmux window of the active session runs: a green dot marks the Terminal tab. */
   const isTerminalBusy = isTerminalActive(activePreviewStatus, activeWindows);
   /** The checks of the active session ran: a dot on the Checks tab, green while one runs, red when one failed. */
@@ -161,7 +157,7 @@ export function App() {
   const findInFiles = usePopupRequest<FindInFilesRequest>();
   const hasLocalWorktree = !isCreatingActive && hasActiveWorktree;
   const canSearchFiles = Boolean(activeSessionId) && !draft && hasLocalWorktree;
-  /** A local session has no preview or desktop, a session without a pull request no description, one not of the swf poller no factory; they show the diff instead. */
+  /** A local session has no desktop, a session without a pull request no description, one not of the swf poller no factory; they show the diff instead. */
   const rightTab = hasInspectorTab(storedTab, { isOnVm: Boolean(activeRemoteInstance), isReviewingPullRequest, isFactory }) ? storedTab : "diff";
 
   // ⌘P / double shift: "Go to File" for the active session's worktree.
@@ -299,15 +295,6 @@ export function App() {
                 <TabButton isActive={rightTab === "pullRequest"} onClick={() => setRightTab("pullRequest")} icon={<PullRequestIcon />} label="PR Description" />
               ) : null}
               {activeRemoteInstance ? (
-                <TabButton
-                  isActive={rightTab === "preview"}
-                  onClick={() => setRightTab("preview")}
-                  icon={<EyeIcon />}
-                  label="Preview"
-                  dot={isPreviewBusy ? VM_BUSY_DOT : null}
-                />
-              ) : null}
-              {activeRemoteInstance ? (
                 <TabButton isActive={rightTab === "desktop"} onClick={() => setRightTab("desktop")} icon={<MonitorIcon />} label="Desktop" />
               ) : null}
               <TabButton
@@ -350,7 +337,7 @@ export function App() {
                 <>
                   {/* The panels are siblings of one fragment, so their keys carry the tab as well as the session: a shared key would keep React from removing a panel that another tab replaced. */}
                   {/* The Factory tab reads the pipeline's files pulled into the worktree and says itself when there are none, so it needs no worktree check. */}
-                  {rightTab === "preview" || rightTab === "desktop" || rightTab === "terminal" || rightTab === "factory" ? null : activeRemoteInstance && !hasActiveWorktree ? (
+                  {rightTab === "desktop" || rightTab === "terminal" || rightTab === "factory" ? null : activeRemoteInstance && !hasActiveWorktree ? (
                     <NoLocalWorktree sessionId={activeSessionId} />
                   ) : rightTab === "diff" ? (
                     <DiffPanel key={`diff:${activeSessionId}`} sessionId={activeSessionId} />
@@ -365,7 +352,6 @@ export function App() {
                   ) : (
                     <ArchitecturePanel key={`graph:${activeSessionId}`} sessionId={activeSessionId} />
                   )}
-                  {activeRemoteInstance && rightTab === "preview" ? <PreviewPanel key={`preview:${activeSessionId}`} sessionId={activeSessionId} /> : null}
                   {isFactory && rightTab === "factory" ? <FactoryPanel key={`factory:${activeSessionId}`} sessionId={activeSessionId} /> : null}
                   {/* The desktop stays mounted while another tab shows, so switching tabs keeps its stream; another session ends it. */}
                   {activeRemoteInstance ? <DesktopPanel key={`desktop:${activeSessionId}`} sessionId={activeSessionId} isVisible={rightTab === "desktop"} /> : null}
@@ -413,7 +399,6 @@ export function App() {
   );
 }
 
-const VM_BUSY_DOT: TabDot = { tone: "running", title: "Something runs on the VM" };
 const PROCESS_RUNNING_DOT: TabDot = { tone: "running", title: "A process runs" };
 const CHECK_RUNNING_DOT: TabDot = { tone: "running", title: "A check runs" };
 const CHECK_FAILED_DOT: TabDot = { tone: "failed", title: "A check failed" };

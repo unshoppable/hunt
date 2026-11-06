@@ -11,7 +11,6 @@ const RIGHT_TABS: { [Tab in RightTab]: Tab } = {
   editor: "editor",
   graph: "graph",
   pullRequest: "pullRequest",
-  preview: "preview",
   desktop: "desktop",
   checks: "checks",
   terminal: "terminal",
@@ -29,7 +28,7 @@ const TAB_RULE = `must be one of ${Object.values(RIGHT_TABS).join(", ")}`;
 const PAGE_RULE = 'must be "updates"';
 const CHECK_RULE = "must be the name of a check";
 const SERVICE_RULE = "must be the name of a service";
-const MISSING_TAB_RULE = "preview and desktop need a session on a VM, pullRequest a pull request review, factory a session of the swf poller";
+const MISSING_TAB_RULE = "desktop needs a session on a VM, pullRequest a pull request review, factory a session of the swf poller";
 const NO_LOCAL_WORKTREE = "the session has no local worktree";
 
 function isNormalizedAbsolutePath(path: string): boolean {

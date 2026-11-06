@@ -4,7 +4,7 @@ import type { LocalService, TmuxWindow } from "./terminal.types";
 import { endedScriptWindow, isProcessWindow, isServiceTab, isTerminalActive, localServiceState, nextActiveKey, tabOwner, terminalTabs, windowState } from "./terminal-tabs.utils";
 
 function service(name: string, state: PreviewService["state"] = "running"): PreviewService {
-  return { name, port: 3000, url: `https://${name}.example`, guarded: true, tls: false, enabled: true, state, responds: true };
+  return { name, port: 3000, url: `https://${name}.example`, guarded: true, tls: false, enabled: true, state, responds: true, invocation: null };
 }
 
 function window(id: string, name: string, overrides: Partial<TmuxWindow> = {}): TmuxWindow {
@@ -16,7 +16,7 @@ function localService(name: string, overrides: Partial<LocalService> = {}): Loca
 }
 
 function status(services: PreviewService[]): PreviewStatus {
-  return { vmRunning: true, services, listening: [] };
+  return { vmRunning: true, services };
 }
 
 describe("terminalTabs", () => {

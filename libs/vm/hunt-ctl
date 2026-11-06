@@ -1831,10 +1831,11 @@ stop_undeclared_services() {
   systemctl reset-failed "${units[@]}" 2>/dev/null || true
 }
 
-# Prints the services of meta.json $1 as a JSON array of {name, port, tls, guarded, enabled, state, responds}, with
-# their url after guarded when $2, the session's short id, is given. state is running, starting (also while systemd
-# waits to restart the service), failed or stopped, from one `systemctl show` for all services. responds tells whether
-# the port is among the local_ports; no request is sent, so the service's log never shows these checks.
+# Prints the services of meta.json $1 as a JSON array of {name, port, tls, guarded, enabled, state, responds,
+# invocation}, with their url after guarded when $2, the session's short id, is given. state is running, starting (also
+# while systemd waits to restart the service), failed or stopped, from one `systemctl show` for all services. responds
+# tells whether the port is among the local_ports; no request is sent, so the service's log never shows these checks.
+# invocation is the unit's InvocationID, which changes with every start of the service, or null while it does not run.
 service_report() {
   local file=$1 short=${2-} services states listening
   local -a units=()
@@ -1845,7 +1846,7 @@ service_report() {
     return
   fi
   mapfile -t units < <(jq -r --arg prefix "$SERVICE_UNIT_PREFIX" '.[] | "\($prefix)\(.name).service"' <<<"$services")
-  states=$(systemctl show --property Id,ActiveState,SubState,UnitFileState "${units[@]}" | jq -Rsc '
+  states=$(systemctl show --property Id,ActiveState,SubState,UnitFileState,InvocationID "${units[@]}" | jq -Rsc '
     split("\n\n") | map(split("\n") | map(capture("^(?<key>[A-Za-z]+)=(?<value>.*)$")) | from_entries | select(.Id)
       | {key: .Id, value: .}) | from_entries')
   listening=$(local_ports | jq -cs .)
@@ -1857,7 +1858,8 @@ service_report() {
         elif $unit.ActiveState == "activating" then "starting"
         elif $unit.ActiveState == "failed" then "failed"
         else "stopped" end),
-      responds: (.port | IN($listening[]))})' <<<"$services"
+      responds: (.port | IN($listening[])),
+      invocation: (if ($unit.InvocationID // "") == "" then null else $unit.InvocationID end)})' <<<"$services"
 }
 
 # Starts, stops, restarts or reports the services named of the VM's only session; see the usage. Prints the state of

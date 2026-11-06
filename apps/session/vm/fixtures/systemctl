@@ -1,6 +1,7 @@
 #!/bin/bash
 # Fake systemctl of services.test.ts and relayTokens.test.ts: logs the call; the state of unit <unit> (active, activating,
 # failed, inactive) is in /run/fake-systemd/<unit>, and enable links template instances into multi-user.target.wants.
+# show reports the InvocationID of an active or activating unit as the MD5 of its name, empty for the other states.
 echo "systemctl $*" >>/var/log/systemctl.log
 states=/run/fake-systemd
 wants=/etc/systemd/system/multi-user.target.wants
@@ -35,6 +36,11 @@ expanded() {
 }
 state_of() {
   cat "$states/$1" 2>/dev/null || echo inactive
+}
+invocation_of() {
+  case $(state_of "$1") in
+    active | activating) printf '%s' "$1" | md5sum | cut -c1-32 ;;
+  esac
 }
 set_states() {
   local unit
@@ -82,8 +88,8 @@ case $verb in
         state_of "$unit"
         continue
       fi
-      printf '%sId=%s\nActiveState=%s\nSubState=x\nUnitFileState=%s\n' "$separator" "$unit" "$(state_of "$unit")" \
-        "$(if [[ -L $wants/$unit ]]; then echo enabled; else echo disabled; fi)"
+      printf '%sId=%s\nActiveState=%s\nSubState=x\nUnitFileState=%s\nInvocationID=%s\n' "$separator" "$unit" "$(state_of "$unit")" \
+        "$(if [[ -L $wants/$unit ]]; then echo enabled; else echo disabled; fi)" "$(invocation_of "$unit")"
       separator=$'\n'
     done
     ;;

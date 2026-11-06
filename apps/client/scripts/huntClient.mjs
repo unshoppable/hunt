@@ -38,7 +38,7 @@ const OUTSIDE_HUNT = "hunt-client works only in an agent that Hunt started on th
 const OVERVIEW_COLUMN = 24;
 
 /** The tabs of a session, as `tab` names them. */
-const TAB_NAMES = ["diff", "git", "editor", "graph", "pullRequest", "preview", "desktop", "checks", "terminal"];
+const TAB_NAMES = ["diff", "git", "editor", "graph", "pullRequest", "desktop", "checks", "terminal"];
 /** The pages `open settings --page` opens. */
 const SETTINGS_PAGES = ["updates"];
 

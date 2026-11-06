@@ -12,7 +12,7 @@ const CLIENT = fileURLToPath(new URL("./huntClient.mjs", import.meta.url));
 const SESSION_ID = "6f0c2a52-0b55-4c4e-9d0e-2f8b1f3c7a10";
 const OTHER_SESSION_ID = "0d4b9a71-3c2e-4f6a-8b1d-5e7f9a0c2b34";
 const WORKING_DIRECTORY = "/Users/agent/worktree";
-const TAB_NAMES = ["diff", "git", "editor", "graph", "pullRequest", "preview", "desktop", "checks", "terminal"];
+const TAB_NAMES = ["diff", "git", "editor", "graph", "pullRequest", "desktop", "checks", "terminal"];
 
 type Message = Record<string, unknown>;
 

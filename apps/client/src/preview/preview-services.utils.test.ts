@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PreviewService, PreviewStatus } from "./preview.types";
-import { describePreview, describeService, hasRespondingService, hasRunningService, isPreviewActive, isServiceInUse, offersStart, shouldPollFast, withLastKnown } from "./preview-services.utils";
+import { describeService, hasRespondingService, hasRunningService, isPreviewActive, isServiceRunning, offersStart, withLastKnown } from "./preview-services.utils";
 
 function service(name: string, patch: Partial<PreviewService> = {}): PreviewService {
   return {
@@ -12,15 +12,16 @@ function service(name: string, patch: Partial<PreviewService> = {}): PreviewServ
     enabled: false,
     state: "stopped",
     responds: false,
+    invocation: null,
     ...patch,
   };
 }
 
 function status(services: PreviewService[], patch: Partial<PreviewStatus> = {}): PreviewStatus {
-  return { vmRunning: true, services, listening: [], ...patch };
+  return { vmRunning: true, services, ...patch };
 }
 
-const VM_OFF: PreviewStatus = { vmRunning: false, services: [], listening: [] };
+const VM_OFF: PreviewStatus = { vmRunning: false, services: [] };
 
 describe("describeService", () => {
   it("names each state and whether a running service answers", () => {
@@ -37,37 +38,12 @@ describe("describeService", () => {
   });
 });
 
-describe("isServiceInUse", () => {
-  it("lists running, starting and failed services but not stopped ones", () => {
-    expect(isServiceInUse(service("api", { state: "running" }), true)).toBe(true);
-    expect(isServiceInUse(service("api", { state: "starting" }), true)).toBe(true);
-    expect(isServiceInUse(service("api", { state: "failed" }), true)).toBe(true);
-    expect(isServiceInUse(service("api", { enabled: true }), true)).toBe(false);
-  });
-
-  it("lists the services that start with a VM that is off", () => {
-    expect(isServiceInUse(service("api", { enabled: true }), false)).toBe(true);
-    expect(isServiceInUse(service("api"), false)).toBe(false);
-  });
-});
-
-describe("describePreview", () => {
-  it("waits for the first status and reports a VM that is off", () => {
-    expect(describePreview(null).text).toBe("…");
-    expect(describePreview(VM_OFF)).toEqual({ text: "VM off", tone: "idle" });
-    expect(describePreview(withLastKnown(status([service("api", { state: "running" })]), VM_OFF)).text).toBe("VM off");
-  });
-
-  it("reports a hunt.json without services", () => {
-    expect(describePreview(status([]))).toEqual({ text: "No services in hunt.json", tone: "idle" });
-  });
-
-  it("counts running, starting and failed services", () => {
-    const services = [service("api", { state: "running" }), service("admin", { state: "starting" }), service("web"), service("docs", { state: "failed" })];
-    expect(describePreview(status(services))).toEqual({ text: "1 of 4 running, 1 starting, 1 failed", tone: "error" });
-    expect(describePreview(status(services.slice(0, 3)))).toEqual({ text: "1 of 3 running, 1 starting", tone: "ok" });
-    expect(describePreview(status(services.slice(1, 3)))).toEqual({ text: "1 starting", tone: "pending" });
-    expect(describePreview(status([service("web")]))).toEqual({ text: "No service running", tone: "idle" });
+describe("isServiceRunning", () => {
+  it("takes a running or starting unit as running", () => {
+    expect(isServiceRunning(service("api", { state: "running" }))).toBe(true);
+    expect(isServiceRunning(service("api", { state: "starting" }))).toBe(true);
+    expect(isServiceRunning(service("api", { state: "failed" }))).toBe(false);
+    expect(isServiceRunning(service("api"))).toBe(false);
   });
 });
 
@@ -82,7 +58,7 @@ describe("hasRunningService and hasRespondingService", () => {
 });
 
 describe("isPreviewActive", () => {
-  it("marks the Preview tab while a service runs or starts on a running VM", () => {
+  it("marks the Terminal tab while a service runs or starts on a running VM", () => {
     expect(isPreviewActive(null)).toBe(false);
     expect(isPreviewActive(status([service("api", { state: "starting" })]))).toBe(true);
     expect(isPreviewActive(status([service("api", { state: "failed" })]))).toBe(false);
@@ -104,15 +80,12 @@ describe("offersStart", () => {
 });
 
 describe("withLastKnown", () => {
-  const running = status([service("api", { state: "running", responds: true, enabled: true }), service("web", { port: 4200 })], {
-    listening: [{ port: 9229, url: "https://0123abcd-9229.p.example.com" }],
-  });
+  const running = status([service("api", { state: "running", responds: true, enabled: true, invocation: "a1" }), service("web", { port: 4200 })]);
 
   it("keeps the last known services as stopped while the VM is off", () => {
     expect(withLastKnown(running, VM_OFF)).toEqual({
       vmRunning: false,
       services: [service("api", { enabled: true }), service("web", { port: 4200 })],
-      listening: [],
     });
   });
 
@@ -127,14 +100,5 @@ describe("withLastKnown", () => {
     expect(withLastKnown(off, empty)).toBe(empty);
     expect(withLastKnown(null, VM_OFF)).toBe(VM_OFF);
     expect(withLastKnown(status([]), VM_OFF)).toBe(VM_OFF);
-  });
-});
-
-describe("shouldPollFast", () => {
-  it("polls fast while waiting for the app or while a service starts", () => {
-    expect(shouldPollFast(null, true)).toBe(true);
-    expect(shouldPollFast(status([service("api", { state: "starting" })]), false)).toBe(true);
-    expect(shouldPollFast(status([service("api", { state: "running", responds: true })]), false)).toBe(false);
-    expect(shouldPollFast(null, false)).toBe(false);
   });
 });

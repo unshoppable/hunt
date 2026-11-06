@@ -5,8 +5,8 @@ import type { SessionWindows } from "./terminals.store";
 import { describeLocalExit } from "./terminal-stream.utils";
 
 /**
- * A tab of the Terminal panel: the log of a hunt.json service on the VM, a hunt.json service of a local session, or a
- * window of a tmux session `app`.
+ * A tab of the Terminal panel: a hunt.json service on the VM, a hunt.json service of a local session, or a window of a
+ * tmux session `app`.
  */
 export type TerminalTab = {
   /**
@@ -18,7 +18,7 @@ export type TerminalTab = {
   title: string;
   /** What the tab's terminal shows; null for a local service that no window ran yet. */
   target: TerminalTarget | null;
-  /** The service on the VM the tab shows the log of; null otherwise. */
+  /** The service on the VM the tab shows; null otherwise. */
   service: PreviewService | null;
   /** The hunt.json service of a local session the tab runs; null otherwise. */
   localService: LocalService | null;
@@ -54,7 +54,7 @@ export function terminalTabs(
     (service): TerminalTab => ({
       key: `service:${service.name}`,
       label: service.name,
-      title: `The log of the service ${service.name}, ~/logs/${service.name}.log on the VM; read-only`,
+      title: `The service ${service.name} of hunt.json on the VM; its output goes to ~/logs/${service.name}.log`,
       target: { kind: "service", name: service.name },
       service,
       localService: null,

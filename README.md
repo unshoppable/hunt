@@ -883,15 +883,22 @@ and the configuration of the VM's preview proxy, `hunt-proxy.service` (Caddy on 
 localhost (servers bound to 127.0.0.1 or ::1) and `<short id>-<port>-open.<domain>` from the ports of services with
 `"guarded": false` only, keeps the Host header and logs every request to `/var/log/hunt-proxy/access.log`. When nothing
 listens on the port, it answers 503 with a line that names the service of that port. Every service
-runs as `hunt-service@<name>.service` (`apps/session/vm/systemd/`) as the user `agent`, with its own variables, and
-writes its output to `~/logs/<name>.log`. The agent starts the services its task needs, as the repository's
+runs as `hunt-service@<name>.service` (`apps/session/vm/systemd/`) as the user `agent`, with its own variables, in a
+terminal of its own: `apps/session/vm/hunt-service` starts a tmux server at `/run/hunt-service-<name>/tmux` (the unit's
+`RuntimeDirectory`), whose session `<name>` holds the window `<name>` that runs the command, waits until the command
+ends and exits with its exit code, which the window leaves in `/run/hunt-service-<name>/exit`. The tmux server runs in
+the unit's cgroup and inherits its environment, so systemd still restarts a failed service, starts an enabled one with
+the VM and stops the server with the unit. Exit code 130 and SIGINT, which Ctrl-C typed into the terminal causes, count
+as success: the service stops and stays enabled. `/etc/tmux.conf` logs the window to `~/logs/<name>.log`, like every
+window of the agent. The agent starts the services its task needs, as the repository's
 `hunt.agent.md` groups them, with `sudo -n hunt-ctl service start|restart|stop|status <name>…`, the only commands
 `/etc/sudoers.d/hunt-service` allows it. Right after the handoff of a session whose chat holds a prompt, when no prompt
 is queued, hunt.json declares services and none of them runs, Hunt asks the agent in a turn of its own to start what its
 task needs (`HANDOFF_START_PROMPT` in `apps/client/src/preview/preview-services.utils.ts`); when its task leaves that unclear, the
 agent starts nothing. A started service stays enabled and starts again with the VM; bringing the
 session back or deleting it stops and disables every service. `hunt-ctl preview-status` reports the state of every
-service, whether its port answers on localhost and the ports that listen on all or the loopback addresses.
+service, whether its port answers on localhost, the `InvocationID` of its unit while it runs (`invocation`, which
+changes with every start) and the ports that listen on all or the loopback addresses.
 
 Every session VM runs a desktop, `hunt-desktop.service` (`apps/session/vm/desktop/`), as the user `agent`, which
 `hunt-ctl start` enables and `stop` disables: a headless sway (Debian 12's; labwc, which Amp uses, would need Debian
@@ -908,10 +915,10 @@ reserved. The desktop has no clipboard: sway 1.7 lacks the `ext-data-control` pr
 The gateway, a VM that runs all the time, routes `https://<short id>-<port>.<domain>` to any port of the session VM; the
 load balancer in front of it lets only IAP's access group through, and a request for a VM that is off starts it.
 `https://<short id>-<port>-open.<domain>` reaches the services marked `"guarded": false` without IAP, so a UI behind IAP
-can call its backend on a host of its own, as it does locally; only the app's own login protects them. The *Preview* tab
-next to a remote session's chat (`apps/client/src/preview/PreviewPanel.tsx`) polls `preview_status`, which runs
-`hunt-ctl preview-status <id>` on the VM, and shows every service with its state, URL and whether it answers, marks the
-public ones and lists the other ports that listen, except the reserved ones (`RESERVED_PORTS`: Caddy, Docker, the
+can call its backend on a host of its own, as it does locally; only the app's own login protects them. The service bar
+of a remote session's *Terminal* tab polls `preview_status`, which runs `hunt-ctl preview-status <id>` on the VM, and
+shows every service with its state, preview URL and whether it answers, with *Start* and *Stop*; the VM reports the
+other ports that listen too, except the reserved ones (`RESERVED_PORTS`: Caddy, Docker, the
 preview proxy and its review server, the desktop, LLMNR and the Ops Agent), which no service may take and the preview proxy refuses; Hunt builds the URLs from the session ID and the preview domain the gateway reported at the handoff, the VM reports only
 port numbers. While no service runs, *Start the app* sends the agent a normal prompt to start the services the task
 needs, which starts a VM that is off.
@@ -1016,10 +1023,11 @@ session VM (what it does, outcome, duration, and the end of stderr when it faile
 keeps every other user on the gateway, containers and the edge proxy included, off the metadata server, whose token
 can create, start and delete VMs; only root and `hunt-gw` reach it, and everyone keeps DNS and NTP through it.
 
-Next to the preview, the *Terminal* tab (`apps/client/src/terminal/TerminalPanel.tsx`, xterm.js) shows one tab per
-process of the app, like the tabs of a local terminal. Each service of `hunt.json` gets a read-only tab that follows its
-log (`tail -n 5000 -F ~/logs/<name>.log`); `hunt-service` sets `FORCE_COLOR=1` unless the service's `env` sets it, so
-tools keep their colors in the log. Each window of the tmux session `app`, in which the agent runs its other
+The *Terminal* tab (`apps/client/src/terminal/TerminalPanel.tsx`, xterm.js) shows one tab per process of the app, like
+the tabs of a local terminal. Each service of `hunt.json` gets a tab that takes input while the service runs: it
+attaches, as `agent`, a view session grouped with the session `<name>` of the service's tmux server
+(`tmux -S /run/hunt-service-<name>/tmux`), destroyed when it detaches; while no server runs it follows the log
+(`tail -F ~/logs/<name>.log`). Each window of the tmux session `app`, in which the agent runs its other
 long-running processes, gets a tab that takes input: it attaches to a tmux session of its own grouped with `app`
 (`hunt-view-<terminal id>`, no status bar, mouse on, destroyed with the terminal), so several tabs show different windows
 at once. Every window logs to `~/logs/<window name>.log` through the VM's `/etc/tmux.conf` (`apps/session/vm/tmux.conf`,
@@ -1063,7 +1071,7 @@ a reload or another session leaves the processes running.
 
 While a remote session is connected, Hunt syncs its files between the worktree on the VM and the local worktree in
 both directions (`apps/client/src-tauri/src/remote/sync.rs`, triggered by `apps/client/src-tauri/src/session/sync.rs`),
-so the *Diff*, *Editor*, *Architecture* and *PR Description* tabs work as for a local session, next to *Preview* and
+so the *Diff*, *Editor*, *Architecture* and *PR Description* tabs work as for a local session, next to
 *Terminal*, and edits made here reach the agent. Each side lists the files Git sees there (tracked and untracked, not
 ignored, so no `node_modules` or `.env*`) with size, modification time, execute bit and whether they are links; the
 state after the last sync, kept in `remote-sync/<id>.json` in the app data folder, tells which side changed a file. A

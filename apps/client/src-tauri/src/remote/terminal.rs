@@ -1,5 +1,7 @@
-//! Terminals on the VM of a remote session. The services of the repository's hunt.json run as systemd units on the VM
-//! and log to `~/logs/<name>.log`; a terminal follows such a log. The agents run their other long-running processes in
+//! Terminals on the VM of a remote session. The services of the repository's hunt.json run as systemd units on the VM,
+//! each in the tmux session `<name>` of a tmux server of its own (`apps/session/vm/hunt-service`), and log to
+//! `~/logs/<name>.log`; a terminal shows that session and takes input while the service runs, and follows its log
+//! otherwise. The agents run their other long-running processes in
 //! the tmux session `app`, one window per process, which logs to `~/logs/<window name>.log` through the VM's
 //! `/etc/tmux.conf` (`apps/session/vm/tmux.conf`); a terminal shows one of these windows and takes input. Such a
 //! terminal is OpenSSH in a pseudo terminal on this Mac (`terminal/interactive.rs`). Knows nothing about Tauri;
@@ -18,6 +20,11 @@ use crate::terminal::tmux::{self, Machine, TmuxWindow};
 
 /// Lines of a service's log a terminal shows before it follows the log.
 const LOG_LINES: &str = "5000";
+
+/// The socket of the tmux server in which the unit of the service `name` runs it; the unit's runtime directory.
+fn service_socket(name: &str) -> String {
+    format!("/run/hunt-service-{name}/tmux")
+}
 
 /// The `ssh` arguments of the terminal `terminal_id` showing `process` on the VM of the remote session `target`; the one
 /// place that picks the VM a terminal connects to.
@@ -117,15 +124,23 @@ pub async fn kill_window(ssh: &Ssh, id: &str) -> Result<(), String> {
     ssh.run(&as_agent(&["tmux", "kill-window", "-t", id])).await.map(|_| ())
 }
 
-/// The command a terminal runs on the VM to show `process`, as the user `agent`: a service's log from its last lines
-/// on, followed across the rename at the service's next start, or a window in a view of its own (`tmux::view_args`).
+/// The command a terminal runs on the VM to show `process`, as the user `agent`: a running service's tmux session in a
+/// view of its own (`tmux::session_view_args`), else its log from its last lines on, followed across the rename at the
+/// service's next start; or a window in a view of its own (`tmux::view_args`).
 fn remote_command(process: &TerminalTarget, view: &str) -> Result<String, String> {
     match process {
         TerminalTarget::Service { name } => {
             if !is_service_name(name) {
                 return Err(format!("failed to open the terminal: {name:?} is no service name"));
             }
-            Ok(as_agent(&["tail", "-n", LOG_LINES, "-F", "--", &format!("logs/{name}.log")]))
+            let socket = service_socket(name);
+            let session = format!("={name}");
+            let mut attach = vec!["tmux".to_string(), "-S".to_string(), socket.clone()];
+            attach.extend(tmux::session_view_args(&session, view));
+            let attach = shell_command(&attach[0], &attach[1..].iter().map(String::as_str).collect::<Vec<_>>());
+            let has_session = shell_command("tmux", &["-S", &socket, "has-session", "-t", &session]);
+            let follow = shell_command("tail", &["-n", LOG_LINES, "-F", "--", &format!("logs/{name}.log")]);
+            Ok(as_agent(&["sh", "-c", &format!("if {has_session} 2>/dev/null; then exec {attach}; else exec {follow}; fi")]))
         }
         TerminalTarget::Window { id, machine: Machine::Vm } => {
             let mut args = vec!["tmux".to_string()];
@@ -148,9 +163,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remote_command_follows_a_service_log_and_shows_a_window_in_a_view_of_its_own() {
+    fn remote_command_shows_a_running_service_else_its_log_and_a_window_in_a_view_of_its_own() {
         let service = TerminalTarget::Service { name: "web-api".into() };
-        assert_eq!(remote_command(&service, "hunt-view-1").unwrap(), "sudo -n -iu agent tail -n 5000 -F -- logs/web-api.log");
+        assert_eq!(
+            remote_command(&service, "hunt-view-1").unwrap(),
+            "sudo -n -iu agent sh -c 'if tmux -S /run/hunt-service-web-api/tmux has-session -t =web-api 2>/dev/null; \
+             then exec tmux -S /run/hunt-service-web-api/tmux -u new-session -t =web-api -s hunt-view-1 \
+             '\\'';'\\'' set-option -t hunt-view-1 destroy-unattached on '\\'';'\\'' set-option -t hunt-view-1 status off \
+             '\\'';'\\'' set-option -t hunt-view-1 mouse on; \
+             else exec tail -n 5000 -F -- logs/web-api.log; fi'"
+        );
         let window = TerminalTarget::Window { id: "@12".into(), machine: Machine::Vm };
         assert_eq!(
             remote_command(&window, "hunt-view-1").unwrap(),

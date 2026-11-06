@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ShapeDiagram } from "./shape-diagram.types";
-import { columnPortId, decorateShapeFlow, erdMarkers, layoutShapeDiagram, shapeNodeSize, TABLE_HEADER_HEIGHT, TABLE_HEADER_HEIGHT_WITH_DESCRIPTION, TABLE_ROW_HEIGHT, tableRowCenterY, toLayoutInput } from "./shape-diagram.utils";
+import { columnPortId, decorateShapeFlow, erdMarkers, layoutShapeDiagram, relationshipSides, shapeNodeSize, TABLE_HEADER_HEIGHT, TABLE_HEADER_HEIGHT_WITH_DESCRIPTION, TABLE_ROW_HEIGHT, tableRowCenterY, toLayoutInput } from "./shape-diagram.utils";
 
 // Node has no Web Worker; ELK's in-thread stand-in runs the layouts instead.
 const elkWorker = (await import("elkjs/lib/elk-worker.js")) as unknown as { Worker: typeof Worker };
@@ -58,7 +58,7 @@ describe("shapeNodeSize", () => {
     expect(shapeNodeSize(table)).toEqual(shapeNodeSize({ ...table }));
     expect(shapeNodeSize({ id: "a", kind: "table", label: "t", columns: [{ name: "id", type: "int" }] }).width).toBe(220);
     expect(shapeNodeSize({ id: "a", kind: "table", label: "a".repeat(80), columns: [{ name: "id", type: "int" }] }).width).toBe(360);
-    expect(shapeNodeSize({ ...table, label: "customer_addresses_history", change: "changed" }).width).toBe(Math.round("customer_addresses_history".length * 7.8 + 72 + 68));
+    expect(shapeNodeSize({ ...table, label: "customer_addresses", change: "changed" }).width).toBe(Math.round("customer_addresses".length * 9 + 72 + 68));
     const described = { ...table, description: "People who buy" };
     expect(shapeNodeSize(described).height).toBe(TABLE_HEADER_HEIGHT_WITH_DESCRIPTION + 3 * TABLE_ROW_HEIGHT + 6);
     expect(tableRowCenterY(table, 2)).toBe(TABLE_HEADER_HEIGHT + 2 * TABLE_ROW_HEIGHT + TABLE_ROW_HEIGHT / 2);
@@ -66,22 +66,35 @@ describe("shapeNodeSize", () => {
   });
 });
 
+describe("relationshipSides", () => {
+  it("takes the facing sides of tables beside each other and the same side of tables above each other", () => {
+    const left = { x: 0, y: 0, width: 200, height: 100 };
+    const right = { x: 400, y: 300, width: 200, height: 100 };
+    expect(relationshipSides(left, right)).toEqual({ source: "right", target: "left" });
+    expect(relationshipSides(right, left)).toEqual({ source: "left", target: "right" });
+    expect(relationshipSides({ x: 0, y: 0, width: 200, height: 100 }, { x: 240, y: 300, width: 200, height: 100 })).toEqual({ source: "right", target: "right" });
+    expect(relationshipSides({ x: 0, y: 0, width: 300, height: 100 }, { x: 20, y: 300, width: 100, height: 100 })).toEqual({ source: "left", target: "left" });
+  });
+});
+
 describe("toLayoutInput", () => {
-  it("lays an erd out to the right with a port per column and edges between the column ports", () => {
-    const input = toLayoutInput(erd);
-    expect(input.direction).toBe("RIGHT");
-    expect(input.mergeEdges).toBe(false);
-    const orders = input.nodes[0];
-    expect(orders.ports).toEqual([
-      { id: "orders:id:out", x: orders.width, y: tableRowCenterY(erd.nodes[0], 0) },
-      { id: "orders:id:in", x: 0, y: tableRowCenterY(erd.nodes[0], 0) },
-      { id: "orders:customer_id:out", x: orders.width, y: tableRowCenterY(erd.nodes[0], 1) },
-      { id: "orders:customer_id:in", x: 0, y: tableRowCenterY(erd.nodes[0], 1) },
-    ]);
-    expect(input.edges).toEqual([{ id: "orders.customer_id->customers.id", source: columnPortId("orders", "customer_id", "out"), target: columnPortId("customers", "id", "in"), label: undefined }]);
-    expect(input.spacing).toEqual({ nodeNode: 48, betweenLayers: 120 });
-    expect(input.maxNodesPerLayer).toBe(3);
+  it("lays an erd out to the right, between the tables without sides and between the column ports on the sides given", () => {
+    const plain = toLayoutInput(erd);
+    expect(plain.direction).toBe("RIGHT");
+    expect(plain.mergeEdges).toBe(false);
+    expect(plain.nodes[0].ports).toBeUndefined();
+    expect(plain.edges).toEqual([{ id: "orders.customer_id->customers.id", source: "orders", target: "customers", label: undefined }]);
+    expect(plain.spacing).toEqual({ nodeNode: 48, betweenLayers: 120 });
+    expect(plain.maxNodesPerLayer).toBe(3);
     expect(toLayoutInput(container).maxNodesPerLayer).toBeUndefined();
+
+    const input = toLayoutInput(erd, new Map([["orders.customer_id->customers.id", { source: "left", target: "right" }]]));
+    const [orders, customers] = input.nodes;
+    expect(orders.ports).toEqual([{ id: "orders:customer_id:out:left", x: 0, y: tableRowCenterY(erd.nodes[0], 1) }]);
+    expect(customers.ports).toEqual([{ id: "customers:id:in:right", x: customers.width, y: tableRowCenterY(erd.nodes[1], 0) }]);
+    expect(input.edges).toEqual([
+      { id: "orders.customer_id->customers.id", source: columnPortId("orders", "customer_id", "out", "left"), target: columnPortId("customers", "id", "in", "right"), label: undefined },
+    ]);
   });
 
   it("lays every other type out top-down with merged edges and the groups as compound nodes", () => {
@@ -129,7 +142,7 @@ describe("layoutShapeDiagram", () => {
     const customers = nodes.find((node) => node.id === "customers")!;
     expect(orders.position.x + orders.width!).toBeLessThan(customers.position.x);
     const edge = edges[0];
-    expect(edge).toMatchObject({ sourceHandle: "orders:customer_id:out", targetHandle: "customers:id:in", markerStart: "crow-many-rest", markerEnd: "crow-one-rest" });
+    expect(edge).toMatchObject({ sourceHandle: "orders:customer_id:out:right", targetHandle: "customers:id:in:left", markerStart: "crow-many-rest", markerEnd: "crow-one-rest" });
     expect(edge.data).toMatchObject({ sourceColumn: "customer_id", targetColumn: "id", labelCenter: null, label: "belongs to" });
     const { points } = edge.data!;
     expect(points[0].x).toBeCloseTo(orders.position.x + orders.width!, 0);
@@ -139,7 +152,7 @@ describe("layoutShapeDiagram", () => {
     expect(Math.abs(last.y - (customers.position.y + tableRowCenterY(erd.nodes[1], 0)))).toBeLessThanOrEqual(1);
   });
 
-  it("keeps placed elements where they are, fits the boundary around them and drops the routes", async () => {
+  it("keeps placed elements where they are, fits the boundary around them and routes the connections itself", async () => {
     const placed: ShapeDiagram = {
       ...container,
       nodes: container.nodes.map((node) => (node.id === "web" ? { ...node, position: { x: 500, y: 400 } } : node.id === "api" ? { ...node, position: { x: 900, y: 400 } } : node)),
@@ -158,7 +171,10 @@ describe("layoutShapeDiagram", () => {
       expect(node.position.x + node.width!).toBeLessThanOrEqual(boundary.width!);
       expect(node.position.y + node.height!).toBeLessThanOrEqual(boundary.height!);
     }
-    expect(edges.every((edge) => edge.data!.points.length === 0 && edge.data!.labelCenter === null && edge.data!.hasInlineLabel)).toBe(true);
+    expect(edges.every((edge) => edge.data!.points.length >= 2 && edge.data!.labelCenter === null && edge.data!.hasInlineLabel)).toBe(true);
+    const webToApi = edges.find((edge) => edge.id === "web->api")!.data!.points;
+    expect(webToApi[0]).toEqual({ x: 500 + web.width! / 2, y: 400 + web.height! });
+    expect(webToApi[webToApi.length - 1]).toEqual({ x: 900 + api.width! / 2, y: 400 });
   });
 
   it("returns an empty layout for an empty diagram", async () => {
@@ -208,6 +224,6 @@ describe("decorateShapeFlow", () => {
     expect(nodes.find((node) => node.id === "shop")).toBe(flow.nodes.find((node) => node.id === "shop"));
     const toDb = edges.find((edge) => edge.id === "api->db")!;
     expect(toDb.markerEnd).toMatchObject({ color: "#e5e7eb" });
-    expect(edges.find((edge) => edge.id === "customer->web")!).toMatchObject({ markerEnd: { color: "#4b5563" }, data: { isMuted: true } });
+    expect(edges.find((edge) => edge.id === "customer->web")!).toMatchObject({ markerEnd: { color: "#6b7280" }, data: { isMuted: true } });
   });
 });

@@ -87,7 +87,7 @@ export type ChangelistScope = "own" | "downstream" | "all";
 export type PopupSize = { width: number; height: number };
 
 /** The floating popups and dialogs whose size the user may drag; each remembers its last size (see ui/popup-size.hook.ts). */
-export type PopupKey = "usages" | "fileSearch" | "findInFiles" | "subChat" | "screenshots" | "fileFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch" | "push" | "reset" | "rename" | "renamePreview" | "renamePath" | "newPath" | "loadedContext" | "contextText";
+export type PopupKey = "usages" | "fileSearch" | "findInFiles" | "subChat" | "screenshots" | "fileFilter" | "tableFilter" | "change" | "pushTarget" | "image" | "review" | "shelve" | "deleteSession" | "staleRemote" | "renameBranch" | "push" | "reset" | "rename" | "renamePreview" | "renamePath" | "newPath" | "loadedContext" | "contextText";
 
 /**
  * Size each popup opens with until the user resizes it. A popup that is as tall as its content treats the height as
@@ -116,6 +116,7 @@ export const DEFAULT_POPUP_SIZES: Record<PopupKey, PopupSize> = {
   subChat: { width: 640, height: 760 },
   screenshots: { width: 760, height: 640 },
   fileFilter: { width: 320, height: 384 },
+  tableFilter: { width: 280, height: 384 },
   change: { width: 720, height: 320 },
   pushTarget: { width: 460, height: 480 },
   image: { width: 960, height: 720 },
@@ -342,6 +343,8 @@ type SettingsState = {
   changelistScopes: Record<string, ChangelistScope>;
   /** Changed files unchecked in the dependency graph's file filter, keyed by session id; every other file is shown. */
   graphExcludedFiles: Record<string, string[]>;
+  /** Tables unchecked in the ERD's table filter, keyed by session id; every other table is shown. */
+  erdHiddenTables: Record<string, string[]>;
   /** Diagram type the Architecture tab shows, keyed by session id; a session without an entry shows the dependencies. */
   diagramTypes: Record<string, DiagramType>;
   /** Worktree-relative diagram file the Architecture tab shows instead of a generated diagram, keyed by session id. */
@@ -381,6 +384,7 @@ type SettingsState = {
   setDiffLineScope: (scope: DiffLineScope) => void;
   setChangelistScope: (sessionId: string, scope: ChangelistScope) => void;
   setGraphExcludedFiles: (sessionId: string, paths: string[]) => void;
+  setErdHiddenTables: (sessionId: string, tableIds: string[]) => void;
   setDiagramType: (sessionId: string, diagramType: DiagramType) => void;
   /** Shows the diagram file `path` in the Architecture tab of `sessionId`; null returns to the chosen diagram type. */
   setDiagramFile: (sessionId: string, path: string | null) => void;
@@ -434,6 +438,7 @@ export type PersistedState = {
   diffLineScope?: DiffLineScope;
   changelistScopes?: Record<string, ChangelistScope>;
   graphExcludedFiles?: Record<string, string[]>;
+  erdHiddenTables?: Record<string, string[]>;
   diagramTypes?: Record<string, DiagramType>;
   diagramFiles?: Record<string, string>;
   diagramSaveDir?: string;
@@ -669,6 +674,7 @@ export const useSettingsStore = create<SettingsState>()(
       diffLineScope: "all",
       changelistScopes: {},
       graphExcludedFiles: {},
+      erdHiddenTables: {},
       diagramTypes: {},
       diagramFiles: {},
       diagramSaveDir: DEFAULT_DIAGRAM_SAVE_DIR,
@@ -716,6 +722,11 @@ export const useSettingsStore = create<SettingsState>()(
         set((state) => {
           const { [sessionId]: _previous, ...rest } = state.graphExcludedFiles;
           return { graphExcludedFiles: paths.length ? { ...rest, [sessionId]: [...paths].sort() } : rest };
+        }),
+      setErdHiddenTables: (sessionId, tableIds) =>
+        set((state) => {
+          const { [sessionId]: _previous, ...rest } = state.erdHiddenTables;
+          return { erdHiddenTables: tableIds.length ? { ...rest, [sessionId]: [...tableIds].sort() } : rest };
         }),
       setDiagramType: (sessionId, diagramType) =>
         set((state) => {
@@ -771,6 +782,7 @@ export const useSettingsStore = create<SettingsState>()(
         diffLineScope: state.diffLineScope,
         changelistScopes: state.changelistScopes,
         graphExcludedFiles: state.graphExcludedFiles,
+        erdHiddenTables: state.erdHiddenTables,
         diagramTypes: state.diagramTypes,
         diagramFiles: state.diagramFiles,
         diagramSaveDir: state.diagramSaveDir,

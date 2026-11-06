@@ -1,3 +1,6 @@
+/** Worktree-relative folder of the diagrams Hunt generates for a session (`DIAGRAMS_DIR` of `graph/graph.rs`). */
+export const DIAGRAMS_DIR = ".hunt/diagrams";
+
 /** Every diagram file ends in this suffix, the generated ones in `.hunt/diagrams/` and the ones saved into the repository. */
 export const DIAGRAM_FILE_SUFFIX = ".react-flow.json";
 

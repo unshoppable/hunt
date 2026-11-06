@@ -58,7 +58,7 @@ decision records that steer the agent.
 - **Pull request reviews.** Pick an open PR, review its diff against the merge base, draft inline comments in the
   gutter and submit the review through `gh`.
 - **Architecture diagrams.** The agent writes a dependency graph of the change to `.hunt/diagrams/dependencies.react-flow.json` and C4, state,
-  ERD and process diagrams to `.hunt/diagrams/<type>.react-flow.json`; Hunt validates them and lays them out with ELK inside
+  ERD, process and freeform diagrams to `.hunt/diagrams/<type>.react-flow.json`; Hunt validates them and lays them out with ELK inside
   React Flow in its own style. A diagram flags itself as outdated when the worktree changes. Shape diagrams are
   editable, can be saved into the repository and opened from there again ("Show in Architecture").
 - **Checks tab.** Runs the commands that `hunt.json` declares, such as lint, test and build, one by one or all at
@@ -583,10 +583,12 @@ until the app restarts.
 
 #### Architecture diagrams
 
-The Architecture tab shows one of six diagrams per session, picked in the dropdown of its toolbar and remembered per
-session: *Dependencies* (the file-level component diagram of the change) and the five shape diagrams *C4 Context*,
-*C4 Container*, *States* (UML state diagram), *ERD* (entity-relationship diagram) and *Process* (UML activity
-diagram). Every diagram is content an agent writes into a git-excluded file of the worktree, and a view Hunt renders
+The Architecture tab shows one of seven diagrams per session, picked in the dropdown of its toolbar and remembered per
+session: *Dependencies* (the file-level component diagram of the change) and the six shape diagrams *C4 Context*,
+*C4 Container*, *States* (UML state diagram), *ERD* (entity-relationship diagram), *Process* (UML activity
+diagram) and *Freeform* (a drawing of basic shapes, usually made by hand). The dropdown lists these templates only;
+those whose file exists in `.hunt/diagrams/` carry a *generated* badge, and generating one again overwrites that file,
+so a version worth keeping goes into the repository with *Save…* first. Every diagram is content an agent writes into a git-excluded file of the worktree, and a view Hunt renders
 from it; the generate button runs the standard prompt of the chosen type, and the chevron beside it opens a box for
 additional instructions that go along with that one run. Each run is a headless `claude -p` process of its own in the
 session's local worktree (`apps/client/src-tauri/src/session/diagram_agent.rs`), on the model and effort from
@@ -597,7 +599,7 @@ session's diagram is generated on the Mac as well, in the local worktree the fil
 prompts name the session's diff base: `HEAD`, or the merge base of a reviewed pull
 request. `apps/client/src-tauri/src/graph/graph.rs` owns the prompts, the files and their status; the React panels live in
 `apps/client/src/graph/` (`ArchitecturePanel.tsx` picks the view, `GraphPanel.tsx` is the Dependencies view,
-`ShapeDiagramPanel.tsx` the five others).
+`ShapeDiagramPanel.tsx` the six others).
 
 The Dependencies diagram is `.hunt/diagrams/dependencies.react-flow.json` (schema in `apps/client/src-tauri/src/graph/graph.schema.json`): one node
 per changed file plus the unchanged files that explain the change, and one edge per dependency with a label stating
@@ -626,11 +628,12 @@ the toolbar adds elements and boundaries, and a drag from
 the dot under an element connects it to the element it is dropped on. *Save…* writes a generated diagram into the
 repository, into one of the folders the pattern of *Settings → Architecture* names (`apps/*/docs/diagrams` by
 default, a `*` segment standing for every subfolder; `graph/diagram-save.utils.ts`), as `<name>.react-flow.json`, and
-the tab then shows that file. Such a file is an ordinary worktree file: it can be moved anywhere, and the project
-tree's context menu opens any `*.react-flow.json` with *Show in Architecture* (`sessions/diagram-file-requests.hook.ts`,
+the tab then shows that file. Such a file is an ordinary worktree file: it can be moved anywhere, and the context
+menus of every file tree of a session (project tree, the Diff tab's change list, the files of a commit in the Git tab) open
+any `*.react-flow.json` with *Show in Architecture* (`sessions/diagram-file-requests.hook.ts`,
 which also works from the editor window), where it stays editable and reloads when it changes on disk; the
 Dependencies diagram describes the current diff and is neither saved nor edited. The prompts live in
-`apps/client/prompts/diagram/`: `diagram.system-prompt.md` extends the diagram agent's system prompt with the rules shared by the five
+`apps/client/prompts/diagram/`: `diagram.system-prompt.md` extends the diagram agent's system prompt with the rules shared by the six
 types, `diagram-<type>.user-prompt.md` is the message of one type. A shape diagram is generated only on a click.
 
 The modification time of a diagram file is the time it was generated; every session records in `sessions.json` when
@@ -650,12 +653,14 @@ count and how often it was repeated (`↻n`), the current step marked and every 
 with the findings that caused it; the edge of the last transition (from the step of the last run but one to that of the
 last run) is blue, drawn over the steps' tops when no edge connects them (such as checks → merge), and the header names
 it (`last Review → Implement`); below the graph the runs in order with outcome, start and duration, and under them the step result of the selected
-run rendered as markdown. The data is the record the poller mirrors into `.hunt/swf/pipeline.json` of the worktree on
+run rendered as markdown and its conversation in the chat's rows (prompts, thoughts, replies, tool calls with their
+results; `factory/run-transcript.utils.ts` reads the transcript); a run with either opens. The data is the record the poller mirrors into `.hunt/swf/pipeline.json` of the worktree on
 the VM (`hunt-ctl swf-record`, schema in `libs/domain/src/swf/pipeline.domain.ts`) plus `.hunt/swf/steps/<nn>-<step>.md`
-with the result that ended run `nn`; Hunt pulls that folder into the local worktree when it opens the session, whenever
+with the result that ended run `nn` and `.hunt/swf/transcripts/<nn>-<step>.jsonl` with the Claude Code transcript of its
+conversation; Hunt pulls that folder into the local worktree when it opens the session, whenever
 the VM's status helper reports `pipeline.json` written (`swfRecordAt` of its status, so the tab follows the pipeline live
 while Hunt is connected; after every turn with an older helper) and before it brings the session back, so the tab reads
-without the VM too (`read_swf_pipeline`, `read_swf_step`). The tab says so when the pipeline has not reported yet. The
+without the VM too (`read_swf_pipeline`, `read_swf_step`, `read_swf_transcript`). The tab says so when the pipeline has not reported yet. The
 sidebar's chip of such a session names the pipeline's current step once the tab read the record, else the step the
 gateway recorded; the chat of a connected swf session notes that it shows the current step's conversation, which starts
 afresh with every step and reconnects by itself. `apps/client/src/factory/` holds the panel and
@@ -1275,7 +1280,12 @@ poller refreshes), moves the label to the next step, saves the record comment an
 instead of a poll. An unusable result is discarded and the agent told why in the same conversation. A turn that ends
 without a result costs one `gh issue view` of the labels: `swf:question` means the agent asked and the runner waits
 for the poller to bring the answer, `swf:failed` that it gave up, else one reminder (`nudge.user-prompt.md`), and the
-issue is marked `swf:failed` when the next turn ends the same way.
+issue is marked `swf:failed` when the next turn ends the same way. Each run records the ACP session of its
+conversation (`sessionId`, the Claude Code session ID), and the runner copies that conversation's transcript
+(`$CLAUDE_CONFIG_DIR/projects/<slug>/<sessionId>.jsonl`) to `.hunt/swf/transcripts/<nn>-<step>.jsonl` whenever no turn
+runs, and once more after the `clear` of the next step, when the stopped relay has written it completely; a failed copy
+is logged and holds nothing up. The relay asks for summaries of the agent's thinking
+(`thinking: { type: "adaptive", display: "summarized" }`), without which the transcript's thinking blocks stay empty.
 `plan` reads the issue and the repository's guardrails (README, CLAUDE.md, rules, skills, ADRs, `hunt.agent.md`), asks
 every question only a person can answer, creates and pushes the session's branch by the repository's branch naming
 rules (its guardrails and the step's skill say which) and writes the plan with the acceptance criteria for the steps

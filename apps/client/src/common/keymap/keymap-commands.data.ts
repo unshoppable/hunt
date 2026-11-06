@@ -96,6 +96,14 @@ export const KEYMAP_COMMANDS = [
   { id: "editor.moveTabUp", label: "Move tab to the pane above", group: "Editor", scope: "app", defaults: ["Shift+Meta+e"] },
   { id: "editor.moveTabDown", label: "Move tab to the pane below", group: "Editor", scope: "app", defaults: ["Shift+Meta+r"] },
   { id: "graph.find", label: "Find files by name or symbol in the dependency diagram", group: "Architecture", scope: "app", defaults: ["Meta+f"] },
+  {
+    id: "graph.deleteSelection",
+    label: "Delete the selected table, element, connection or boundary",
+    group: "Architecture",
+    scope: "app",
+    defaults: ["Backspace", "Delete"],
+    note: "in an editable diagram while no field has the focus; asks first when more goes with it",
+  },
 ] as const satisfies readonly KeymapCommand[];
 
 export type CommandId = (typeof KEYMAP_COMMANDS)[number]["id"];

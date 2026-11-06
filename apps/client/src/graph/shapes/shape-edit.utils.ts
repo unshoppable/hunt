@@ -1,4 +1,4 @@
-import type { Cardinality, ShapeChange, ShapeColor, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeKind, ShapeNode, ShapePosition } from "./shape-diagram.types";
+import type { Cardinality, ShapeChange, ShapeColor, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeKind, ShapeNode, ShapePosition, ShapeSelection } from "./shape-diagram.types";
 import { tableIdFor } from "./erd-edit.utils";
 import { shapeEdgeId } from "./shape-diagram.utils";
 
@@ -136,6 +136,30 @@ export function removeGroup(diagram: ShapeDiagram, id: string): ShapeDiagram {
   return { ...diagram, nodes, groups: groups.length ? groups : undefined };
 }
 
+/**
+ * Deleting `selection`: the diagram without it and the question to confirm that with, null when nothing goes without
+ * asking — a table always asks, an element only when connections go with it, a connection or boundary never. Null
+ * when `selection` is not in the diagram.
+ */
+export function deletionOf(diagram: ShapeDiagram, selection: ShapeSelection): { diagram: ShapeDiagram; question: string | null } | null {
+  if (selection.kind === "edge") {
+    return diagram.edges.some((edge) => shapeEdgeId(diagram, edge) === selection.id) ? { diagram: removeEdge(diagram, selection.id), question: null } : null;
+  }
+  if (selection.kind === "group") {
+    return diagram.groups?.some((group) => group.id === selection.id) ? { diagram: removeGroup(diagram, selection.id), question: null } : null;
+  }
+  const node = diagram.nodes.find((candidate) => candidate.id === selection.id);
+  if (!node) return null;
+  const connections = diagram.edges.filter((edge) => edge.source === node.id || edge.target === node.id).length;
+  const question =
+    node.kind === "table"
+      ? `Delete the table "${node.label}"${connections ? ` and its ${countOf(connections, "relationship")}` : ""}?`
+      : connections
+        ? `Delete "${node.label}" and its ${countOf(connections, "connection")}?`
+        : null;
+  return { diagram: removeNode(diagram, node.id), question };
+}
+
 /** Places every element named in `positions` there, rounded to whole pixels; the others keep theirs. */
 export function setPositions(diagram: ShapeDiagram, positions: ReadonlyMap<string, ShapePosition>): ShapeDiagram {
   return {
@@ -175,6 +199,10 @@ function withoutBends(edge: ShapeEdge): ShapeEdge {
   if (!edge.bends) return edge;
   const { bends: _bends, ...rest } = edge;
   return rest;
+}
+
+function countOf(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
 function takenIds(diagram: ShapeDiagram): string[] {

@@ -29,6 +29,8 @@ import { isShortcut } from "../ui/shortcuts.utils";
 import { useShortcutLabel } from "../ui/shortcut-label.hook";
 import { WebstormIcon } from "../ui/Icons";
 import { baseName } from "../common/path/path.utils";
+import { isDiagramFilePath } from "../common/diagram/diagram-file.utils";
+import { showDiagramFile } from "../sessions/diagram-file-requests.hook";
 import { UnsavedDot } from "../ui/UnsavedDot";
 import { useFileIconUrl } from "../ui/file-icons/file-icons.hook";
 import { useDismiss } from "../ui/dismiss.hook";
@@ -633,6 +635,19 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
             Copy path
             {copyPathShortcut ? <span className="text-neutral-500">{copyPathShortcut}</span> : null}
           </button>
+          {!contextMenu.target.isFolder && isDiagramFilePath(contextMenu.target.path) ? (
+            <button
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                setContextMenu(null);
+                showDiagramFile({ sessionId, path: contextMenu.target.path });
+              }}
+              className="flex w-full items-center rounded px-2 py-1 text-left hover:bg-(--row-hover)"
+            >
+              Show in Architecture
+            </button>
+          ) : null}
           <button
             type="button"
             role="menuitem"

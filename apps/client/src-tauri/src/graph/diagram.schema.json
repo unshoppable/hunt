@@ -1,13 +1,13 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Hunt architecture diagram",
-  "description": "One of the shape diagrams the Hunt client renders from `.hunt/diagrams/<type>.react-flow.json`: a C4 context or container diagram, a UML state diagram, an entity-relationship diagram or a UML activity (process) diagram. The file holds content (elements, their connections, labels and what the session changed) and, once someone placed the elements by hand in the Architecture tab, their positions; Hunt owns shapes, colors and sizes, and lays out every element without a position, so the same diagram looks the same on every branch.",
+  "description": "One of the shape diagrams the Hunt client renders from `.hunt/diagrams/<type>.react-flow.json`: a C4 context or container diagram, a UML state diagram, an entity-relationship diagram, a UML activity (process) diagram or a freeform drawing of basic shapes. The file holds content (elements, their connections, labels and what the session changed) and, once someone placed the elements by hand in the Architecture tab, their positions; Hunt owns shapes, colors and sizes, and lays out every element without a position, so the same diagram looks the same on every branch.",
   "type": "object",
   "required": ["type", "nodes", "edges"],
   "additionalProperties": false,
   "properties": {
     "type": {
-      "enum": ["c4-context", "c4-container", "states", "erd", "process"],
+      "enum": ["c4-context", "c4-container", "states", "erd", "process", "freeform"],
       "description": "Which diagram the file holds; must match the file name `<type>.react-flow.json`."
     },
     "title": { "type": "string", "maxLength": 80, "description": "What the diagram shows in a few words, e.g. the subsystem or the flow it covers." },
@@ -40,6 +40,14 @@
     {
       "if": { "properties": { "type": { "const": "process" } } },
       "then": { "properties": { "nodes": { "items": { "properties": { "kind": { "enum": ["start", "end", "action", "decision"] } } } } } }
+    },
+    {
+      "if": { "properties": { "type": { "const": "freeform" } } },
+      "then": {
+        "properties": {
+          "nodes": { "items": { "properties": { "kind": { "enum": ["action", "state", "externalSystem", "decision", "start", "end", "person", "database", "queue"] } } } }
+        }
+      }
     }
   ],
   "$defs": {
@@ -60,7 +68,7 @@
         },
         "kind": {
           "enum": ["person", "system", "externalSystem", "container", "database", "queue", "start", "end", "state", "action", "decision", "table"],
-          "description": "Which shape Hunt draws. c4-context: `person`, `system` (the system under review), `externalSystem`. c4-container: `person`, `container` (a deployable process: app, service, job), `database`, `queue`, `externalSystem`. states: `start`, `end`, `state`. erd: `table`. process: `start`, `end`, `action`, `decision`."
+          "description": "Which shape Hunt draws. c4-context: `person`, `system` (the system under review), `externalSystem`. c4-container: `person`, `container` (a deployable process: app, service, job), `database`, `queue`, `externalSystem`. states: `start`, `end`, `state`. erd: `table`. process: `start`, `end`, `action`, `decision`. freeform: `action` (box), `state` (rounded box), `externalSystem` (dashed box), `decision` (diamond), `start` (dot), `end` (ring), `person`, `database` (cylinder), `queue`."
         },
         "label": { "type": "string", "minLength": 1, "maxLength": 60, "description": "The element's name as the team calls it; a `start` or `end` node may carry an empty-looking short label such as `Start`." },
         "description": { "type": "string", "maxLength": 200, "description": "Second line under the label: a container's technology (`Node, Express`), a system's purpose, a person's role, a state's meaning, a table's purpose. Shown on the shape." },

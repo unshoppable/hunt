@@ -241,7 +241,7 @@ export async function layoutDiagram(diagram: Diagram, signal?: AbortSignal): Pro
 }
 
 /** Stroke of an edge and its arrowhead at rest and while it or its source file is hovered. */
-export const EDGE_COLOR = "#4b5563";
+export const EDGE_COLOR = "#6b7280";
 export const EDGE_COLOR_HIGHLIGHTED = "#e5e7eb";
 
 /** Arrowhead in the edge's color; sized in pixels so it keeps its size when the highlighted stroke gets thicker. */

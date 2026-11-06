@@ -1,5 +1,5 @@
-/** One choice of a dropdown: `id` is the value it stands for, `name` its label, `description` a muted line below it. */
-export type DropdownOption = { id: string; name: string; description?: string | null; isDisabled?: boolean };
+/** One choice of a dropdown: `id` is the value it stands for, `name` its label, `description` a muted line below it, `badge` a short mark beside it. */
+export type DropdownOption = { id: string; name: string; description?: string | null; badge?: string; isDisabled?: boolean };
 
 /** Fixed-position placement of a floating menu; `maxHeight` caps it to the room on its side of the anchor. */
 export type MenuPlacement = { left: number; top: number; maxHeight: number; isAbove: boolean };

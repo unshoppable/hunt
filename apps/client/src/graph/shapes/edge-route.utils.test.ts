@@ -1,6 +1,6 @@
 import { Position, type XYPosition } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
-import { isMovableSegment, moveSegment, routeAroundObstacles, routeThroughBends, type Obstacle } from "./edge-route.utils";
+import { countCrossings, isMovableSegment, moveSegment, routeAroundObstacles, routeConnections, routeThroughBends, type Obstacle } from "./edge-route.utils";
 
 /** True when a segment of the route runs through the inside of `obstacle`. */
 function crosses(points: XYPosition[], obstacle: Obstacle): boolean {
@@ -103,6 +103,87 @@ describe("routeAroundObstacles", () => {
       { x: 580, y: 100, width: 20, height: 220 },
     ];
     expect(routeAroundObstacles({ x: 100, y: 50, side: Position.Right }, { x: 450, y: 210, side: Position.Left }, [source, ...walls])).toBeNull();
+  });
+});
+
+describe("routeAroundObstacles with routed connections", () => {
+  const source: Obstacle = { x: 0, y: 0, width: 200, height: 300 };
+  const target: Obstacle = { x: 600, y: 0, width: 200, height: 300 };
+
+  it("runs beside a connection on its way instead of on top of it", () => {
+    const routed = { id: "other", source: { x: 200, y: 50, side: Position.Right }, target: { x: 600, y: 250, side: Position.Left }, points: [{ x: 200, y: 50 }, { x: 400, y: 50 }, { x: 400, y: 250 }, { x: 600, y: 250 }] };
+    const route = routeAroundObstacles({ x: 200, y: 250, side: Position.Right }, { x: 600, y: 50, side: Position.Left }, [source, target], [routed])!;
+    expect(isOrthogonal(route)).toBe(true);
+    expect(route.some((point) => point.x === 400)).toBe(false);
+  });
+
+  it("counts a run through the corner of a connection as crossing it", () => {
+    // The other connection turns at (400, 50): a run along y = 50 that reaches x = 400 from the left would cut its corner.
+    const other = { id: "other", source: { x: 200, y: 50, side: Position.Right }, target: { x: 600, y: 250, side: Position.Left }, points: [{ x: 200, y: 50 }, { x: 400, y: 50 }, { x: 400, y: 250 }, { x: 600, y: 250 }] };
+    const route = routeAroundObstacles({ x: 200, y: 150, side: Position.Right }, { x: 600, y: 50, side: Position.Left }, [source, target], [other])!;
+    expect(route.some((point) => point.y === 50 && point.x < 400)).toBe(false);
+  });
+
+  it("may run on top of a connection that ends in the same handle", () => {
+    const sibling = { id: "sibling", source: { x: 200, y: 20, side: Position.Right }, target: { x: 600, y: 50, side: Position.Left }, points: [{ x: 200, y: 20 }, { x: 400, y: 20 }, { x: 400, y: 50 }, { x: 600, y: 50 }] };
+    const route = routeAroundObstacles({ x: 200, y: 80, side: Position.Right }, { x: 600, y: 50, side: Position.Left }, [source, target], [sibling])!;
+    expect(route).toHaveLength(4);
+    const lastRun = route.slice(-2);
+    expect(lastRun[0].y).toBe(50);
+    expect(lastRun[0].x).toBeLessThan(600);
+  });
+});
+
+describe("routeConnections", () => {
+  it("routes every connection clear of the others and returns them by id", async () => {
+    const left: Obstacle = { x: 0, y: 0, width: 200, height: 200 };
+    const right: Obstacle = { x: 600, y: 0, width: 200, height: 200 };
+    const routes = await routeConnections(
+      [
+        { id: "upper", source: { x: 200, y: 50, side: Position.Right }, target: { x: 600, y: 150, side: Position.Left } },
+        { id: "lower", source: { x: 200, y: 150, side: Position.Right }, target: { x: 600, y: 50, side: Position.Left } },
+        { id: "straight", source: { x: 200, y: 180, side: Position.Right }, target: { x: 600, y: 180, side: Position.Left } },
+      ],
+      [left, right],
+    );
+    expect([...routes.keys()].sort()).toEqual(["lower", "straight", "upper"]);
+    const points = [...routes.values()].map((route) => route!);
+    expect(points.every((route) => isOrthogonal(route))).toBe(true);
+    // The two that swap rows must cross once; neither crosses the straight one below them.
+    expect(countCrossings(points)).toBe(1);
+    expect(routes.get("straight")).toEqual([
+      { x: 200, y: 180 },
+      { x: 600, y: 180 },
+    ]);
+  });
+
+  it("returns null for a connection the obstacles wall in", async () => {
+    const walls: Obstacle[] = [
+      { x: 300, y: 100, width: 300, height: 20 },
+      { x: 300, y: 300, width: 300, height: 20 },
+      { x: 300, y: 100, width: 20, height: 220 },
+      { x: 580, y: 100, width: 20, height: 220 },
+    ];
+    const routes = await routeConnections([{ id: "in", source: { x: 100, y: 50, side: Position.Right }, target: { x: 450, y: 210, side: Position.Left } }], walls);
+    expect(routes.get("in")).toBeNull();
+  });
+
+  it("rejects once the signal aborts", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const connections = Array.from({ length: 40 }, (_, index) => ({ id: String(index), source: { x: 0, y: index * 30, side: Position.Right }, target: { x: 2000, y: 1500 - index * 30, side: Position.Left } }));
+    await expect(routeConnections(connections, [], controller.signal)).rejects.toThrow();
+  });
+});
+
+describe("countCrossings", () => {
+  it("counts a horizontal run of one route meeting a vertical run of another, not runs that merge", () => {
+    const across = [{ x: 0, y: 50 }, { x: 100, y: 50 }];
+    const down = [{ x: 50, y: 0 }, { x: 50, y: 100 }];
+    const merging = [{ x: 0, y: 80 }, { x: 50, y: 80 }, { x: 50, y: 100 }];
+    expect(countCrossings([across, down])).toBe(1);
+    expect(countCrossings([down, merging])).toBe(0);
+    expect(countCrossings([across])).toBe(0);
   });
 });
 

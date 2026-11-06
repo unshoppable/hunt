@@ -28,7 +28,7 @@ export function DiagramFilePanel({ sessionId, path }: { sessionId: string; path:
         try {
           const type = shapeDiagramTypeOf(JSON.parse(content));
           setDiagramType(type);
-          setError(type ? null : `${path} declares no shape diagram type (c4-context, c4-container, states, erd or process) in \`type\`.`);
+          setError(type ? null : `${path} declares no shape diagram type (c4-context, c4-container, states, erd, process or freeform) in \`type\`.`);
         } catch (reason) {
           setDiagramType(null);
           setError(`${path} is not valid JSON: ${errorText(reason)}`);

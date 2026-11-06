@@ -1,44 +1,55 @@
 import { useRef, useState } from "react";
+import { DIAGRAMS_DIR } from "../common/diagram/diagram-file.utils";
 import type { DiagramType } from "../common/diagram/diagram.types";
 import type { GraphStatus } from "./graph.types";
 import { commands } from "../ipc/commands";
+import { useHuntStore } from "../sessions/hunt.store";
 import { useSettingsStore } from "../settings/settings.store";
-import { BUTTON_BASE, PRIMARY, PRIMARY_BUTTON_LG, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { BUTTON_BASE, PRIMARY, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
 import { confirmDestructive } from "../ui/confirm.utils";
 import { Dropdown } from "../ui/Dropdown";
 import { ChevronDownIcon } from "../ui/Icons";
 import { useDismiss } from "../ui/dismiss.hook";
 import { errorText } from "../ui/error-text.utils";
+import { useLoad } from "../ui/load.hook";
 import { baseName, dirName } from "../common/path/path.utils";
-import { DIAGRAM_TYPES } from "./diagram-types.constants";
+import { DIAGRAM_FILES, DIAGRAM_TYPES } from "./diagram-types.constants";
 import { defaultDiagramName, diagramFilePath, expandSaveFolders } from "./diagram-save.utils";
 
-const BADGE_BASE = "absolute top-3 left-3 z-10 rounded-md border px-2 py-0.5 text-[12px] font-medium";
-
-const DIAGRAM_OPTIONS = DIAGRAM_TYPES.map((type) => ({ id: type.id, name: type.name, description: type.description }));
-
-/** Option id of the diagram file the tab shows, which no diagram type uses. */
-const FILE_OPTION = "file";
+const BADGE_BASE = "rounded-md border px-2 py-0.5 text-[12px] font-medium";
 
 /**
- * Picks which diagram the Architecture tab shows for `sessionId`; the choice is remembered per session. While the tab
- * shows a diagram file, the file is the first option, and picking a type returns to the generated diagrams.
+ * Picks which diagram template the Architecture tab shows for `sessionId`; the choice is remembered per session. Each
+ * template shows the session's diagram of that type in `.hunt/diagrams/`, and those whose file exists carry a badge.
+ * A diagram file of the repository is no option: it opens through "Show in Architecture", the trigger then shows no
+ * template, and picking one returns to the session's diagrams.
  */
 export function DiagramTypeDropdown({ sessionId }: { sessionId: string }) {
   const diagramType = useSettingsStore((state) => state.diagramTypes[sessionId] ?? "dependencies");
   const file = useSettingsStore((state) => state.diagramFiles[sessionId]);
   const setDiagramType = useSettingsStore((state) => state.setDiagramType);
-  const options = file ? [{ id: FILE_OPTION, name: baseName(file), description: file }, ...DIAGRAM_OPTIONS] : DIAGRAM_OPTIONS;
+  const graphVersion = useHuntStore((state) => state.chats[sessionId]?.graphVersion ?? 0);
+  const [existing, setExisting] = useState<ReadonlySet<string>>(new Set());
+
+  useLoad(
+    () => commands.listDir(sessionId, DIAGRAMS_DIR).catch(() => []),
+    { onValue: (entries) => setExisting(new Set(entries.filter((entry) => !entry.isDir).map((entry) => entry.name))), onError: () => setExisting(new Set()) },
+    [sessionId, graphVersion],
+  );
+
+  const options = DIAGRAM_TYPES.map((type) => ({
+    id: type.id,
+    name: type.name,
+    description: type.description,
+    badge: existing.has(baseName(DIAGRAM_FILES[type.id])) ? "created" : undefined,
+  }));
   return (
     <Dropdown
-      title={file ? `Diagram file ${file}` : "Diagram type"}
-      value={file ? FILE_OPTION : diagramType}
+      title={file ? `Diagram template (showing ${file})` : "Diagram template"}
+      value={file ? "" : diagramType}
+      placeholder="Template"
       options={options}
-      onChange={(id) => {
-        if (id !== FILE_OPTION) {
-          setDiagramType(sessionId, id as DiagramType);
-        }
-      }}
+      onChange={(id) => setDiagramType(sessionId, id as DiagramType)}
       className={SECONDARY_BUTTON_XS}
     />
   );
@@ -162,18 +173,27 @@ export function SaveDiagramButton({ sessionId, diagram, content, onSaved }: { se
 
 /**
  * "Outdated" while worktree files changed after the diagram was generated, "Up to date" otherwise; nothing without a
- * diagram. Floats in the top-left corner of the diagram canvas, so its parent must be positioned.
+ * diagram. An opened diagram file shows its name instead, since it has no generation to be outdated against. Floats in
+ * the top-left corner of the diagram canvas, so its parent must be positioned.
  */
-export function DiagramStatusBadge({ status, hasDiagram }: { status: GraphStatus | null; hasDiagram: boolean }) {
+export function DiagramStatusBadge({ status, hasDiagram, filePath }: { status: GraphStatus | null; hasDiagram: boolean; filePath?: string | null }) {
   if (!hasDiagram) return null;
-  return status?.isOutdated ? (
-    <span className={`${BADGE_BASE} border-amber-400/30 bg-amber-400/10 text-amber-300`} title="Files changed since the diagram was generated.">
-      Outdated
-    </span>
-  ) : (
-    <span className={`${BADGE_BASE} border-emerald-400/30 bg-emerald-400/10 text-emerald-300`} title="No files changed since the diagram was generated.">
-      Up to date
-    </span>
+  return (
+    <div className="absolute top-3 left-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2">
+      {filePath ? (
+        <span className="truncate font-mono text-[12px] text-neutral-400" title={filePath}>
+          {baseName(filePath)}
+        </span>
+      ) : status?.isOutdated ? (
+        <span className={`${BADGE_BASE} border-amber-400/30 bg-amber-400/10 text-amber-300`} title="Files changed since the diagram was generated.">
+          Outdated
+        </span>
+      ) : (
+        <span className={`${BADGE_BASE} border-emerald-400/30 bg-emerald-400/10 text-emerald-300`} title="No files changed since the diagram was generated.">
+          Up to date
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -181,7 +201,18 @@ export function DiagramStatusBadge({ status, hasDiagram }: { status: GraphStatus
  * The generate button of a diagram: its main part generates with the standard prompt, the chevron beside it opens a
  * popover with a text box whose instructions go along with that one run. ⌘/Ctrl+Enter in the box submits.
  */
-export function GenerateSplitButton({ label, isDisabled, onGenerate }: { label: string; isDisabled: boolean; onGenerate: (instructions: string) => void }) {
+export function GenerateSplitButton({
+  label,
+  isDisabled,
+  title,
+  onGenerate,
+}: {
+  label: string;
+  isDisabled: boolean;
+  /** Tooltip of the main part. */
+  title?: string;
+  onGenerate: (instructions: string) => void;
+}) {
   const rootRef = useRef<HTMLDivElement>(null);
   const chevronRef = useRef<HTMLButtonElement>(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -198,7 +229,7 @@ export function GenerateSplitButton({ label, isDisabled, onGenerate }: { label: 
 
   return (
     <div className="relative inline-flex shrink-0">
-      <button type="button" disabled={isDisabled} onClick={() => onGenerate("")} className={`${PRIMARY_BUTTON_LG} rounded-r-none`}>
+      <button type="button" disabled={isDisabled} onClick={() => onGenerate("")} title={title} className={`${PRIMARY_BUTTON_XS} rounded-r-none`}>
         {label}
       </button>
       <button
@@ -210,7 +241,7 @@ export function GenerateSplitButton({ label, isDisabled, onGenerate }: { label: 
         aria-expanded={isOpen}
         aria-label="Generate with additional instructions"
         title="Generate with additional instructions"
-        className={`${BUTTON_BASE} ${PRIMARY} h-[37px] rounded-l-none border-l border-white/20 px-2 text-sm`}
+        className={`${BUTTON_BASE} ${PRIMARY} h-[29px] rounded-l-none border-l border-white/20 px-2 text-[13px]`}
       >
         <ChevronDownIcon className="size-3.5" />
       </button>

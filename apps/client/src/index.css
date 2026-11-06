@@ -977,6 +977,11 @@ body,
   background: #60a5fa;
   cursor: crosshair;
 }
+/* An element or connect tool of the diagram toolbar is active: the next click places or picks. */
+.shape-canvas-picking .react-flow__pane,
+.shape-canvas-picking .react-flow__node {
+  cursor: crosshair;
+}
 
 /* Chat pane: proportional type in a centered reading column; tool activity stays monospace. */
 .chat {

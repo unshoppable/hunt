@@ -310,7 +310,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
       <Panel id="commit" defaultSize="34%" minSize={240} className="flex">
         <PersistentGroup id="hunt-git-commit" fillPane="diff" orientation="vertical" className="h-full min-h-0 flex-1">
           <Panel id="files" defaultSize="45%" minSize={120} className="flex">
-            <CommitFiles commit={selectedCommit} details={details} localBranches={localBranches} selectedPath={selectedFile?.path ?? null} onSelect={setSelectedFile} />
+            <CommitFiles sessionId={sessionId} commit={selectedCommit} details={details} localBranches={localBranches} selectedPath={selectedFile?.path ?? null} onSelect={setSelectedFile} />
           </Panel>
           <PaneSeparator orientation="vertical" />
           <Panel id="diff" minSize={120} className="flex">

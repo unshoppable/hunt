@@ -1,27 +1,34 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Background, Controls, MiniMap, ReactFlow, ReactFlowProvider, useEdgesState, useNodesState, useReactFlow, type FinalConnectionState, type ReactFlowInstance } from "@xyflow/react";
 import { commands } from "../../ipc/commands";
 import type { ShapeDiagramType } from "../../common/diagram/diagram.types";
 import type { GraphStatus } from "../graph.types";
-import type { ShapeDiagram, ShapeKind, ShapePosition } from "./shape-diagram.types";
+import type { ShapeDiagram, ShapeKind, ShapePosition, ShapeSelection } from "./shape-diagram.types";
 import { DIAGRAM_FONT_SIZE, useSettingsStore } from "../../settings/settings.store";
 import { useHuntStore } from "../../sessions/hunt.store";
 import { STATUS_BAR } from "../../ui/bars.constants";
+import { ChevronIcon } from "../../ui/Icons";
+import { confirmDestructive } from "../../ui/confirm.utils";
+import { useDismiss } from "../../ui/dismiss.hook";
+import { useShortcutLabel } from "../../ui/shortcut-label.hook";
+import { isShortcut } from "../../ui/shortcuts.utils";
 import { SECONDARY_BUTTON_XS } from "../../ui/buttons.constants";
-import { Dropdown } from "../../ui/Dropdown";
-import { PlusIcon, Spinner } from "../../ui/Icons";
+import { Spinner } from "../../ui/Icons";
 import { useLoad } from "../../ui/load.hook";
 import { errorText } from "../../ui/error-text.utils";
 import { DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton, SaveDiagramButton } from "../DiagramToolbar";
 import { DIAGRAM_TYPES, KINDS_BY_TYPE } from "../diagram-types.constants";
 import { addTable, emptyErd, serializeShapeDiagram } from "./erd-edit.utils";
-import { addEdge, addGroup, addNode, clearPositions, emptyDiagram, setBends, setPositions } from "./shape-edit.utils";
+import { addEdge, addGroup, addNode, clearPositions, deletionOf, emptyDiagram, setBends, setPositions } from "./shape-edit.utils";
 import { placeWithoutOverlaps } from "./element-overlap.utils";
-import { decorateShapeFlow, hasManualChanges, hasManualLayout, layoutShapeDiagram, shapeNodeSize, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shape-diagram.utils";
+import { decorateShapeFlow, hasManualChanges, layoutShapeDiagram, shapeNodeSize, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shape-diagram.utils";
 import { CHANGE_EDGE_COLOR, CrowFootDefs, EdgeBendsContext, SHAPE_EDGE_TYPES, SHAPE_NODE_TYPES } from "./ShapeNodes";
 import { parseShapeDiagram } from "./shape-schema.utils";
-import { KIND_NAMES, ShapeElementEditor, type ShapeSelection } from "./ShapeElementEditor";
+import { kindName, ShapeElementEditor } from "./ShapeElementEditor";
 import { TableEditor } from "./TableEditor";
+import { TableFilterPopover } from "./TableFilterPopover";
+import { withoutTables } from "./table-filter.utils";
+import { ShapeToolbar, type ShapeTool } from "./ShapeToolbar";
 
 /** How long after the last edit the diagram file is written; edits within that time are written together. */
 const WRITE_DELAY_MS = 400;
@@ -38,11 +45,16 @@ export type ShapeDiagramSource = { kind: "generated"; type: ShapeDiagramType } |
  * its diagram file, validated and laid out with ELK inside React Flow in Hunt's fixed style, or placed where the user
  * dragged its elements. Hovering an edge shows its description, hovering a node lights its edges; everything else
  * fades meanwhile. Every diagram is editable: a click on an element, connection or boundary label opens its editor
- * beside the canvas (the table editor for an ERD table), the toolbar adds elements and boundaries, dragging from the
- * dot under an element connects it to another one, and dragging an element fixes the positions of all of them until
- * Auto-layout drops them again. Every edit shows at once and is written back to the file shortly after. For a
- * generated diagram the toolbar also shows whether files changed since it was generated, generates or updates it, and
- * saves it into the repository, after which the tab shows the saved file; nothing is generated without a click.
+ * beside the canvas (the table editor for an ERD table). The tools floating at the bottom of the canvas (`ShapeToolbar`)
+ * place an element of the picked kind where the canvas is clicked next, connect the two elements clicked next, add
+ * boundaries and offer Auto-layout; dragging from the dot under an element connects it too, and dragging an element
+ * fixes the positions of all of them until Auto-layout drops them again. The editor's delete button, the
+ * context menu of an element, connection or boundary and Delete or Backspace on the selection
+ * (`graph.deleteSelection`) delete it, asking first when more goes with it. Every edit shows at once and is written
+ * back to the file shortly after. For a generated diagram the toolbar at the top also shows whether files changed since
+ * it was generated, generates or updates it, and saves it into the repository, after which the tab shows the saved
+ * file; nothing is generated without a click. An ERD's "Tables" button hides tables from the canvas, like the
+ * dependency graph's "Files" button hides files; the file keeps them.
  */
 export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; source: ShapeDiagramSource }) {
   const diagramType = source.type;
@@ -58,6 +70,14 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
 
   /** Undefined until the file was read, null when there is none. */
   const [diagram, setDiagram] = useState<ShapeDiagram | null | undefined>(undefined);
+  /** ERD tables unchecked in the table filter, remembered per session; they and their relationships stay off the canvas. */
+  const hiddenTableIds = useSettingsStore((state) => (isErd ? state.erdHiddenTables[sessionId] : undefined));
+  const hiddenTables = useMemo(() => new Set(hiddenTableIds), [hiddenTableIds]);
+  const setErdHiddenTables = useSettingsStore((state) => state.setErdHiddenTables);
+  const [isTableFilterOpen, setIsTableFilterOpen] = useState(false);
+  const tableFilterButtonRef = useRef<HTMLButtonElement>(null);
+  /** What the canvas lays out; every edit applies to the whole `diagram`. */
+  const shownDiagram = useMemo(() => (diagram && hiddenTables.size ? withoutTables(diagram, hiddenTables) : diagram), [diagram, hiddenTables]);
   /** The file content of `diagram`, to tell a reload of the user's own write from a rewrite by the agent or an editor. */
   const serializedRef = useRef<string | null>(null);
   const writeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -70,8 +90,21 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
   /** The element, connection or boundary added last, whose editor starts with the name selected. */
   const [createdId, setCreatedId] = useState<string | null>(null);
   const [showProblems, setShowProblems] = useState(false);
-  /** Bumped when a layout with other elements lands, so React Flow remounts and fits the diagram into view. */
-  const [layoutVersion, setLayoutVersion] = useState(0);
+  /** The context menu of the element, connection or boundary right-clicked last, at the pointer. */
+  const [menu, setMenu] = useState<{ target: ShapeSelection; x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useDismiss(menuRef, () => setMenu(null), { closeOnWindowBlur: true, isEnabled: Boolean(menu) });
+  const deleteShortcut = useShortcutLabel("graph.deleteSelection");
+  /**
+   * Bumped when a diagram with other elements is loaded, so React Flow remounts and fits it into view; the user's own
+   * edits keep the view. A mount without elements does not fit, or the first element placed would move the view.
+   */
+  const [view, setView] = useState({ version: 0, fits: false });
+  /** True while `diagram` comes from the user's own edit rather than from the file. */
+  const isOwnEditRef = useRef(false);
+  const [tool, setTool] = useState<ShapeTool>("select");
+  /** The element a connection starts at, clicked first with the connect tool. */
+  const [connectFrom, setConnectFrom] = useState<string | null>(null);
   /** The node text is `DIAGRAM_FONT_SIZE` px at 100 % zoom; the diagram opens zoomed so it shows at the Architecture pane's font size. */
   const zoomScale = useSettingsStore((state) => state.panes.architecture.fontSize) / DIAGRAM_FONT_SIZE;
   const fitViewOptions = { padding: 0.1, minZoom: 0.3 * zoomScale, maxZoom: 1.2 * zoomScale };
@@ -103,6 +136,7 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
           const serialized = serializeShapeDiagram(parsed.diagram);
           if (serialized !== serializedRef.current) {
             serializedRef.current = serialized;
+            isOwnEditRef.current = false;
             setDiagram(parsed.diagram);
           }
           setProblems(parsed.problems);
@@ -122,7 +156,7 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
   );
 
   useLoad(
-    (signal) => (diagram ? layoutShapeDiagram(diagram, signal) : Promise.resolve({ nodes: [], edges: [] })),
+    (signal) => (shownDiagram ? layoutShapeDiagram(shownDiagram, signal) : Promise.resolve({ nodes: [], edges: [] })),
     {
       onValue: (flow) => {
         layoutRef.current = flow;
@@ -132,12 +166,14 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
         const elementIds = flow.nodes.map((node) => node.id).join("\n");
         if (elementIds !== elementIdsRef.current) {
           elementIdsRef.current = elementIds;
-          setLayoutVersion((version) => version + 1);
+          if (!isOwnEditRef.current) {
+            setView((current) => ({ version: current.version + 1, fits: flow.nodes.length > 0 }));
+          }
         }
       },
       onError: (reason) => setError(`Layout failed: ${errorText(reason)}`),
     },
-    [diagram, isErd, setNodes, setEdges],
+    [shownDiagram, isErd, setNodes, setEdges],
   );
 
   // The flags follow the mouse and the selection without a new layout. They go onto the nodes React Flow holds, which
@@ -154,6 +190,7 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
     (next: ShapeDiagram) => {
       const serialized = serializeShapeDiagram(next);
       serializedRef.current = serialized;
+      isOwnEditRef.current = true;
       setDiagram(next);
       if (writeTimer.current) {
         clearTimeout(writeTimer.current);
@@ -183,29 +220,68 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
     setCreatedId(isNew ? next.id : null);
   };
 
-  /** Middle of the visible canvas in diagram coordinates, minus half of `size`, so a new element lands in view. */
-  const viewCenter = (size: { width: number; height: number }): ShapePosition | undefined => {
-    const rect = canvasRef.current?.getBoundingClientRect();
-    if (!rect || !flowRef.current) return undefined;
-    const center = flowRef.current.screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 });
-    return { x: center.x - size.width / 2, y: center.y - size.height / 2 };
+  /** Deletes `target` after asking when more goes with it; the editor closes when it showed `target`. */
+  const deleteElement = useCallback(
+    async (target: ShapeSelection) => {
+      const deletion = diagram ? deletionOf(diagram, target) : null;
+      if (!deletion || (deletion.question && !(await confirmDestructive(deletion.question)))) return;
+      applyEdit(deletion.diagram);
+      setSelection((current) => (current?.kind === target.kind && current.id === target.id ? null : current));
+    },
+    [diagram, applyEdit],
+  );
+
+  // Delete and Backspace delete the selection while the focus is on the canvas or nowhere, never while typing in a field.
+  useEffect(() => {
+    if (!selection) return;
+    const selected = selection;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || !isShortcut(event, "graph.deleteSelection")) return;
+      const target = event.target;
+      if (target !== document.body && !(target instanceof Node && canvasRef.current?.contains(target))) return;
+      event.preventDefault();
+      void deleteElement(selected);
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [selection, deleteElement]);
+
+  const openMenu = (event: React.MouseEvent, target: ShapeSelection) => {
+    event.preventDefault();
+    setMenu({ target, x: event.clientX, y: event.clientY });
   };
 
-  const addNewTable = () => {
-    const added = addTable(diagram ?? emptyErd(), "new_table");
-    const table = added.diagram.nodes.find((node) => node.id === added.id);
-    const position = table && hasManualLayout(added.diagram) ? viewCenter(shapeNodeSize(table)) : undefined;
-    applyEdit(position ? setPositions(added.diagram, new Map([[added.id, position]])) : added.diagram);
+  const changeTool = useCallback((next: ShapeTool) => {
+    setTool(next);
+    setConnectFrom(null);
+  }, []);
+
+  /** Places an element of `kind` centred on the clicked `point` of the canvas and opens its editor; the tool returns to select. */
+  const placeElement = (kind: ShapeKind, point: { x: number; y: number }) => {
+    if (!flowRef.current) return;
+    const center = flowRef.current.screenToFlowPosition(point);
+    const label = kind === "table" ? "new_table" : `New ${kindName(diagramType, kind).toLowerCase()}`;
+    const added = kind === "table" ? addTable(diagram ?? emptyErd(), label) : addNode(diagram ?? emptyDiagram(diagramType), kind, label);
+    const node = added.diagram.nodes.find((candidate) => candidate.id === added.id);
+    const size = node ? shapeNodeSize(node) : { width: 0, height: 0 };
+    const position = { x: center.x - size.width / 2, y: center.y - size.height / 2 };
+    applyEdit(setPositions(added.diagram, new Map([[added.id, position]])));
     select({ kind: "node", id: added.id }, true);
+    changeTool("select");
   };
 
-  const addNewElement = (kind: ShapeKind) => {
-    const base = diagram ?? emptyDiagram(diagramType);
-    const label = `New ${KIND_NAMES[kind].toLowerCase()}`;
-    const position = hasManualLayout(base) ? viewCenter(shapeNodeSize({ id: "", kind, label })) : undefined;
-    const added = addNode(base, kind, label, position);
+  /** With the connect tool, the first click picks where the connection starts, the second where it ends. */
+  const connectClicked = (nodeId: string) => {
+    if (!diagram) return;
+    if (!connectFrom || connectFrom === nodeId) {
+      setConnectFrom(nodeId);
+      return;
+    }
+    const added = addEdge(diagram, connectFrom, nodeId);
+    changeTool("select");
+    if (!added.id) return;
     applyEdit(added.diagram);
-    select({ kind: "node", id: added.id }, true);
+    select({ kind: "edge", id: added.id }, true);
   };
 
   const addNewGroup = () => {
@@ -249,27 +325,52 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
     select({ kind: "edge", id: added.id }, true);
   };
 
+  /** Hides the tables `next` names, keeping only ids the diagram still has; the editor closes when its table goes. */
+  const hideTables = (next: ReadonlySet<string>) => {
+    const ids = diagram?.nodes.filter((node) => next.has(node.id)).map((node) => node.id) ?? [];
+    setErdHiddenTables(sessionId, ids);
+    setSelection((current) => (current?.kind === "node" && next.has(current.id) ? null : current));
+  };
+
+  const shownTableCount = shownDiagram?.nodes.length ?? 0;
   const selectedNode = diagram && selection?.kind === "node" ? diagram.nodes.find((node) => node.id === selection.id) : undefined;
+  const menuLabel = !menu
+    ? ""
+    : menu.target.kind === "group"
+      ? "Delete boundary"
+      : menu.target.kind === "edge"
+        ? isErd
+          ? "Delete relationship"
+          : "Delete connection"
+        : diagram?.nodes.find((node) => node.id === menu.target.id)?.kind === "table"
+          ? "Delete table"
+          : "Delete element";
   const hasManualEdits = diagram ? hasManualChanges(diagram) : false;
-  const isOutdated = Boolean(diagram) && Boolean(status?.isOutdated);
   const generatedAt = status?.generatedAt ? new Date(status.generatedAt).toLocaleString() : null;
   const hint = isGeneratingGraph
     ? "Generating…"
     : filePath
-      ? filePath
+      ? null
       : diagram === null
         ? `No ${typeName} diagram yet`
         : problems.length
           ? "Parts of the agent's diagram do not match the schema and are left out; update the diagram to get them."
-          : isOutdated
-            ? "Files changed since the diagram was generated"
-            : null;
-  const emptyText = diagram
-    ? "The diagram has no elements; add one or update it to fill it."
+          : null;
+  const emptyText = diagram?.nodes.length
+    ? "Every table is hidden; check some under Tables to show them."
+    : diagram
+    ? "The diagram has no elements; pick a tool below and click here to place one, or update the diagram to fill it."
     : isErd
-      ? "Generate the ERD from the session's changes, or add a table to start one by hand."
-      : `Generate the ${typeName} diagram, or add an element to start one by hand.`;
-  const elementKinds = KINDS_BY_TYPE[diagramType].filter((kind) => kind !== "table");
+      ? "Generate the ERD from the session's changes, or pick the table tool below and click here to start one by hand."
+      : diagramType === "freeform"
+        ? "Pick a shape below and click here to start drawing, or generate a sketch from additional instructions."
+        : `Generate the ${typeName} diagram, or pick an element below and click here to start one by hand.`;
+  const isPlacing = tool !== "select" && tool !== "connect";
+  const toolHint = isPlacing
+    ? `Click the canvas to place the ${kindName(diagramType, tool).toLowerCase()} · Esc cancels`
+    : tool === "connect"
+      ? `${connectFrom ? "Click the element the connection ends at" : "Click the element the connection starts at"} · Esc cancels`
+      : null;
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -279,53 +380,51 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
           <GenerateSplitButton
             label={isGeneratingGraph ? "Generating…" : diagram ? "Update diagram" : "Generate diagram"}
             isDisabled={isGeneratingGraph}
+            title={diagram ? "Overwrites the generated diagram; save it into the repository first to keep this version" : undefined}
             onGenerate={(instructions) => void refreshGraph(sessionId, diagramType, instructions)}
           />
         )}
-        {diagram !== undefined && !error ? (
-          isErd ? (
-            <button type="button" onClick={addNewTable} disabled={isGeneratingGraph} title="Add a table to the diagram" className={SECONDARY_BUTTON_XS}>
-              <PlusIcon /> Table
-            </button>
-          ) : (
-            <>
-              <Dropdown
-                title="Add an element to the diagram"
-                value=""
-                placeholder="+ Element"
-                options={elementKinds.map((kind) => ({ id: kind, name: KIND_NAMES[kind] }))}
-                onChange={(kind) => addNewElement(kind as ShapeKind)}
-                disabled={isGeneratingGraph}
-                className={SECONDARY_BUTTON_XS}
-              />
-              {diagramType === "c4-context" || diagramType === "c4-container" ? (
-                <button type="button" onClick={addNewGroup} disabled={isGeneratingGraph} title="Add a boundary to the diagram" className={SECONDARY_BUTTON_XS}>
-                  <PlusIcon /> Boundary
-                </button>
-              ) : null}
-            </>
-          )
-        ) : null}
-        {hasManualEdits ? (
-          <button type="button" onClick={() => diagram && applyEdit(clearPositions(diagram))} title="Drop the positions and connection courses set by hand and lay the diagram out automatically" className={SECONDARY_BUTTON_XS}>
-            Auto-layout
-          </button>
-        ) : null}
         {!filePath && diagram?.nodes.length ? (
           <SaveDiagramButton sessionId={sessionId} diagram={diagram} content={() => serializeShapeDiagram(diagram)} onSaved={(path) => setDiagramFile(sessionId, path)} />
         ) : null}
+        {isErd && diagram?.nodes.length ? (
+          <div className="relative">
+            <button
+              ref={tableFilterButtonRef}
+              type="button"
+              onClick={() => setIsTableFilterOpen((value) => !value)}
+              aria-haspopup="dialog"
+              aria-expanded={isTableFilterOpen}
+              className={SECONDARY_BUTTON_XS}
+              title="Choose which tables the diagram shows"
+            >
+              Tables
+              <span className="text-neutral-400">{shownTableCount < diagram.nodes.length ? `${shownTableCount}/${diagram.nodes.length}` : diagram.nodes.length}</span>
+              <ChevronIcon expanded className="size-3 text-neutral-400" />
+            </button>
+            {isTableFilterOpen ? (
+              <TableFilterPopover
+                tables={diagram.nodes}
+                hidden={hiddenTables}
+                onChange={hideTables}
+                onClose={() => setIsTableFilterOpen(false)}
+                anchorRef={tableFilterButtonRef}
+              />
+            ) : null}
+          </div>
+        ) : null}
         <span
-          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph ? "text-neutral-400" : !filePath && (problems.length || isOutdated) ? "text-amber-300/90" : "text-neutral-500"}`}
-          title={filePath ?? (generatedAt ? `Diagram generated ${generatedAt}` : undefined)}
+          className={`flex min-w-0 flex-1 items-center gap-2 ${isGeneratingGraph ? "text-neutral-400" : problems.length ? "text-amber-300/90" : "text-neutral-500"}`}
+          title={generatedAt ? `Diagram generated ${generatedAt}` : undefined}
         >
           {isGeneratingGraph ? <Spinner className="size-5 shrink-0" /> : null}
-          {hint ? <span className={`truncate ${filePath ? "font-mono text-[12px]" : ""}`}>{hint}</span> : null}
+          {hint ? <span className="truncate">{hint}</span> : null}
         </span>
       </div>
 
       <div className="flex min-h-0 flex-1">
-        <div ref={canvasRef} className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-          {filePath ? null : <DiagramStatusBadge status={status} hasDiagram={Boolean(diagram)} />}
+        <div ref={canvasRef} tabIndex={-1} className="relative min-h-0 min-w-0 flex-1 overflow-hidden outline-none">
+          <DiagramStatusBadge status={status} hasDiagram={Boolean(diagram)} filePath={filePath} />
           {error || generateError ? (
             <div className="absolute inset-x-3 top-3 z-10 flex items-start gap-3 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-[13px] text-red-300">
               <p className="min-w-0 flex-1">{error ?? generateError}</p>
@@ -336,9 +435,9 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
               ) : null}
             </div>
           ) : null}
-          <ReactFlowProvider key={`${layoutVersion}:${zoomScale}`}>
+          <ReactFlowProvider key={`${view.version}:${zoomScale}`}>
             <EdgeBendsContext.Provider value={moveConnection}>
-            {diagram?.nodes.length ? (
+            {diagram !== undefined ? (
               <ReactFlow
                 nodes={nodes}
                 edges={edges}
@@ -356,9 +455,26 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
                   setHover((current) => ({ ...current, hoveredNodeId: node.id }));
                 }}
                 onNodeMouseLeave={() => setHover((current) => ({ ...current, hoveredNodeId: null }))}
-                onNodeClick={(_event, node) => select({ kind: node.type === "boundary" ? "group" : "node", id: node.id })}
+                onNodeClick={(_event, node) => {
+                  if (tool === "connect" && node.type !== "boundary") {
+                    connectClicked(node.id);
+                  } else {
+                    select({ kind: node.type === "boundary" ? "group" : "node", id: node.id });
+                  }
+                }}
                 onEdgeClick={(_event, edge) => select({ kind: "edge", id: edge.id })}
-                onPaneClick={() => setSelection(null)}
+                onNodeContextMenu={(event, node) => openMenu(event, { kind: node.type === "boundary" ? "group" : "node", id: node.id })}
+                onEdgeContextMenu={(event, edge) => openMenu(event, { kind: "edge", id: edge.id })}
+                onPaneContextMenu={(event) => event.preventDefault()}
+                onMoveStart={() => setMenu(null)}
+                onPaneClick={(event) => {
+                  if (isPlacing) {
+                    placeElement(tool, { x: event.clientX, y: event.clientY });
+                  } else {
+                    setSelection(null);
+                    setConnectFrom(null);
+                  }
+                }}
                 onNodeDragStop={(_event, node, dropped) => {
                   // A press without a move keeps the automatic layout.
                   const before = layoutRef.current.nodes.find((candidate) => candidate.id === node.id)?.position;
@@ -366,12 +482,12 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
                   keepPositions(new Set(dropped.map((candidate) => candidate.id)));
                 }}
                 onConnectEnd={connect}
-                fitView
+                fitView={view.fits}
                 fitViewOptions={fitViewOptions}
                 minZoom={0.2}
                 maxZoom={2 * Math.max(1, zoomScale)}
                 colorMode="dark"
-                className={isErd ? undefined : "shape-canvas-editable"}
+                className={`${isErd ? "" : "shape-canvas-editable"} ${isPlacing || tool === "connect" ? "shape-canvas-picking" : ""}`}
                 nodesDraggable
                 nodesConnectable={!isErd}
                 elementsSelectable={false}
@@ -384,15 +500,36 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
                 <Controls showInteractive={false} fitViewOptions={fitViewOptions} />
                 <ShapeMiniMap />
               </ReactFlow>
-            ) : diagram === undefined ? null : (
-              <div className="flex h-full items-center justify-center p-6 text-center text-sm text-neutral-500">{emptyText}</div>
-            )}
+            ) : null}
+            {diagram !== undefined && !shownDiagram?.nodes.length ? (
+              <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-neutral-500">{emptyText}</div>
+            ) : null}
             </EdgeBendsContext.Provider>
           </ReactFlowProvider>
+          {diagram !== undefined && !error ? (
+            <ShapeToolbar
+              diagramType={diagramType}
+              kinds={KINDS_BY_TYPE[diagramType]}
+              tool={tool}
+              onToolChange={changeTool}
+              onAddBoundary={diagramType === "c4-context" || diagramType === "c4-container" || diagramType === "freeform" ? addNewGroup : undefined}
+              onAutoLayout={hasManualEdits ? () => diagram && applyEdit(clearPositions(diagram)) : undefined}
+              isDisabled={isGeneratingGraph}
+              canvasRef={canvasRef}
+            />
+          ) : null}
         </div>
         {diagram && selection ? (
           isErd && selectedNode?.kind === "table" ? (
-            <TableEditor key={selectedNode.id} diagram={diagram} table={selectedNode} isNew={selectedNode.id === createdId} onChange={applyEdit} onClose={() => setSelection(null)} />
+            <TableEditor
+              key={selectedNode.id}
+              diagram={diagram}
+              table={selectedNode}
+              isNew={selectedNode.id === createdId}
+              onChange={applyEdit}
+              onDelete={() => void deleteElement(selection)}
+              onClose={() => setSelection(null)}
+            />
           ) : (
             <ShapeElementEditor
               key={`${selection.kind}:${selection.id}`}
@@ -400,11 +537,29 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
               selection={selection}
               isNew={selection.id === createdId}
               onChange={applyEdit}
+              onDelete={() => void deleteElement(selection)}
               onClose={() => setSelection(null)}
             />
           )
         ) : null}
       </div>
+
+      {menu ? (
+        <div ref={menuRef} role="menu" style={{ left: menu.x, top: menu.y }} className="fixed z-50 min-w-36 rounded border border-neutral-600 bg-(--surface-inset) p-1 text-[13px] shadow-lg">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenu(null);
+              void deleteElement(menu.target);
+            }}
+            className="flex w-full items-center justify-between gap-4 rounded px-2 py-1 text-left text-red-300 hover:bg-(--row-hover)"
+          >
+            {menuLabel}
+            {deleteShortcut ? <span className="text-neutral-500">{deleteShortcut}</span> : null}
+          </button>
+        </div>
+      ) : null}
 
       {showProblems && problems.length ? (
         <ul className="max-h-32 overflow-auto border-t border-(--line) bg-amber-500/5 px-3 py-2.5 text-[13px] text-amber-200/90">
@@ -417,9 +572,12 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
       <div className={`${STATUS_BAR} gap-3 text-neutral-500`}>
         <span className="min-w-0 flex-1 truncate">
           {diagram?.title ? `${diagram.title} · ` : ""}
-          {isErd ? `${diagram?.nodes.length ?? 0} tables · ${diagram?.edges.length ?? 0} relationships` : `${diagram?.nodes.length ?? 0} elements · ${diagram?.edges.length ?? 0} connections`}
+          {isErd
+            ? `${diagram?.nodes.length ?? 0} tables${hiddenTables.size && diagram ? ` (${diagram.nodes.length - shownTableCount} hidden)` : ""} · ${diagram?.edges.length ?? 0} relationships` : `${diagram?.nodes.length ?? 0} elements · ${diagram?.edges.length ?? 0} connections`}
         </span>
-        {diagram?.nodes.length && !selection ? (
+        {toolHint ? (
+          <span className="shrink-0 text-neutral-300">{toolHint}</span>
+        ) : diagram?.nodes.length && !selection ? (
           <span className="shrink-0">{isErd
               ? "Click a table to edit it, drag it or a line to move it"
               : "Click to edit, drag an element or a line to move it, drag from the dot below an element to connect it"}</span>

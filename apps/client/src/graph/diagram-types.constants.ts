@@ -18,6 +18,7 @@ export const DIAGRAM_TYPES: DiagramTypeOption[] = [
   { id: "states", name: "States", description: "States an entity passes through and the events that move it from one to the next" },
   { id: "erd", name: "ERD", description: "Database tables with their columns and the relationships between them" },
   { id: "process", name: "Process", description: "Steps and decisions of a workflow in the order they run" },
+  { id: "freeform", name: "Freeform", description: "A drawing of basic shapes, boundaries and arrows for anything the other templates do not cover" },
 ];
 
 /** True for every type the agent writes as a shape diagram to `.hunt/diagrams/<type>.react-flow.json`, all but the dependency diagram. */
@@ -32,6 +33,7 @@ export const KINDS_BY_TYPE: Record<ShapeDiagramType, ShapeKind[]> = {
   states: ["start", "end", "state"],
   erd: ["table"],
   process: ["start", "end", "action", "decision"],
+  freeform: ["action", "state", "externalSystem", "decision", "start", "end", "person", "database", "queue"],
 };
 
 /** The worktree-relative file each diagram type is read from. */
@@ -42,4 +44,5 @@ export const DIAGRAM_FILES: Record<DiagramType, string> = {
   states: ".hunt/diagrams/states.react-flow.json",
   erd: ".hunt/diagrams/erd.react-flow.json",
   process: ".hunt/diagrams/process.react-flow.json",
+  freeform: ".hunt/diagrams/freeform.react-flow.json",
 };

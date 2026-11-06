@@ -366,6 +366,9 @@ export function OptionMenu({
                 <span className="block truncate">{option.name}</span>
                 {option.description ? <span className="block text-[12px] leading-snug text-neutral-500">{option.description}</span> : null}
               </span>
+              {option.badge ? (
+                <span className="shrink-0 self-start rounded border border-emerald-400/30 bg-emerald-400/10 px-1.5 text-[11px] text-emerald-300">{option.badge}</span>
+              ) : null}
               <CheckIcon className={`size-3.5 shrink-0 text-neutral-400 ${isSelected ? "" : "invisible"}`} />
             </li>
           );

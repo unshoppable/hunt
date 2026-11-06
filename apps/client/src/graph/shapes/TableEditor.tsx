@@ -2,7 +2,7 @@ import type { ShapeDiagram, ShapeNode } from "./shape-diagram.types";
 import { DANGER_BUTTON_XS, GHOST_BUTTON_XS, ICON_BUTTON_XS } from "../../ui/buttons.constants";
 import { confirmDestructive } from "../../ui/confirm.utils";
 import { CloseIcon, PlusIcon, TrashIcon } from "../../ui/Icons";
-import { addColumn, moveColumn, relationshipsOf, removeColumn, removeTable, updateColumn, updateTable } from "./erd-edit.utils";
+import { addColumn, moveColumn, relationshipsOf, removeColumn, updateColumn, updateTable } from "./erd-edit.utils";
 import { ColorField, CommitInput, CommitTextarea, INPUT, SECTION_LABEL } from "./EditorFields";
 import { updateNode } from "./shape-edit.utils";
 
@@ -10,13 +10,14 @@ import { updateNode } from "./shape-edit.utils";
  * The editor of one ERD table beside the canvas: name, description, color and the columns with their types and key
  * flags, plus the relationships the table takes part in. Every field commits on blur or Enter (Escape reverts) and
  * hands the changed diagram to `onChange`, which the panel shows at once and writes to the diagram file. Removing a
- * column or the table asks first when relationships go with it.
+ * column asks first when relationships go with it; deleting the table is the panel's `onDelete`.
  */
 export function TableEditor({
   diagram,
   table,
   isNew,
   onChange,
+  onDelete,
   onClose,
 }: {
   diagram: ShapeDiagram;
@@ -24,6 +25,7 @@ export function TableEditor({
   /** The table was just added: the name field takes the focus with its text selected. */
   isNew: boolean;
   onChange: (next: ShapeDiagram) => void;
+  onDelete: () => void;
   onClose: () => void;
 }) {
   const columns = table.columns ?? [];
@@ -35,13 +37,6 @@ export function TableEditor({
     const affected = relationships.filter((edge) => (edge.source === table.id && edge.sourceColumn === column.name) || (edge.target === table.id && edge.targetColumn === column.name));
     if (affected.length && !(await confirmDestructive(`Remove the column "${column.name}"? ${countOf(affected.length, "relationship")} on it will be removed too.`, "Remove"))) return;
     onChange(removeColumn(diagram, table.id, index));
-  };
-
-  const deleteTable = async () => {
-    const suffix = relationships.length ? ` and its ${countOf(relationships.length, "relationship")}` : "";
-    if (!(await confirmDestructive(`Delete the table "${table.label}"${suffix}?`))) return;
-    onChange(removeTable(diagram, table.id));
-    onClose();
   };
 
   return (
@@ -125,7 +120,7 @@ export function TableEditor({
       </div>
 
       <div className="flex justify-end border-t border-(--line) px-3 py-2">
-        <button type="button" onClick={() => void deleteTable()} className={DANGER_BUTTON_XS}>
+        <button type="button" onClick={onDelete} className={DANGER_BUTTON_XS}>
           <TrashIcon /> Delete table
         </button>
       </div>

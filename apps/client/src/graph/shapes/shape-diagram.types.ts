@@ -60,3 +60,6 @@ export type ShapeEdge = {
 
 /** The validated content of a shape diagram file (`.hunt/diagrams/<type>.react-flow.json` or one saved into the repository). */
 export type ShapeDiagram = { type: ShapeDiagramType; title?: string; nodes: ShapeNode[]; groups?: ShapeGroup[]; edges: ShapeEdge[] };
+
+/** What the editor beside the canvas shows and a deletion removes: an element, a connection (by `shapeEdgeId`) or a boundary. */
+export type ShapeSelection = { kind: "node" | "edge" | "group"; id: string };

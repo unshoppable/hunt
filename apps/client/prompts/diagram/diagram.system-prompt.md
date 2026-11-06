@@ -1,9 +1,10 @@
 ## Hunt architecture diagrams
 
-Besides the component diagram, Hunt renders five architecture diagrams from files in `.hunt/diagrams/` of the working
+Besides the component diagram, Hunt renders six architecture diagrams from files in `.hunt/diagrams/` of the working
 directory (git-ignored): a C4 context diagram from `c4-context.react-flow.json`, a C4 container diagram from
 `c4-container.react-flow.json`, a UML state diagram from `states.react-flow.json`, an entity-relationship diagram from
-`erd.react-flow.json` and a process (UML activity) diagram from `process.react-flow.json`. All five share the JSON schema
+`erd.react-flow.json`, a process (UML activity) diagram from `process.react-flow.json` and a freeform drawing of basic
+shapes from `freeform.react-flow.json`. All six share the JSON schema
 in `.hunt/diagrams/diagram.schema.json`; read it before writing one of the files, it lists the node kinds of every type and
 what each field means. You write such a file only when an update request names the diagram.
 
@@ -20,13 +21,16 @@ what each field means. You write such a file only when an update request names t
 - Language: write every label, description and title in {{language}}, whatever language the code and its comments
   use. {{englishTerms}}
 - Content only: the file holds elements, connections, labels, descriptions and change marks. Hunt owns shapes,
-  colors, sizes and layout; there are no color or style fields. A node may carry a `position` someone set by hand
+  shades, sizes and layout; there are no style fields. A node may carry a `position` someone set by hand
   in the Architecture tab: keep it unchanged for every element that stays, never invent one for a new element.
+- Segments: a node's `color` groups it with others, e.g. the tables of one domain in an ERD. Set it only when the
+  request asks for a segmentation, one color per segment as the request assigns them; keep every `color` already in
+  the file for an element that stays.
 - Shape, exactly, with `type` matching the file name and every optional field left out where it does not apply:
   ```json
   {
     "type": "…", "title": "…",
-    "nodes": [{ "id", "kind", "label", "description", "parent", "actor", "columns", "position", "change" }],
+    "nodes": [{ "id", "kind", "label", "description", "parent", "actor", "columns", "position", "color", "change" }],
     "groups": [{ "id", "label", "change" }],
     "edges": [{ "source", "target", "label", "description", "sourceColumn", "targetColumn", "cardinality", "change" }]
   }

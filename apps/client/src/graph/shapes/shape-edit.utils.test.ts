@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ShapeDiagram } from "./shape-diagram.types";
-import { addEdge, addGroup, addNode, clearPositions, emptyDiagram, removeEdge, removeGroup, removeNode, setBends, setPositions, updateEdge, updateGroup, updateNode } from "./shape-edit.utils";
+import { addEdge, addGroup, addNode, clearPositions, deletionOf, emptyDiagram, removeEdge, removeGroup, removeNode, setBends, setPositions, updateEdge, updateGroup, updateNode } from "./shape-edit.utils";
 
 const states: ShapeDiagram = {
   type: "states",
@@ -68,6 +68,32 @@ describe("boundaries", () => {
     const removed = removeGroup(inside, added.id);
     expect(removed.groups).toBeUndefined();
     expect(removed.nodes[1].parent).toBeUndefined();
+  });
+});
+
+describe("deletion", () => {
+  it("removes the selection and asks only when more goes with it, a table always", () => {
+    const erd: ShapeDiagram = {
+      type: "erd",
+      nodes: [
+        { id: "orders", kind: "table", label: "orders" },
+        { id: "items", kind: "table", label: "items" },
+        { id: "logs", kind: "table", label: "logs" },
+      ],
+      edges: [{ source: "items", target: "orders", sourceColumn: "order_id", targetColumn: "id" }],
+    };
+    const table = deletionOf(erd, { kind: "node", id: "orders" });
+    expect(table?.question).toBe('Delete the table "orders" and its 1 relationship?');
+    expect(table?.diagram.nodes.map((node) => node.id)).toEqual(["items", "logs"]);
+    expect(table?.diagram.edges).toEqual([]);
+    expect(deletionOf(erd, { kind: "node", id: "logs" })?.question).toBe('Delete the table "logs"?');
+    expect(deletionOf(states, { kind: "node", id: "open" })?.question).toBe('Delete "Open" and its 1 connection?');
+    expect(deletionOf(removeEdge(states, "start->open"), { kind: "node", id: "open" })?.question).toBeNull();
+    expect(deletionOf(states, { kind: "edge", id: "start->open" })).toEqual({ diagram: removeEdge(states, "start->open"), question: null });
+    const grouped = addGroup(states, "Shop");
+    expect(deletionOf(grouped.diagram, { kind: "group", id: grouped.id })).toEqual({ diagram: removeGroup(grouped.diagram, grouped.id), question: null });
+    expect(deletionOf(states, { kind: "node", id: "gone" })).toBeNull();
+    expect(deletionOf(states, { kind: "group", id: "gone" })).toBeNull();
   });
 });
 

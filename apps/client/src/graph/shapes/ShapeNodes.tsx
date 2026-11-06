@@ -254,8 +254,9 @@ function TableRow({ column, isLit }: { column: TableColumn; isLit: boolean }) {
 
 /**
  * An ERD table as a card: a header with the table's name, its description as a second line and the change tag, then
- * one row per column; a colored table has its border and header in that color. Each row has an invisible handle on the left (incoming) and the right (outgoing), named by
- * `columnPortId`, so a relationship joins the two columns it is on. The panel marks the selected table (the one in
+ * one row per column; a colored table has its border and header in that color. Each row has invisible handles for
+ * incoming and outgoing relationships on both sides, named by `columnPortId`, so a relationship joins the two columns
+ * it is on from whichever side the layout chose. The panel marks the selected table (the one in
  * the editor), the hovered one and fades the tables unrelated to the hovered one.
  */
 export const TableNodeView = memo(function TableNodeView({ id, data }: NodeProps<ShapeFlowNode>) {
@@ -271,16 +272,23 @@ export const TableNodeView = memo(function TableNodeView({ id, data }: NodeProps
       className={`relative flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-xl border bg-(--surface-inset) text-neutral-100 shadow-lg shadow-black/30 transition-[opacity,box-shadow] duration-150 ${tone.card} ${ring} ${data.isMuted ? "opacity-40" : ""}`}
     >
       <VerticalHandles />
-      {columns.map((column, index) => (
-        <Handle key={`in:${column.name}`} type="target" position={Position.Left} id={columnPortId(id, column.name, "in")} style={{ ...HANDLE_STYLE, top: tableRowCenterY(data, index) }} />
-      ))}
-      {columns.map((column, index) => (
-        <Handle key={`out:${column.name}`} type="source" position={Position.Right} id={columnPortId(id, column.name, "out")} style={{ ...HANDLE_STYLE, top: tableRowCenterY(data, index) }} />
-      ))}
+      {columns.flatMap((column, index) =>
+        (["left", "right"] as const).flatMap((side) =>
+          (["in", "out"] as const).map((end) => (
+            <Handle
+              key={`${end}:${side}:${column.name}`}
+              type={end === "in" ? "target" : "source"}
+              position={side === "left" ? Position.Left : Position.Right}
+              id={columnPortId(id, column.name, end, side)}
+              style={{ ...HANDLE_STYLE, top: tableRowCenterY(data, index) }}
+            />
+          )),
+        ),
+      )}
       <div className={`flex shrink-0 flex-col justify-center gap-0.5 border-b border-white/10 px-3 ${tone.header}`} style={{ height: tableHeaderHeight(data) }} title={data.description ? `${data.label}\n${data.description}` : data.label}>
         <div className="flex items-center gap-2">
           <TableIcon className="size-3.5 shrink-0 text-neutral-400" />
-          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold">{data.label}</span>
+          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold uppercase">{data.label}</span>
           {data.change ? <span className={`shrink-0 rounded border px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${CHANGE_TAG[data.change]}`}>{data.change}</span> : null}
         </div>
         {data.description ? <span className="truncate text-[12px] text-neutral-400">{data.description}</span> : null}
@@ -377,10 +385,11 @@ function selectIsEndDragged(source: string, target: string) {
 }
 
 /**
- * A connection through the corners the user fixed (`routeThroughBends`), else on ELK's orthogonal route, or, when it
- * has none (a manual layout) or an element it ends at is being dragged, on Hunt's own orthogonal route around every
- * element (`routeAroundObstacles`), which keeps its course while other elements are dragged; React Flow's stepped
- * path between the handles while that route is still being worked out or the elements leave no way. Every
+ * A connection through the corners the user fixed (`routeThroughBends`), else on the orthogonal route the layout gave
+ * it (ELK's, or Hunt's own clear of the other connections in a manual layout), or, when it has none or an element it
+ * ends at is being dragged, on Hunt's own orthogonal route around every element (`routeAroundObstacles`), which keeps
+ * its course while other elements are dragged; React Flow's stepped path between the handles while that route is
+ * still being worked out or the elements leave no way. Every
  * segment but the two at the handles can be dragged across its direction, which fixes the corners in the diagram; a
  * double click on one lets Hunt route the connection again. It is drawn brighter while it is hovered or lit by a hovered node and faded while another one is; an added or
  * changed connection keeps its change color. The markers come from the layout (arrowheads, or crow's feet for an
@@ -397,7 +406,7 @@ export function ShapeEdgeView(props: EdgeProps<ShapeFlowEdge>) {
   const saveBends = useContext(EdgeBendsContext);
   const points = data?.points;
   const bends = data?.bends;
-  const isOnElkRoute = !bends && Boolean(points && points.length >= 2) && !isEndDragged;
+  const isOnLayoutRoute = !bends && Boolean(points && points.length >= 2) && !isEndDragged;
   const ends = useMemo(
     () => ({ source: { x: sourceX, y: sourceY, side: sourcePosition }, target: { x: targetX, y: targetY, side: targetPosition } }),
     [sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition],
@@ -408,14 +417,14 @@ export function ShapeEdgeView(props: EdgeProps<ShapeFlowEdge>) {
   const routing = useMemo(() => ({ ends, obstacles }), [ends, obstacles]);
   const deferredRouting = useDeferredValue(routing);
   const routed = useMemo(
-    () => !bends && !isOnElkRoute && deferredRouting.obstacles && routeAroundObstacles(deferredRouting.ends.source, deferredRouting.ends.target, deferredRouting.obstacles),
-    [bends, isOnElkRoute, deferredRouting],
+    () => !bends && !isOnLayoutRoute && deferredRouting.obstacles && routeAroundObstacles(deferredRouting.ends.source, deferredRouting.ends.target, deferredRouting.obstacles),
+    [bends, isOnLayoutRoute, deferredRouting],
   );
   const route = useMemo(() => {
     if (bends) return routeThroughBends(ends.source, ends.target, bends);
-    if (isOnElkRoute && points) return points;
+    if (isOnLayoutRoute && points) return points;
     return routed && deferredRouting.ends === ends ? routed : null;
-  }, [bends, isOnElkRoute, points, ends, routed, deferredRouting]);
+  }, [bends, isOnLayoutRoute, points, ends, routed, deferredRouting]);
   /** The course while a segment is dragged, kept after the drop until the saved bends come back in `data`. */
   const [draft, setDraft] = useState<{ points: XYPosition[]; bends: XYPosition[] | undefined } | null>(null);
   /** Set by a drag, so the click that ends it does not open the editor. */
@@ -450,7 +459,7 @@ export function ShapeEdgeView(props: EdgeProps<ShapeFlowEdge>) {
     grip.addEventListener("pointercancel", onEnd);
   };
   const hasLabelOnPath = Boolean(data?.labelCenter) || Boolean(data?.hasInlineLabel);
-  const labelCenter = hasLabelOnPath ? (isOnElkRoute ? (data?.labelCenter ?? middle) : middle) : null;
+  const labelCenter = hasLabelOnPath ? (isOnLayoutRoute ? (data?.labelCenter ?? middle) : middle) : null;
   const anchor = labelCenter ?? middle;
   const isHighlighted = Boolean(selected) || Boolean(data?.isHovered) || Boolean(data?.isLit) || isLabelHovered;
   const isMuted = Boolean(data?.isMuted) && !isHighlighted;
@@ -464,7 +473,7 @@ export function ShapeEdgeView(props: EdgeProps<ShapeFlowEdge>) {
         path={path}
         markerStart={markerStart}
         markerEnd={markerEnd}
-        style={{ stroke, strokeWidth: isHighlighted ? 1.8 : 1.2, opacity: isMuted ? MUTED_OPACITY : 1, transition: "opacity 150ms" }}
+        style={{ stroke, strokeWidth: isHighlighted ? 2 : 1.5, opacity: isMuted ? MUTED_OPACITY : 1, transition: "opacity 150ms" }}
       />
       {saveBends && drawn
         ? drawn.slice(0, -1).map((point, index) => {

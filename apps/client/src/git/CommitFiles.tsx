@@ -1,9 +1,12 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState, type MouseEvent } from "react";
 import type { Commit, CommitDetails, CommitFile } from "./git.types";
 import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "../common/tree/change-tree.utils";
 import { useFileIconUrl, useFolderIconUrl } from "../ui/file-icons/file-icons.hook";
 import { STATUS_NAME_CLASS } from "../ui/styles.constants";
 import { ChevronIcon } from "../ui/Icons";
+import { useDismiss } from "../ui/dismiss.hook";
+import { isDiagramFilePath } from "../common/diagram/diagram-file.utils";
+import { showDiagramFile } from "../sessions/diagram-file-requests.hook";
 import { toggleInCollapsed } from "../common/tree/tree-expansion.utils";
 import type { TreeNavRow } from "../common/tree/tree-navigation.utils";
 import { useTreeNavigation } from "../ui/tree-navigation.hook";
@@ -17,14 +20,18 @@ const DATE_FORMAT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", ti
 /**
  * The selected commit's files as a folder tree, followed by its details: message, author, committer, date, refs and
  * the branches containing it. A click on a file, or moving onto it with the arrow keys, shows its change in the diff below.
+ * In a session, the context menu of a diagram file shows the worktree's version of it in the Architecture tab.
  */
 export function CommitFiles({
+  sessionId,
   commit,
   details,
   localBranches,
   selectedPath,
   onSelect,
 }: {
+  /** The session whose Git tab this is; `null` for a repository without a session, which has no Architecture tab. */
+  sessionId: string | null;
   commit: Commit | null;
   /** The commit's details once loaded; `null` while loading or without a commit. */
   details: CommitDetails | null;
@@ -36,6 +43,9 @@ export function CommitFiles({
   const fileIconUrl = useFileIconUrl();
   const folderIconUrl = useFolderIconUrl();
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [menu, setMenu] = useState<{ path: string; x: number; y: number } | null>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useDismiss(menuRef, () => setMenu(null), { closeOnWindowBlur: true, isEnabled: !!menu });
   const files = useMemo(() => (details && details.id === commit?.id ? details.files : []), [details, commit?.id]);
   const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
   const tree = useMemo(() => buildChangeTree(files.map((file) => ({ path: file.path, status: file.status }))), [files]);
@@ -80,6 +90,12 @@ export function CommitFiles({
 
   const isLoaded = !!commit && details?.id === commit.id;
 
+  const openMenu = (event: MouseEvent, file: { path: string; status: string }) => {
+    if (!sessionId || file.status === "D" || !isDiagramFilePath(file.path)) return;
+    event.preventDefault();
+    setMenu({ path: file.path, x: event.clientX, y: event.clientY });
+  };
+
   return (
     <div className="flex min-w-0 flex-1 flex-col bg-(--git-bg)">
       <div className="flex items-center gap-2 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
@@ -111,6 +127,7 @@ export function CommitFiles({
               <li
                 key={node.file.path}
                 onClick={() => nav.select(node.file.path)}
+                onContextMenu={(event) => openMenu(event, node.file)}
                 data-tree-key={node.file.path}
                 data-selected={nav.cursor === node.file.path}
                 className="tree-row flex cursor-default items-center gap-[5px] pr-2.5 select-none"
@@ -126,6 +143,21 @@ export function CommitFiles({
         </ul>
         {commit ? <Details commit={commit} details={isLoaded ? details : null} localBranches={localBranches} /> : null}
       </div>
+      {menu && sessionId ? (
+        <div ref={menuRef} role="menu" style={{ left: menu.x, top: menu.y }} className="fixed z-50 min-w-36 rounded border border-neutral-600 bg-(--surface-inset) p-1 text-[13px] shadow-lg">
+          <button
+            type="button"
+            role="menuitem"
+            onClick={() => {
+              setMenu(null);
+              showDiagramFile({ sessionId, path: menu.path });
+            }}
+            className="flex w-full items-center rounded px-2 py-1 text-left text-neutral-200 hover:bg-(--row-hover)"
+          >
+            Show in Architecture
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

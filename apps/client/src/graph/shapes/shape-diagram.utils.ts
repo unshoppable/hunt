@@ -1,8 +1,10 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react";
-import type { Cardinality, ShapeChange, ShapeDiagram, ShapeGroup, ShapeKind, ShapeNode } from "./shape-diagram.types";
-import type { LayoutInput, LayoutNode, LayoutPort, LayoutSpacing } from "../layout.utils";
+import { Position } from "@xyflow/react";
+import type { Cardinality, ShapeChange, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeKind, ShapeNode } from "./shape-diagram.types";
+import type { LayoutInput, LayoutNode, LayoutPort, LayoutResult, LayoutSpacing } from "../layout.utils";
 import { GROUP_PADDING as BOUNDARY_PADDING, edgeMarker, layoutGraph } from "../layout.utils";
 import { placeWithoutOverlaps } from "./element-overlap.utils";
+import { countCrossings, routeConnections, STUB, type Connection, type Obstacle, type RouteEnd } from "./edge-route.utils";
 
 /**
  * The style contract of the shape diagrams: Hunt sizes every element from its content with these constants, so a
@@ -22,12 +24,13 @@ const TERMINAL_SIZE = { width: 28, height: 28 };
 const DECISION_SIZE = { width: 170, height: 90 };
 /**
  * A table lists its columns as rows under a header that holds the name and, when there is one, the description on
- * a second line. The width follows the widest row (name in 13px sans, type in 12px mono) or the header.
+ * a second line. The width follows the widest row (name in 13px sans, type in 12px mono) or the header (name in 13px
+ * semibold capitals).
  */
 export const TABLE_HEADER_HEIGHT = 40;
 export const TABLE_HEADER_HEIGHT_WITH_DESCRIPTION = 58;
 export const TABLE_ROW_HEIGHT = 28;
-const TABLE_LABEL_CHAR_WIDTH = 7.8;
+const TABLE_LABEL_CHAR_WIDTH = 9;
 const TABLE_NAME_CHAR_WIDTH = 7;
 const TABLE_TYPE_CHAR_WIDTH = 7.2;
 /** The key icon column, the gaps around name and type and the horizontal padding of a row. */
@@ -37,8 +40,13 @@ const MIN_TABLE_WIDTH = 220;
 const MAX_TABLE_WIDTH = 360;
 /** ERD tables sit further apart than boxes: the relationships leave at their rows and need room to bend. */
 const ERD_SPACING: LayoutSpacing = { nodeNode: 48, betweenLayers: 120 };
-/** At most this many tables stack in one layer of an ERD, so a cluster of referencing tables spreads sideways. */
-const ERD_MAX_TABLES_PER_LAYER = 3;
+/**
+ * At most this many tables stack in one layer of an ERD, so a cluster of referencing tables spreads sideways; ELK
+ * tries each bound, since how often the relationships cross depends on it in no simple way.
+ */
+const ERD_TABLES_PER_LAYER_BOUNDS = [2, 3, 4];
+/** How often at most ELK lays an ERD out per bound, each pass with the sides the last placement gave the relationships. */
+const ERD_LAYOUT_PASSES = 2;
 /** Room the change tag takes in a table header beside the name. */
 const TABLE_TAG_WIDTH = 72;
 
@@ -60,10 +68,10 @@ export type BoundaryNodeData = ShapeGroup & { [key: string]: unknown };
 export type BoundaryFlowNode = Node<BoundaryNodeData, "boundary">;
 export type ShapeDiagramFlowNode = ShapeFlowNode | BoundaryFlowNode;
 /**
- * `points` is ELK's orthogonal route from source to target, `labelCenter` the middle of the label box ELK reserved
- * on that route (null when the edge was laid out without one); `hasInlineLabel` puts the label on the middle of the
- * route the view draws around the elements when there is no ELK route (a manual layout); `cardinality` and the columns are set on ERD
- * relationships only.
+ * `points` is the orthogonal route from source to target (ELK's, or Hunt's own in a manual layout; empty when
+ * neither found a way), `labelCenter` the middle of the label box ELK reserved on that route (null when the edge
+ * was laid out without one); `hasInlineLabel` puts the label on the middle of the drawn route instead (a manual
+ * layout); `cardinality` and the columns are set on ERD relationships only.
  */
 export type ShapeEdgeData = {
   label?: string;
@@ -115,9 +123,29 @@ export function shapeNodeSize(node: ShapeNode): { width: number; height: number 
   }
 }
 
-/** Id of the port (and React Flow handle) where relationships of `column` leave (`out`, east border) or enter (`in`, west border) the table. */
-export function columnPortId(nodeId: string, column: string, side: "in" | "out"): string {
-  return `${nodeId}:${column}:${side}`;
+/** The side of a table a relationship's handle sits on. */
+export type HandleSide = "left" | "right";
+/** The sides a relationship leaves its source table and enters its target table on. */
+export type RelationshipSides = { source: HandleSide; target: HandleSide };
+
+/** Id of the port (and React Flow handle) of `column` where a relationship leaves (`out`) or enters (`in`) the table on `side`. */
+export function columnPortId(nodeId: string, column: string, end: "in" | "out", side: HandleSide): string {
+  return `${nodeId}:${column}:${end}:${side}`;
+}
+
+/** A relationship runs between the facing sides of two tables only when they leave room for both its stubs. */
+const FACING_GAP = 2 * STUB;
+
+/**
+ * The sides a relationship takes between two placed tables: the facing sides when one table lies beside the other
+ * with room for the stubs between them, else, with the tables above each other, the same side on both, whichever
+ * keeps the loop between them shorter.
+ */
+export function relationshipSides(source: Obstacle, target: Obstacle): RelationshipSides {
+  if (source.x + source.width + FACING_GAP <= target.x) return { source: "right", target: "left" };
+  if (target.x + target.width + FACING_GAP <= source.x) return { source: "left", target: "right" };
+  const isRightShorter = Math.abs(source.x + source.width - (target.x + target.width)) <= Math.abs(source.x - target.x);
+  return isRightShorter ? { source: "right", target: "right" } : { source: "left", target: "left" };
 }
 
 /** Height of a table's header: one line for the name, a second one when the table has a description. */
@@ -153,36 +181,51 @@ export function shapeEdgeId(diagram: Pick<ShapeDiagram, "type">, edge: ShapeDiag
 }
 
 /**
- * The ELK input of a diagram: an ERD reads left to right with each relationship pinned to its columns' rows, no
- * merged trunks and no label boxes (the view shows a relationship's label when it is hovered), every other type
- * top-down with merged edges and inline labels like the dependency diagram.
+ * The ELK input of a diagram: an ERD reads left to right, no merged trunks and no label boxes (the view shows a
+ * relationship's label when it is hovered), with each relationship pinned to its columns' rows on the `sides` it
+ * takes, or between the tables themselves while the sides are not known yet; every other type top-down with merged
+ * edges and inline labels like the dependency diagram.
  */
-export function toLayoutInput(diagram: ShapeDiagram): LayoutInput {
+export function toLayoutInput(diagram: ShapeDiagram, sides?: Map<string, RelationshipSides>, maxTablesPerLayer = ERD_TABLES_PER_LAYER_BOUNDS[1]): LayoutInput {
   const isErd = diagram.type === "erd";
+  const portsByNode = new Map<string, LayoutPort[]>();
+  const edges = diagram.edges.map((edge) => {
+    const id = shapeEdgeId(diagram, edge);
+    const edgeSides = isErd ? sides?.get(id) : undefined;
+    if (!edgeSides) return { id, source: edge.source, target: edge.target, label: isErd ? undefined : edge.label };
+    const sourcePort = columnPortId(edge.source, edge.sourceColumn ?? "", "out", edgeSides.source);
+    const targetPort = columnPortId(edge.target, edge.targetColumn ?? "", "in", edgeSides.target);
+    for (const [nodeId, column, portId, side] of [
+      [edge.source, edge.sourceColumn, sourcePort, edgeSides.source],
+      [edge.target, edge.targetColumn, targetPort, edgeSides.target],
+    ] as const) {
+      const node = diagram.nodes.find((candidate) => candidate.id === nodeId);
+      const index = node?.columns?.findIndex((candidate) => candidate.name === column) ?? -1;
+      if (!node || index < 0) continue;
+      const ports = portsByNode.get(nodeId) ?? [];
+      if (!ports.some((port) => port.id === portId)) {
+        ports.push({ id: portId, x: side === "right" ? shapeNodeSize(node).width : 0, y: tableRowCenterY(node, index) });
+      }
+      portsByNode.set(nodeId, ports);
+    }
+    return { id, source: sourcePort, target: targetPort, label: undefined };
+  });
   const nodes: LayoutNode[] = diagram.nodes.map((node) => {
-    const size = shapeNodeSize(node);
-    const layoutNode: LayoutNode = { id: node.id, ...size, groupId: node.parent };
-    if (isErd && node.columns) {
-      layoutNode.ports = node.columns.flatMap((column, index): LayoutPort[] => [
-        { id: columnPortId(node.id, column.name, "out"), x: size.width, y: tableRowCenterY(node, index) },
-        { id: columnPortId(node.id, column.name, "in"), x: 0, y: tableRowCenterY(node, index) },
-      ]);
+    const layoutNode: LayoutNode = { id: node.id, ...shapeNodeSize(node), groupId: node.parent };
+    const ports = portsByNode.get(node.id);
+    if (ports) {
+      layoutNode.ports = ports;
     }
     return layoutNode;
   });
   return {
     nodes,
     groups: (diagram.groups ?? []).map((group) => ({ id: group.id })),
-    edges: diagram.edges.map((edge) => ({
-      id: shapeEdgeId(diagram, edge),
-      source: isErd ? columnPortId(edge.source, edge.sourceColumn ?? "", "out") : edge.source,
-      target: isErd ? columnPortId(edge.target, edge.targetColumn ?? "", "in") : edge.target,
-      label: isErd ? undefined : edge.label,
-    })),
+    edges,
     direction: isErd ? "RIGHT" : "DOWN",
     mergeEdges: !isErd,
     spacing: isErd ? ERD_SPACING : undefined,
-    maxNodesPerLayer: isErd ? ERD_MAX_TABLES_PER_LAYER : undefined,
+    maxNodesPerLayer: isErd ? maxTablesPerLayer : undefined,
   };
 }
 
@@ -245,17 +288,104 @@ function placeElements(
   return { shapes, boundaries };
 }
 
+/** The box of every shape in absolute diagram coordinates, from the places `placeElements` gave them. */
+function absoluteBoxes(diagram: ShapeDiagram, placed: ReturnType<typeof placeElements>): Map<string, Obstacle> {
+  return new Map(
+    diagram.nodes.map((node) => {
+      const position = placed.shapes.get(node.id) ?? { x: 0, y: 0 };
+      const boundary = node.parent ? placed.boundaries.get(node.parent) : undefined;
+      const origin = boundary ? boundary.position : { x: 0, y: 0 };
+      return [node.id, { x: origin.x + position.x, y: origin.y + position.y, ...shapeNodeSize(node) }];
+    }),
+  );
+}
+
+/** The sides every relationship of an ERD takes between its placed tables, by edge id. */
+function relationshipSidesOf(diagram: ShapeDiagram, boxes: Map<string, Obstacle>): Map<string, RelationshipSides> {
+  return new Map(
+    diagram.edges.flatMap((edge) => {
+      const source = boxes.get(edge.source);
+      const target = boxes.get(edge.target);
+      return source && target ? [[shapeEdgeId(diagram, edge), relationshipSides(source, target)]] : [];
+    }),
+  );
+}
+
+/**
+ * Where a connection leaves its source and enters its target on the placed elements: an ERD relationship at its
+ * columns' rows on the sides it takes, every other connection at the bottom middle of its source and the top middle
+ * of its target. Null when an end is missing.
+ */
+function connectionEnds(diagram: ShapeDiagram, edge: ShapeEdge, boxes: Map<string, Obstacle>, sides: RelationshipSides | undefined): { source: RouteEnd; target: RouteEnd } | null {
+  const sourceBox = boxes.get(edge.source);
+  const targetBox = boxes.get(edge.target);
+  if (!sourceBox || !targetBox) return null;
+  if (diagram.type !== "erd" || !sides) {
+    return {
+      source: { x: sourceBox.x + sourceBox.width / 2, y: sourceBox.y + sourceBox.height, side: Position.Bottom },
+      target: { x: targetBox.x + targetBox.width / 2, y: targetBox.y, side: Position.Top },
+    };
+  }
+  const rowEnd = (nodeId: string, column: string | undefined, box: Obstacle, side: HandleSide): RouteEnd | null => {
+    const node = diagram.nodes.find((candidate) => candidate.id === nodeId);
+    const index = node?.columns?.findIndex((candidate) => candidate.name === column) ?? -1;
+    if (!node || index < 0) return null;
+    return { x: side === "right" ? box.x + box.width : box.x, y: box.y + tableRowCenterY(node, index), side: side === "right" ? Position.Right : Position.Left };
+  };
+  const source = rowEnd(edge.source, edge.sourceColumn, sourceBox, sides.source);
+  const target = rowEnd(edge.target, edge.targetColumn, targetBox, sides.target);
+  return source && target ? { source, target } : null;
+}
+
 /**
  * Lays the diagram out and returns React Flow nodes (boundaries before the shapes inside them) and edges. Shape
- * positions are relative to their boundary; edge routes are absolute. In a manual layout the edges drop ELK's routes,
- * which no longer fit the moved elements, and the view routes them around the elements itself. Waits and aborts like
- * `layoutGraph`.
+ * positions are relative to their boundary; edge routes are absolute. ELK lays an ERD out several times and the
+ * layout whose relationships cross each other least wins: once per bound on the tables per layer
+ * (`ERD_TABLES_PER_LAYER_BOUNDS`), every relationship between its columns' ports on the facing sides of a
+ * left-to-right reading, and once more where the placement has a table left of the one referencing it, or above
+ * it, with the sides that placement calls for (`ERD_LAYOUT_PASSES`). In a manual layout ELK's routes no longer fit
+ * the moved elements: Hunt routes the connections around the elements and clear of each other itself
+ * (`routeConnections`), on the sides the placement calls for. Waits and aborts like `layoutGraph`.
  */
 export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSignal): Promise<{ nodes: ShapeDiagramFlowNode[]; edges: ShapeFlowEdge[] }> {
   const isErd = diagram.type === "erd";
   const isManual = hasManualLayout(diagram);
-  const { positions, groupSizes, routes } = await layoutGraph(toLayoutInput(diagram), signal);
-  const { shapes, boundaries } = placeElements(diagram, positions, groupSizes);
+  const facingSides = new Map(diagram.edges.map((edge): [string, RelationshipSides] => [shapeEdgeId(diagram, edge), { source: "right", target: "left" }]));
+  let sides = facingSides;
+  let layout: LayoutResult = await layoutGraph(toLayoutInput(diagram, sides), signal);
+  let placed = placeElements(diagram, layout.positions, layout.groupSizes);
+  if (isErd && isManual) {
+    sides = relationshipSidesOf(diagram, absoluteBoxes(diagram, placed));
+  } else if (isErd) {
+    let best = { layout, placed, sides, crossings: Infinity };
+    for (const bound of ERD_TABLES_PER_LAYER_BOUNDS) {
+      sides = facingSides;
+      for (let pass = 1; pass <= ERD_LAYOUT_PASSES; pass++) {
+        layout = await layoutGraph(toLayoutInput(diagram, sides, bound), signal);
+        placed = placeElements(diagram, layout.positions, layout.groupSizes);
+        const crossings = countCrossings([...layout.routes.values()].map((route) => route.points));
+        if (crossings < best.crossings) {
+          best = { layout, placed, sides, crossings };
+        }
+        const settled = relationshipSidesOf(diagram, absoluteBoxes(diagram, placed));
+        if ([...settled].every(([id, side]) => sides.get(id)?.source === side.source && sides.get(id)?.target === side.target)) break;
+        sides = settled;
+      }
+    }
+    ({ layout, placed, sides } = best);
+  }
+  const { shapes, boundaries } = placed;
+  let routes = layout.routes;
+  if (isManual) {
+    const boxes = absoluteBoxes(diagram, placed);
+    const connections = diagram.edges.flatMap((edge): Connection[] => {
+      const id = shapeEdgeId(diagram, edge);
+      const ends = connectionEnds(diagram, edge, boxes, sides.get(id));
+      return ends && !edge.bends ? [{ id, ...ends }] : [];
+    });
+    const routed = await routeConnections(connections, [...boxes.values()], signal);
+    routes = new Map([...routed].flatMap(([id, points]) => (points ? [[id, { points, labelCenter: null }]] : [])));
+  }
 
   const boundaryNodes: BoundaryFlowNode[] = (diagram.groups ?? []).map((group) => {
     const { position, width, height } = boundaries.get(group.id) ?? { position: { x: 0, y: 0 }, width: 0, height: 0 };
@@ -291,7 +421,7 @@ export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSi
 
   const edges: ShapeFlowEdge[] = diagram.edges.map((edge) => {
     const id = shapeEdgeId(diagram, edge);
-    const route = isManual ? undefined : routes.get(id);
+    const route = routes.get(id);
     const data: ShapeEdgeData = {
       label: edge.label,
       description: edge.description,
@@ -316,8 +446,9 @@ export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSi
       zIndex: -2,
     };
     if (isErd) {
-      flowEdge.sourceHandle = columnPortId(edge.source, edge.sourceColumn ?? "", "out");
-      flowEdge.targetHandle = columnPortId(edge.target, edge.targetColumn ?? "", "in");
+      const edgeSides = sides.get(id) ?? { source: "right", target: "left" };
+      flowEdge.sourceHandle = columnPortId(edge.source, edge.sourceColumn ?? "", "out", edgeSides.source);
+      flowEdge.targetHandle = columnPortId(edge.target, edge.targetColumn ?? "", "in", edgeSides.target);
       // Crow's-foot ends; the panel defines one SVG marker per cardinality and tone.
       // React Flow wraps a string marker into `url('#…')` itself, so the edge names the marker id only.
       Object.assign(flowEdge, erdMarkers(data, false));

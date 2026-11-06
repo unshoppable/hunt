@@ -1,6 +1,6 @@
 //! The diagrams the agent writes to `<worktree>/.hunt/diagrams/`, each in `<type>.react-flow.json`: the file-level
 //! dependency graph in `dependencies.react-flow.json` and the shape diagrams (C4 context and container, states, ERD,
-//! process), each described by a prompt and validated against a schema file placed next to it, plus a watcher that
+//! process, freeform), each described by a prompt and validated against a schema file placed next to it, plus a watcher that
 //! tells the UI about rewrites and the reader.
 
 use std::collections::HashMap;
@@ -39,11 +39,18 @@ pub enum DiagramType {
     States,
     Erd,
     Process,
+    Freeform,
 }
 
 /// The diagram types that share `diagram.schema.json` and a user prompt file each.
-pub const SHAPE_TYPES: [DiagramType; 5] =
-    [DiagramType::C4Context, DiagramType::C4Container, DiagramType::States, DiagramType::Erd, DiagramType::Process];
+pub const SHAPE_TYPES: [DiagramType; 6] = [
+    DiagramType::C4Context,
+    DiagramType::C4Container,
+    DiagramType::States,
+    DiagramType::Erd,
+    DiagramType::Process,
+    DiagramType::Freeform,
+];
 
 impl DiagramType {
     /// The kebab-case id the frontend sends and a shape diagram carries as its `type`.
@@ -55,6 +62,7 @@ impl DiagramType {
             Self::States => "states",
             Self::Erd => "erd",
             Self::Process => "process",
+            Self::Freeform => "freeform",
         }
     }
 
@@ -67,6 +75,7 @@ impl DiagramType {
             Self::States => "states.react-flow.json",
             Self::Erd => "erd.react-flow.json",
             Self::Process => "process.react-flow.json",
+            Self::Freeform => "freeform.react-flow.json",
         }
     }
 
@@ -80,6 +89,7 @@ impl DiagramType {
             Self::States => Some(STATES_PROMPT),
             Self::Erd => Some(ERD_PROMPT),
             Self::Process => Some(PROCESS_PROMPT),
+            Self::Freeform => Some(FREEFORM_PROMPT),
         }
     }
 }
@@ -91,6 +101,7 @@ const C4_CONTAINER_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"
 const STATES_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/diagram/diagram-states.user-prompt.md"));
 const ERD_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/diagram/diagram-erd.user-prompt.md"));
 const PROCESS_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/diagram/diagram-process.user-prompt.md"));
+const FREEFORM_PROMPT: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../prompts/diagram/diagram-freeform.user-prompt.md"));
 
 /// Replaces every `{{name}}` placeholder of `template` with its value.
 pub(crate) fn fill_prompt(template: &str, values: &[(&str, &str)]) -> String {
@@ -350,6 +361,7 @@ mod tests {
             ("states", DiagramType::States),
             ("erd", DiagramType::Erd),
             ("process", DiagramType::Process),
+            ("freeform", DiagramType::Freeform),
         ];
         for (id, expected) in ids {
             let parsed: DiagramType = serde_json::from_value(serde_json::json!(id)).unwrap_or_else(|error| panic!("{id}: {error}"));

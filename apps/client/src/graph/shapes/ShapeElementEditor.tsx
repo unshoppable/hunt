@@ -1,18 +1,15 @@
-import type { ShapeChange, ShapeDiagram, ShapeKind } from "./shape-diagram.types";
+import type { ShapeDiagramType } from "../../common/diagram/diagram.types";
+import type { ShapeChange, ShapeDiagram, ShapeKind, ShapeSelection } from "./shape-diagram.types";
 import { DANGER_BUTTON_XS, ICON_BUTTON_XS } from "../../ui/buttons.constants";
-import { confirmDestructive } from "../../ui/confirm.utils";
 import { Dropdown } from "../../ui/Dropdown";
 import { CloseIcon, TrashIcon } from "../../ui/Icons";
 import { KINDS_BY_TYPE } from "../diagram-types.constants";
 import { ColorField, CommitInput, CommitTextarea, INPUT, SECTION_LABEL } from "./EditorFields";
 import { shapeEdgeId } from "./shape-diagram.utils";
-import { removeEdge, removeGroup, removeNode, updateEdge, updateGroup, updateNode } from "./shape-edit.utils";
-
-/** What the editor beside the canvas shows: an element, a connection (by `shapeEdgeId`) or a boundary. */
-export type ShapeSelection = { kind: "node" | "edge" | "group"; id: string };
+import { updateEdge, updateGroup, updateNode } from "./shape-edit.utils";
 
 /** Names of the element kinds as the editor lists them. */
-export const KIND_NAMES: Record<ShapeKind, string> = {
+const KIND_NAMES: Record<ShapeKind, string> = {
   person: "Person",
   system: "System",
   externalSystem: "External system",
@@ -26,6 +23,22 @@ export const KIND_NAMES: Record<ShapeKind, string> = {
   decision: "Decision",
   table: "Table",
 };
+
+/** Names of the element kinds in a freeform diagram, which uses them for their shape only. */
+const FREEFORM_KIND_NAMES: Partial<Record<ShapeKind, string>> = {
+  action: "Box",
+  state: "Rounded box",
+  externalSystem: "Dashed box",
+  decision: "Diamond",
+  start: "Dot",
+  end: "Ring",
+  database: "Cylinder",
+};
+
+/** Name of the element kind `kind` in a diagram of `type`. */
+export function kindName(type: ShapeDiagramType, kind: ShapeKind): string {
+  return (type === "freeform" ? FREEFORM_KIND_NAMES[kind] : undefined) ?? KIND_NAMES[kind];
+}
 
 const NONE = "none";
 const CHANGE_OPTIONS = [
@@ -41,14 +54,15 @@ const SELECT = `${INPUT} flex items-center justify-between`;
 
 /**
  * The editor of one element, connection or boundary of a shape diagram beside the canvas. Every field commits on blur,
- * Enter or a pick and hands the changed diagram to `onChange`, which the panel shows at once and writes to the file.
- * Deleting an element asks first when connections go with it.
+ * Enter or a pick and hands the changed diagram to `onChange`, which the panel shows at once and writes to the file;
+ * deleting it is the panel's `onDelete`.
  */
 export function ShapeElementEditor({
   diagram,
   selection,
   isNew,
   onChange,
+  onDelete,
   onClose,
 }: {
   diagram: ShapeDiagram;
@@ -56,22 +70,17 @@ export function ShapeElementEditor({
   /** The element was just added: the name field takes the focus with its text selected. */
   isNew: boolean;
   onChange: (next: ShapeDiagram) => void;
+  onDelete: () => void;
   onClose: () => void;
 }) {
   const nameOf = (id: string) => diagram.nodes.find((node) => node.id === id)?.label ?? id;
-  const remove = async (next: ShapeDiagram, question: string | null) => {
-    if (question && !(await confirmDestructive(question))) return;
-    onChange(next);
-    onClose();
-  };
 
   if (selection.kind === "node") {
     const node = diagram.nodes.find((candidate) => candidate.id === selection.id);
     if (!node) return null;
-    const connections = diagram.edges.filter((edge) => edge.source === node.id || edge.target === node.id).length;
     const groups = diagram.groups ?? [];
     return (
-      <EditorFrame title={KIND_NAMES[node.kind]} onClose={onClose} deleteLabel="Delete element" onDelete={() => void remove(removeNode(diagram, node.id), connections ? `Delete "${node.label}" and its ${countOf(connections, "connection")}?` : null)}>
+      <EditorFrame title={kindName(diagram.type, node.kind)} onClose={onClose} deleteLabel="Delete element" onDelete={onDelete}>
         <Field label="Name">
           <CommitInput value={node.label} onCommit={(label) => onChange(updateNode(diagram, node.id, { label }))} ariaLabel="Element name" autoFocus={isNew} className={`${INPUT} font-medium`} />
         </Field>
@@ -83,7 +92,7 @@ export function ShapeElementEditor({
             <Dropdown
               title="Element kind"
               value={node.kind}
-              options={KINDS_BY_TYPE[diagram.type].filter((kind) => kind !== "table").map((kind) => ({ id: kind, name: KIND_NAMES[kind] }))}
+              options={KINDS_BY_TYPE[diagram.type].filter((kind) => kind !== "table").map((kind) => ({ id: kind, name: kindName(diagram.type, kind) }))}
               onChange={(kind) => onChange(updateNode(diagram, node.id, { kind: kind as ShapeKind }))}
               className={SELECT}
             />
@@ -115,7 +124,7 @@ export function ShapeElementEditor({
     const group = diagram.groups?.find((candidate) => candidate.id === selection.id);
     if (!group) return null;
     return (
-      <EditorFrame title="Boundary" onClose={onClose} deleteLabel="Delete boundary" onDelete={() => void remove(removeGroup(diagram, group.id), null)}>
+      <EditorFrame title="Boundary" onClose={onClose} deleteLabel="Delete boundary" onDelete={onDelete}>
         <Field label="Name">
           <CommitInput value={group.label} onCommit={(label) => onChange(updateGroup(diagram, group.id, { label }))} ariaLabel="Boundary name" autoFocus={isNew} className={`${INPUT} font-medium`} />
         </Field>
@@ -128,7 +137,7 @@ export function ShapeElementEditor({
   const edge = diagram.edges.find((candidate) => shapeEdgeId(diagram, candidate) === selection.id);
   if (!edge) return null;
   return (
-    <EditorFrame title="Connection" onClose={onClose} deleteLabel="Delete connection" onDelete={() => void remove(removeEdge(diagram, selection.id), null)}>
+    <EditorFrame title="Connection" onClose={onClose} deleteLabel="Delete connection" onDelete={onDelete}>
       <p className="truncate text-neutral-300" title={`${nameOf(edge.source)} → ${nameOf(edge.target)}`}>
         {nameOf(edge.source)} <span className="text-neutral-500">→</span> {nameOf(edge.target)}
       </p>
@@ -193,8 +202,4 @@ function ChangeField({ value, onChange }: { value?: ShapeChange; onChange: (chan
       <Dropdown title="Change mark" value={value ?? NONE} options={CHANGE_OPTIONS} onChange={(id) => onChange(id === NONE ? null : (id as ShapeChange))} className={SELECT} />
     </Field>
   );
-}
-
-function countOf(count: number, noun: string): string {
-  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }

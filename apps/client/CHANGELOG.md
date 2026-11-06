@@ -1,3 +1,10 @@
+## 0.148.0 (2026-11-06)
+
+### 🚀 Features
+
+- **client:** route diagram connections clear of each other, add freeform diagrams and a table filter to the Architecture tab ([8140f4f](https://github.com/unshoppable/hunt/commit/8140f4f))
+- **swf:** keep the transcript of every run's conversation and show it in the Factory tab, with the agent's summarized thinking ([7bb113f](https://github.com/unshoppable/hunt/commit/7bb113f))
+
 ## 0.147.0 (2026-11-06)
 
 ### 🚀 Features

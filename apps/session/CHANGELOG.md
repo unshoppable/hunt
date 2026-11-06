@@ -1,3 +1,9 @@
+## 0.33.10 (2026-11-06)
+
+### 🚀 Features
+
+- **swf:** keep the transcript of every run's conversation and show it in the Factory tab, with the agent's summarized thinking ([7bb113f](https://github.com/unshoppable/hunt/commit/7bb113f))
+
 ## 0.33.9 (2026-11-06)
 
 ### 🚀 Features

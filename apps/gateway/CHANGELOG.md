@@ -1,3 +1,7 @@
+## 0.46.4 (2026-11-06)
+
+This was a version bump only for gateway to align it with other projects, there were no code changes.
+
 ## 0.46.3 (2026-11-06)
 
 This was a version bump only for gateway to align it with other projects, there were no code changes.

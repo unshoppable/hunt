@@ -1,3 +1,9 @@
+## 0.33.9 (2026-11-06)
+
+### 🚀 Features
+
+- **client:** show the services of a session VM as terminals in the Terminal tab and drop the Preview tab ([3da33e6](https://github.com/unshoppable/hunt/commit/3da33e6))
+
 ## 0.33.8 (2026-11-04)
 
 ### 🚀 Features

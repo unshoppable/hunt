@@ -1,3 +1,9 @@
+## 0.146.0 (2026-11-06)
+
+### 🚀 Features
+
+- **client:** route diagram connections around the elements at a distance and let the user drag their segments ([d592874](https://github.com/unshoppable/hunt/commit/d592874))
+
 ## 0.145.0 (2026-11-06)
 
 ### 🚀 Features

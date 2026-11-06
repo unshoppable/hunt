@@ -235,6 +235,8 @@ export const commands = {
   readSwfPipeline: (sessionId: string) => invoke<SwfPipelineFiles | null>("read_swf_pipeline", { sessionId }),
   /** The markdown of the step result that ended the pipeline's run `n` (`.hunt/swf/steps/<nn>-<step>.md`); `null` without one. */
   readSwfStep: (sessionId: string, n: number) => invoke<string | null>("read_swf_step", { sessionId, n }),
+  /** The Claude Code transcript of the conversation of the pipeline's run `n` (`.hunt/swf/transcripts/<nn>-<step>.jsonl`); `null` without one. */
+  readSwfTranscript: (sessionId: string, n: number) => invoke<string | null>("read_swf_transcript", { sessionId, n }),
   closeSession: (id: string, ending: SessionEnding) => invoke<void>("close_session", { id, ending }),
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),

@@ -2,12 +2,14 @@
  * `.hunt/swf/` of the session's worktree, the runner's state on disk (`swf-runner.service.ts`): `pipeline.json`, the
  * pipeline the runner owns from the moment the gateway started it (`hunt-ctl swf-record` wrote the first one);
  * `result.md`, the step result the agent writes at the end of a step, which the runner moves to `steps/<nn>-<step>.md`
- * once it acted on it; `gate/<nn>-<check>.log`, the output of each check of the latest gate run of the run `nn`; and
+ * once it acted on it; `gate/<nn>-<check>.log`, the output of each check of the latest gate run of the run `nn`;
+ * `transcripts/<nn>-<step>.jsonl`, a copy of the Claude Code transcript of the conversation the run `nn` had (its
+ * `sessionId`, in the agent's project folder of `~/.claude/projects/`), renewed while the run goes on; and
  * `inbox/<ms>-<pid>.json`, the gateway's messages (`hunt-ctl swf-inbox`,
  * `libs/domain/src/swf/swf-inbox.utils.ts`), read in the order of their names and removed once handled. The Hunt client
- * reads `pipeline.json` and the steps through `hunt-ctl status` and the file sync.
+ * reads `pipeline.json`, the steps and the transcripts through `hunt-ctl status` and the file sync.
  */
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Pipeline, type Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { parseInboxMessage, type InboxMessage } from "../../../../libs/domain/src/swf/swf-inbox.utils.ts";
@@ -32,16 +34,27 @@ export interface SwfFiles {
   discardResult(): void;
   /** Keeps the `output` of the gate check `name` on the result of the run `run`, `gate/<nn>-<name>.log`, replacing that of an earlier gate run. */
   keepGateLog(run: Run, name: string, output: string): void;
+  /**
+   * Copies the transcript of the conversation of `run` to `transcripts/<nn>-<step>.jsonl` when it grew since the last
+   * copy; nothing for a run without a `sessionId` or whose transcript is not on this VM.
+   */
+  keepTranscript(run: Run): void;
   /** The inbox's entries, oldest first. */
   readInbox(): InboxEntry[];
   removeInboxEntry(name: string): void;
 }
 
+/** What an ACP session id may hold to name a transcript file (`ensure_session_id` of the client's `remote/transcript.rs`). */
+const SESSION_ID_PATTERN = /^[A-Za-z0-9_-]+$/;
+
 export class SwfDir implements SwfFiles {
   readonly dir: string;
+  /** The agent's project folder of the worktree in `~/.claude/projects/`, which holds a `<sessionId>.jsonl` per conversation. */
+  readonly projectDir: string;
 
-  constructor(dir: string) {
+  constructor(dir: string, projectDir: string) {
     this.dir = dir;
+    this.projectDir = projectDir;
   }
 
   readPipeline(): Pipeline | null {
@@ -80,6 +93,18 @@ export class SwfDir implements SwfFiles {
     writeFileSync(join(this.dir, "gate", `${runNumber(run)}-${name}.log`), output);
   }
 
+  keepTranscript(run: Run): void {
+    if (!run.sessionId || !SESSION_ID_PATTERN.test(run.sessionId)) return;
+    const source = join(this.projectDir, `${run.sessionId}.jsonl`);
+    const target = join(this.dir, "transcripts", `${runNumber(run)}-${run.step}.jsonl`);
+    const size = sizeOrNull(source);
+    if (size === null || size === sizeOrNull(target)) return;
+    mkdirSync(join(this.dir, "transcripts"), { recursive: true });
+    // Copied beside and renamed, so that the client's file sync never pulls a half-written copy.
+    copyFileSync(source, `${target}.tmp`);
+    renameSync(`${target}.tmp`, target);
+  }
+
   readInbox(): InboxEntry[] {
     let names: string[];
     try {
@@ -114,6 +139,16 @@ function runNumber(run: Run): string {
 function readTextOrNull(path: string): string | null {
   try {
     return readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+/** The size of the file at `path` in bytes; null when it is missing. */
+function sizeOrNull(path: string): number | null {
+  try {
+    return statSync(path).size;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
     throw error;

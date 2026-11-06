@@ -146,7 +146,10 @@ describe("main", () => {
       mcpServers,
       _meta: {
         systemPrompt: { append: "Commit locally only." },
-        claudeCode: { emitRawSDKMessages: [{ type: "system", subtype: "task_progress" }, { type: "system", subtype: "task_notification" }] },
+        claudeCode: {
+          emitRawSDKMessages: [{ type: "system", subtype: "task_progress" }, { type: "system", subtype: "task_notification" }],
+          options: { thinking: { type: "adaptive", display: "summarized" } },
+        },
       },
     });
     expect(received.find((message) => message.id === "permission-1")).toMatchObject({ result: { outcome: { optionId: "allow" } } });

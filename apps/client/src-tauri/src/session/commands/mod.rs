@@ -198,6 +198,7 @@ command_handler![
     graph::graph_status,
     swf::read_swf_pipeline,
     swf::read_swf_step,
+    swf::read_swf_transcript,
     lsp::lsp_request,
     lsp::lsp_cancel,
     documents::document_open,

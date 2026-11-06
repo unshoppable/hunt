@@ -15,7 +15,9 @@
  *
  * `runs` is the pipeline's log: one entry per run of a step, in the order they happened, appended only. A step that runs
  * again gets a new entry; a run that sends the issue back to implement ends as `returned` and the implement run it causes
- * names it as its `cause`. The client draws the pipeline's graph from this list.
+ * names it as its `cause`. The client draws the pipeline's graph from this list. A run of an agent step names the
+ * conversation its prompt went to (`sessionId`, the relay's ACP session, which is Claude Code's), whose transcript the
+ * runner keeps as `.hunt/swf/transcripts/<nn>-<step>.jsonl`.
  *
  * The steps run plan → implement → verify → review → pr → checks → human-review (when the repository's review workflow
  * did not approve) → merge. The plan step creates the session's branch by the repository's branch naming rules and
@@ -69,6 +71,8 @@ const ZodRun = z.object({
   findings: z.optional(z.int()),
   /** The `n` of the run whose findings caused this implement run. */
   cause: z.optional(z.int()),
+  /** The ACP session of the conversation the prompt of this agent step's run went to; absent until the prompt went out. */
+  sessionId: z.optional(z.string()),
 });
 export type Run = z.infer<typeof ZodRun>;
 
@@ -436,12 +440,17 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     });
   }
 
-  /** The prompt of the current agent step went to the agent, whose turn had ended at `lastTurnEndedAt` (0: none had). */
-  recordPrompt(lastTurnEndedAt: number): void {
+  /**
+   * The prompt of the current agent step went to the agent in the conversation `sessionId`, whose turn had ended at
+   * `lastTurnEndedAt` (0: none had); the current run names that conversation.
+   */
+  recordPrompt(lastTurnEndedAt: number, sessionId: string): void {
     if (!this.waitsForAgent) throw new Error(`the step ${this.step} has no prompt for the agent`);
     if (this.promptTurn !== null) throw new Error(`the prompt of the step ${this.step} was sent already`);
     this.changeState(() => {
       this.promptTurn = lastTurnEndedAt;
+      const current = runningRun(this.runs);
+      if (current) this.runs = [...this.runs.slice(0, -1), { ...current, sessionId }];
     });
   }
 

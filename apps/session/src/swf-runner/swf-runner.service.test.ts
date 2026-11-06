@@ -58,6 +58,8 @@ class FakeFiles implements SwfFiles {
   result: string | null = null;
   steps = new Map<string, string>();
   gateLogs = new Map<string, string>();
+  /** The runs whose transcript was kept, in order, as `<n> <sessionId>`. */
+  transcripts: string[] = [];
   inbox: { name: string; value: unknown }[] = [];
   /** How often the pipeline was written. */
   writes = 0;
@@ -87,6 +89,14 @@ class FakeFiles implements SwfFiles {
 
   keepGateLog(run: Run, name: string, output: string): void {
     this.gateLogs.set(`${String(run.n).padStart(2, "0")}-${name}.log`, output);
+  }
+
+  /** Whether keeping a transcript fails, as a full disk would make it. */
+  failTranscripts = false;
+
+  keepTranscript(run: Run): void {
+    if (this.failTranscripts) throw new Error("ENOSPC: no space left on device");
+    if (run.sessionId) this.transcripts.push(`${run.n} ${run.sessionId}`);
   }
 
   readInbox(): InboxEntry[] {
@@ -234,8 +244,11 @@ function idle(fields: Partial<RelaySessionStatus> = {}): RelaySessionStatus {
   return { acpSessionId: "acp-1", turn: "idle", lastTurnEndedAt: null, ...fields };
 }
 
-/** The pipeline of acme/app#12 with `settings` and its record comment posted, at `step` after the given intents. */
-function recorded(step: SwfStep = "plan", promptTurn: number | null = null, settings: StepSettings = SETTINGS): Pipeline {
+/**
+ * The pipeline of acme/app#12 with `settings` and its record comment posted, at `step` after the given intents; with a
+ * `promptTurn` the step's prompt went to the conversation `sessionId`.
+ */
+function recorded(step: SwfStep = "plan", promptTurn: number | null = null, settings: StepSettings = SETTINGS, sessionId = "acp-1"): Pipeline {
   const pipeline = started(NOW, settings);
   pipeline.noteRecordComment(RECORD_ID);
   const order: SwfStep[] = ["plan", "implement", "verify", "review", "pr", "checks"];
@@ -260,7 +273,7 @@ function recorded(step: SwfStep = "plan", promptTurn: number | null = null, sett
         break;
     }
   }
-  if (promptTurn !== null) pipeline.recordPrompt(promptTurn);
+  if (promptTurn !== null) pipeline.recordPrompt(promptTurn, sessionId);
   return pipeline;
 }
 
@@ -295,7 +308,7 @@ describe("SwfRunner", () => {
     expect(h.prompts[0].text).toContain("**@bob** on 2026-10-13 09:00 UTC:\n\nAlso the logout.");
     expect(h.prompts[0].text).toContain('<!-- hunt:step {"step":"plan","branch":"<the branch of step 3>"} -->');
     expect(h.prompts[0].text).toContain("skill `swf-plan`");
-    const expected = recorded("plan", 0);
+    const expected = recorded("plan", 0, SETTINGS, "acp-fresh-1");
     expect(h.files.pipeline?.toJSON()).toEqual(expected.toJSON());
     expect(h.github.calls).toEqual(["issue acme/app#12", `edit acme/app ${RECORD_ID}`]);
     expect(h.github.records).toEqual([expected.toComment()]);
@@ -306,6 +319,30 @@ describe("SwfRunner", () => {
     await h.runner.tick();
     expect(h.prompts).toHaveLength(1);
     expect(h.clears).toBe(1);
+  });
+
+  it("keeps the transcript of the current run while the relay is idle and that of the run before once its relay stopped for the fresh conversation", async () => {
+    const h = harness(recorded("plan", 0), idle({ lastTurnEndedAt: 5_000 }));
+    h.status = idle({ turn: "running" });
+    await h.runner.tick();
+    expect(h.files.transcripts).toEqual([]);
+
+    h.status = idle({ lastTurnEndedAt: 5_000 });
+    h.files.result = PLAN_RESULT;
+    await h.runner.tick();
+    expect(h.files.transcripts).toEqual(["1 acp-1", "1 acp-1"]);
+    expect(h.files.pipeline?.currentRun).toMatchObject({ n: 2, step: "implement", sessionId: "acp-fresh-1" });
+
+    await h.runner.tick();
+    expect(h.files.transcripts).toEqual(["1 acp-1", "1 acp-1", "2 acp-fresh-1"]);
+  });
+
+  it("logs a transcript that cannot be kept and drives the pipeline on", async () => {
+    const h = harness(recorded("plan"));
+    h.files.failTranscripts = true;
+    await h.runner.tick();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.logs).toContain("warn: failed to keep the transcript of run 1: ENOSPC: no space left on device");
   });
 
   it("takes the result of result.md once the turn ended: keeps it as the step's file, mirrors it to the issue and prompts the next step", async () => {

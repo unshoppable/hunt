@@ -5,8 +5,9 @@
  *   node /srv/hunt/current/session/swfRunner.mjs      (the bundle `nx build session` writes)
  *
  * Environment: `HUNT_SESSION_ID` and `HUNT_WORKTREE` (`/etc/hunt/swf-runner.env`, which `hunt-ctl start` writes),
- * `HUNT_SOCKET_DIR` (agent.env), where the relay keeps `status.json` and `relay.sock`, and `HUNT_CONFIG` (agent.env),
- * the relay's `hunt-session.json`, whose config options the runner sets before each step's fresh conversation. The
+ * `HUNT_SOCKET_DIR` (agent.env), where the relay keeps `status.json` and `relay.sock`, `HUNT_CONFIG` (agent.env),
+ * the relay's `hunt-session.json`, whose config options the runner sets before each step's fresh conversation, and
+ * `CLAUDE_CONFIG_DIR` (agent.env), whose `projects/` holds the transcripts of the agent's conversations. The
  * checks of a step's gate run as the agent in a login shell in the worktree, like the agent's own commands. It runs a tick whenever the
  * socket directory or the inbox changes (`fs.watch`; the relay's systemd RuntimeDirectory is created anew with every
  * relay start, so the watch is set up again whenever it is gone) and every POLL_INTERVAL_MS anyway. It connects to the
@@ -64,6 +65,14 @@ const SWF_DIR = ".hunt/swf";
 /** Writes to stderr, which systemd hands to the journal under the unit's SyslogIdentifier; `level` becomes its priority. */
 function log(message: string, level: LogLevel = "info"): void {
   console.error(journalLine(message, level));
+}
+
+/**
+ * The name of the project folder Claude Code keeps the transcripts of `worktree` in: every character but an ASCII letter
+ * or digit becomes `-` (`project_slug` of the client's `remote/transcript.rs`).
+ */
+function projectSlug(worktree: string): string {
+  return worktree.replace(/[^A-Za-z0-9]/g, "-");
 }
 
 function requireEnv(name: string): string {
@@ -183,11 +192,12 @@ function main(): void {
   const statusPath = join(socketDir, "status.json");
   const socketPath = join(socketDir, "relay.sock");
   const swfDir = join(worktree, SWF_DIR);
+  const projectDir = join(requireEnv("CLAUDE_CONFIG_DIR"), "projects", projectSlug(worktree));
   const inboxDir = join(swfDir, "inbox");
   mkdirSync(inboxDir, { recursive: true });
 
   const runner = new SwfRunner({
-    files: new SwfDir(swfDir),
+    files: new SwfDir(swfDir, projectDir),
     github: new GhClient((args, input) => run(GH, args, input, GH_TIMEOUT_MS)),
     readStatus: () => relaySessionStatusOf(readTextOrNull(statusPath), Date.now()),
     clearConversation: async () => {

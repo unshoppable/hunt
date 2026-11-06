@@ -67,6 +67,7 @@ const SETUP_META = {
       { type: "system", subtype: "task_progress" },
       { type: "system", subtype: "task_notification" },
     ],
+    options: { thinking: { type: "adaptive", display: "summarized" } },
   },
 };
 

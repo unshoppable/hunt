@@ -706,11 +706,19 @@ fn workspace_prompt(app: &AppHandle, hunt_session_id: Uuid) -> Option<String> {
 }
 
 /// The `session/new` and `session/load` meta the adapter reads the system prompt addition from, plus the raw SDK
-/// messages that carry the usage of a subagent (`subagents::raw_sdk_messages`).
+/// messages that carry the usage of a subagent (`subagents::raw_sdk_messages`) and adaptive thinking with the API's
+/// summaries of it, which the SDK otherwise asks to be omitted, so that the chat's thoughts are not empty (as the
+/// relay's `THINKING` in apps/session/src/relay/relay.service.ts).
 fn build_session_meta(system_prompt: &str) -> Meta {
     let mut meta = Meta::new();
     meta.insert("systemPrompt".into(), serde_json::json!({ "append": system_prompt }));
-    meta.insert("claudeCode".into(), serde_json::json!({ "emitRawSDKMessages": subagents::raw_sdk_messages() }));
+    meta.insert(
+        "claudeCode".into(),
+        serde_json::json!({
+            "emitRawSDKMessages": subagents::raw_sdk_messages(),
+            "options": { "thinking": { "type": "adaptive", "display": "summarized" } },
+        }),
+    );
     meta
 }
 

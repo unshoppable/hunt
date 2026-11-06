@@ -14,7 +14,7 @@ describe("SwfDir", () => {
   function swfDir(): SwfDir {
     const dir = mkdtempSync(join(tmpdir(), "hunt-swf-"));
     dirs.push(dir);
-    return new SwfDir(join(dir, ".hunt", "swf"));
+    return new SwfDir(join(dir, ".hunt", "swf"), join(dir, "claude", "projects", "-home-agent-app"));
   }
 
   afterEach(() => {
@@ -65,6 +65,26 @@ describe("SwfDir", () => {
     files.keepGateLog(run, "test", "");
     expect(readFileSync(join(files.dir, "gate", "02-lint.log"), "utf8")).toBe("error: unused import\n");
     expect(readFileSync(join(files.dir, "gate", "02-test.log"), "utf8")).toBe("");
+  });
+
+  it("copies the transcript of a run's conversation under the run's number whenever it grew, and nothing without one", () => {
+    const files = swfDir();
+    const run = { n: 3, step: "verify" as const, startedAt: "2026-10-25T10:00:00.000Z", endedAt: null, outcome: "running" as const };
+    const target = join(files.dir, "transcripts", "03-verify.jsonl");
+    files.keepTranscript(run);
+    files.keepTranscript({ ...run, sessionId: "acp-1" });
+    mkdirSync(files.projectDir, { recursive: true });
+    writeFileSync(join(files.projectDir, "..", "acp-1.jsonl"), "outside\n");
+    files.keepTranscript({ ...run, sessionId: "../acp-1" });
+    expect(existsSync(join(files.dir, "transcripts"))).toBe(false);
+
+    writeFileSync(join(files.projectDir, "acp-1.jsonl"), '{"type":"user"}\n');
+    files.keepTranscript({ ...run, sessionId: "acp-1" });
+    expect(readFileSync(target, "utf8")).toBe('{"type":"user"}\n');
+    writeFileSync(join(files.projectDir, "acp-1.jsonl"), '{"type":"user"}\n{"type":"assistant"}\n');
+    files.keepTranscript({ ...run, sessionId: "acp-1" });
+    expect(readFileSync(target, "utf8")).toBe('{"type":"user"}\n{"type":"assistant"}\n');
+    expect(existsSync(`${target}.tmp`)).toBe(false);
   });
 
   it("reads the inbox in the order of the file names, marks files that hold no message and removes entries", () => {

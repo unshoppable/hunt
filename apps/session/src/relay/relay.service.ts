@@ -49,6 +49,12 @@ const SDK_MESSAGE_METHOD = "_claude/sdkMessage";
 /** The SDK messages of a subagent's task, its progress and its end, each with the task's usage. */
 const TASK_MESSAGE_SUBTYPES = ["task_progress", "task_notification"];
 const RAW_SDK_MESSAGES = TASK_MESSAGE_SUBTYPES.map((subtype) => ({ type: "system", subtype }));
+/**
+ * The agent's thinking: adaptive, with the API's summaries of it, which the SDK otherwise asks to be omitted (empty
+ * thinking blocks), so that the chat and the transcript (the Factory tab's conversation of a run) show what it thought;
+ * a local session's agent gets the same (`build_session_meta` in apps/client/src-tauri/src/agent/acp/connection.rs).
+ */
+const THINKING = { type: "adaptive", display: "summarized" };
 
 /** One client connection. */
 export interface ClientConnection {
@@ -153,7 +159,7 @@ export class Relay {
       this.answerWaitingInitializes();
 
       const config = this.deps.loadConfig();
-      const meta = { systemPrompt: { append: config.systemPromptAppend }, claudeCode: { emitRawSDKMessages: RAW_SDK_MESSAGES } };
+      const meta = { systemPrompt: { append: config.systemPromptAppend }, claudeCode: { emitRawSDKMessages: RAW_SDK_MESSAGES, options: { thinking: THINKING } } };
       const setup = { cwd: config.cwd, mcpServers: this.deps.mcpServers, _meta: meta };
       if (config.acpSessionId) {
         this.adoptSessionId(config.acpSessionId);

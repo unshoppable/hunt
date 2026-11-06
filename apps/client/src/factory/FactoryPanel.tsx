@@ -3,10 +3,11 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { Background, ReactFlow, ReactFlowProvider } from "@xyflow/react";
 import type { Pipeline, Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { RETURNING_STEPS } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
-import { MarkdownText } from "../chat/messages/MessageList";
+import { MarkdownText, MessageList } from "../chat/messages/MessageList";
 import { commands } from "../ipc/commands";
 import { useHuntStore } from "../sessions/hunt.store";
 import { EMPTY_PIPELINE, useFactoryStore } from "../sessions/swf-pipeline.store";
+import type { SwfStepFile } from "../sessions/swf-pipeline.types";
 import { HEADER_BAR } from "../ui/bars.constants";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
 import { AGENT_CHIP, Chip } from "../ui/Chip";
@@ -16,6 +17,7 @@ import { useLoad } from "../ui/load.hook";
 import { FACTORY_EDGE_TYPES, FACTORY_NODE_TYPES } from "./FactoryNodes";
 import { formatRunDuration, OUTCOME_LABELS, pipelineGraph, pipelineLinks, runDuration, STEP_LABELS, transitionText, type Transition } from "./pipeline-graph.utils";
 import { layoutPipeline, type PipelineFlowEdge, type StepFlowNode } from "./pipeline-layout.utils";
+import { runConversation, type RunConversation } from "./run-transcript.utils";
 
 /** How often the duration of a running run counts up. */
 const CLOCK_TICK_MS = 1000;
@@ -37,7 +39,8 @@ const OUTCOME_CHIP: Record<Run["outcome"], string> = {
  * without the VM too. On top the steps plan →
  * implement → verify → review → pr → checks → human-review → merge as a graph, each with its run count, the current step
  * marked and every return to implement as an amber edge labelled with its findings; below the runs in order with their
- * outcome and duration, and under them the step result of the selected run (by default the latest one that has one).
+ * outcome and duration, and under them the step result and the conversation of the selected run (by default the latest
+ * one that has either).
  * Reads the record again after every pull of `.hunt/swf/` (`swf:pulled`, wired in app/window-bootstrap.hook.ts), when the
  * session's turn ends or its files synced, when the window gets the focus and on Refresh.
  */
@@ -51,7 +54,7 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
   /** The relay's report of a running turn; its end means the pipeline moved on and the pull of `.hunt/swf/` followed. */
   const isTurnRunning = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.remote?.relayActivity?.isTurnRunning ?? false);
   const lastActiveAt = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.remote?.lastActiveAt ?? null);
-  const { pipeline, steps } = record;
+  const { pipeline, steps, transcripts } = record;
   const [selectedN, setSelectedN] = useState<number | null>(null);
   const [flow, setFlow] = useState<{ nodes: StepFlowNode[]; edges: PipelineFlowEdge[] } | null>(null);
   const [layoutError, setLayoutError] = useState<string | null>(null);
@@ -84,9 +87,9 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
   );
 
   const runs = pipeline?.runs ?? [];
-  const stepFileNs = useMemo(() => new Set(steps.map((step) => step.n)), [steps]);
-  /** The run whose step result shows: the selected one, else the latest run that has a result. */
-  const shownN = selectedN !== null && stepFileNs.has(selectedN) ? selectedN : (steps[steps.length - 1]?.n ?? null);
+  const openableNs = useMemo(() => new Set([...steps, ...transcripts].map((file) => file.n)), [steps, transcripts]);
+  /** The run that shows below: the selected one, else the latest run that has a step result or a transcript. */
+  const shownN = selectedN !== null && openableNs.has(selectedN) ? selectedN : openableNs.size > 0 ? Math.max(...openableNs) : null;
   const links = pipelineLinks(repo, issue, pipeline?.pullRequest ?? null);
 
   return (
@@ -147,7 +150,7 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
           <div className="flex max-h-[40%] shrink-0 flex-col overflow-y-auto py-1.5 text-[13px]">
             {runs.length ? (
               runs.map((run) => (
-                <RunRow key={run.n} run={run} now={now} hasStepFile={stepFileNs.has(run.n)} isSelected={run.n === shownN} onSelect={() => setSelectedN(run.n)} />
+                <RunRow key={run.n} run={run} now={now} isOpenable={openableNs.has(run.n)} isSelected={run.n === shownN} onSelect={() => setSelectedN(run.n)} />
               ))
             ) : (
               <p className={HINT}>The record lists no runs yet.</p>
@@ -155,9 +158,16 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
           </div>
           <div className="flex min-h-0 flex-1 flex-col border-t border-(--line)">
             {shownN !== null ? (
-              <StepResult key={`${sessionId}:${shownN}`} sessionId={sessionId} n={shownN} run={runs.find((run) => run.n === shownN) ?? null} stepCount={steps.length} />
+              <RunDetails
+                key={`${sessionId}:${shownN}`}
+                sessionId={sessionId}
+                n={shownN}
+                run={runs.find((run) => run.n === shownN) ?? null}
+                stepCount={steps.length}
+                transcripts={transcripts}
+              />
             ) : (
-              <p className={HINT}>No step has reported a result yet. A run with a result opens it here.</p>
+              <p className={HINT}>No run has a step result or a conversation yet. A run with one opens it here.</p>
             )}
           </div>
         </>
@@ -188,9 +198,9 @@ function statusText(pipeline: Pipeline, lastTransition: Transition | null): stri
 
 /**
  * A run of the timeline: its number, step, outcome, start and duration (counting up while it runs); a run with a step
- * result is a button that shows the result below, the shown one is highlighted.
+ * result or a transcript is a button that shows them below, the shown one is highlighted.
  */
-function RunRow({ run, now, hasStepFile, isSelected, onSelect }: { run: Run; now: number; hasStepFile: boolean; isSelected: boolean; onSelect: () => void }) {
+function RunRow({ run, now, isOpenable, isSelected, onSelect }: { run: Run; now: number; isOpenable: boolean; isSelected: boolean; onSelect: () => void }) {
   const started = Date.parse(run.startedAt);
   const startedText = Number.isNaN(started) ? run.startedAt : new Date(started).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
   const content = (
@@ -210,34 +220,67 @@ function RunRow({ run, now, hasStepFile, isSelected, onSelect }: { run: Run; now
     </>
   );
   const row = `flex h-7 w-full items-center gap-3 px-4 ${isSelected ? "bg-(--row-selected)" : ""}`;
-  if (!hasStepFile) return <div className={`${row} ${run.outcome === "running" ? "" : "opacity-80"}`}>{content}</div>;
+  if (!isOpenable) return <div className={`${row} ${run.outcome === "running" ? "" : "opacity-80"}`}>{content}</div>;
   return (
-    <button type="button" onClick={onSelect} className={`${row} rounded text-left hover:bg-(--row-hover)`} title="Show the step result of this run">
+    <button type="button" onClick={onSelect} className={`${row} rounded text-left hover:bg-(--row-hover)`} title="Show the step result and the conversation of this run">
       {content}
     </button>
   );
 }
 
-/** The step result that ended the run `n`, as the agent wrote it, rendered like the chat's markdown. */
-function StepResult({ sessionId, n, run, stepCount }: { sessionId: string; n: number; run: Run | null; stepCount: number }) {
+/** The run `n`: the step result it ended with, as the agent wrote it, rendered like the chat's markdown, and its conversation. */
+function RunDetails({ sessionId, n, run, stepCount, transcripts }: { sessionId: string; n: number; run: Run | null; stepCount: number; transcripts: SwfStepFile[] }) {
   const [text, setText] = useState<string | null | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   // The count of step files changes when a result is added or replaced; the shown one is read again then.
   useLoad(() => commands.readSwfStep(sessionId, n), { onValue: setText, onError: (reason) => setError(errorText(reason)) }, [sessionId, n, stepCount]);
-  if (error) return <p className="px-4 py-3 text-[13px] leading-snug break-words text-red-300">{error}</p>;
-  if (text === undefined) return null;
-  if (text === null) return <p className={HINT}>The step result of run {n} is not here yet.</p>;
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
       <div className="flex flex-col gap-3 px-4 py-3 text-[13px]">
         {run ? (
           <div className="text-neutral-400">
-            Step result of run {run.n}, <span className="text-neutral-200">{STEP_LABELS[run.step]}</span>
+            Run {run.n}, <span className="text-neutral-200">{STEP_LABELS[run.step]}</span>
           </div>
         ) : null}
-        {text.trim() ? <MarkdownText text={text} className="markdown-document" /> : <p className="text-neutral-500 italic">The step result is empty.</p>}
+        {error ? (
+          <p className="leading-snug break-words text-red-300">{error}</p>
+        ) : text === null ? (
+          <p className="text-neutral-500">{run?.outcome === "running" ? "The run has not reported a step result yet." : `Run ${n} has no step result.`}</p>
+        ) : text === undefined ? null : text.trim() ? (
+          <MarkdownText text={text} className="markdown-document" />
+        ) : (
+          <p className="text-neutral-500 italic">The step result is empty.</p>
+        )}
+        <RunConversationSection sessionId={sessionId} n={n} transcripts={transcripts} />
       </div>
     </div>
+  );
+}
+
+/**
+ * The conversation of the run `n` as its transcript records it (`.hunt/swf/transcripts/<nn>-<step>.jsonl`): prompts,
+ * thoughts, replies and tool calls in the chat's rows; nothing while the run has no transcript.
+ */
+function RunConversationSection({ sessionId, n, transcripts }: { sessionId: string; n: number; transcripts: SwfStepFile[] }) {
+  const [conversation, setConversation] = useState<RunConversation | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  // Every read of the pipeline gives a new list; the transcript of a running run may have grown with it.
+  useLoad(
+    () => commands.readSwfTranscript(sessionId, n),
+    { onValue: (jsonl) => setConversation(jsonl === null ? null : runConversation(jsonl)), onError: (reason) => setError(errorText(reason)) },
+    [sessionId, n, transcripts],
+  );
+  if (error) return <p className="leading-snug break-words text-red-300">{error}</p>;
+  if (!conversation) return null;
+  return (
+    <section className="mt-2 flex flex-col gap-3 border-t border-(--line) pt-3">
+      <div className="text-neutral-400">Conversation</div>
+      {conversation.items.length > 0 ? (
+        <MessageList items={conversation.items} plan={[]} isBusy={false} isVerbose={false} basePath={conversation.cwd} />
+      ) : (
+        <p className="text-neutral-500 italic">The transcript holds no messages yet.</p>
+      )}
+    </section>
   );
 }
 

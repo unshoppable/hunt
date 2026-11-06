@@ -9,11 +9,19 @@ import { pipelineAgentState } from "./swf-pipeline.utils";
 /**
  * What Hunt read of one session's swf pipeline from `.hunt/swf/` of its worktree: `pipeline` is null while the pipeline
  * wrote no record yet (`isLoaded` tells that apart from a read still to come) or while the record is unreadable
- * (`error` says why); `steps` lists the step results that can be opened.
+ * (`error` says why); `steps` lists the step results and `transcripts` the transcripts of the runs' conversations that
+ * can be opened.
  */
-export type SessionPipeline = { pipeline: Pipeline | null; steps: SwfStepFile[]; isLoaded: boolean; isLoading: boolean; error: string | null };
+export type SessionPipeline = {
+  pipeline: Pipeline | null;
+  steps: SwfStepFile[];
+  transcripts: SwfStepFile[];
+  isLoaded: boolean;
+  isLoading: boolean;
+  error: string | null;
+};
 
-export const EMPTY_PIPELINE: SessionPipeline = { pipeline: null, steps: [], isLoaded: false, isLoading: false, error: null };
+export const EMPTY_PIPELINE: SessionPipeline = { pipeline: null, steps: [], transcripts: [], isLoaded: false, isLoading: false, error: null };
 
 type FactoryState = {
   pipelines: Record<string, SessionPipeline>;
@@ -41,14 +49,14 @@ export const useFactoryStore = create<FactoryState>((set) => {
         const files = await commands.readSwfPipeline(id);
         if (reads.get(id) !== generation) return;
         if (!files) {
-          update(id, (current) => ({ ...current, pipeline: null, steps: [], isLoaded: true, error: null }));
+          update(id, (current) => ({ ...current, pipeline: null, steps: [], transcripts: [], isLoaded: true, error: null }));
           return;
         }
         const parsed = Pipeline.schema.safeParse(files.pipeline);
         update(id, (current) =>
           parsed.success
-            ? { ...current, pipeline: new Pipeline(parsed.data), steps: files.steps, isLoaded: true, error: null }
-            : { ...current, pipeline: null, steps: files.steps, isLoaded: true, error: `The pipeline record could not be read: ${describeIssue(parsed.error.issues[0])}` },
+            ? { ...current, pipeline: new Pipeline(parsed.data), steps: files.steps, transcripts: files.transcripts, isLoaded: true, error: null }
+            : { ...current, pipeline: null, steps: files.steps, transcripts: files.transcripts, isLoaded: true, error: `The pipeline record could not be read: ${describeIssue(parsed.error.issues[0])}` },
         );
       } catch (reason) {
         if (reads.get(id) !== generation) return;

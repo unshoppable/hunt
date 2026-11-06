@@ -12,7 +12,10 @@
  * 1. The inbox (`hunt-ctl swf-inbox`, `libs/domain/src/swf/swf-inbox.utils.ts`): a `pipeline` message replaces the local
  *    pipeline when it is further (more runs) or when the local one is at a step the poller drives, since the poller owns
  *    those transitions; `answers` wait until they can be sent.
- * 2. Nothing happens while the pipeline ended, waits at a poller step, or the relay serves no session.
+ * 2. Nothing happens while the pipeline ended, waits at a poller step, or the relay serves no session. With the relay
+ *    idle the transcript of the current run's conversation is copied to `transcripts/<nn>-<step>.jsonl` (once more for
+ *    the run before after the relay restarted for a fresh conversation, when the transcript is complete); a failed copy
+ *    is logged and holds nothing up.
  * 3. `result.md`, the step result the agent writes instead of a comment, once its turn ended: a usable one first passes
  *    the step's gate, when its settings name one: every gate check of hunt.json runs in the worktree (its output kept as
  *    `gate/<nn>-<check>.log`) and the working tree must be clean afterwards; on a failure the result is discarded and
@@ -37,7 +40,7 @@ import { Repository } from "../../../../libs/domain/src/session/repository.value
 import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
 import type { Log, LogLevel } from "../../../../libs/domain/src/shared/journal.utils.ts";
 import type { PromptOutcome } from "../../../../libs/domain/src/relay/relay-prompt.client.ts";
-import type { Pipeline } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
+import type { Pipeline, Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { parseStepResult } from "../../../../libs/domain/src/swf/step-result.utils.ts";
 import { stoppedComment } from "../../../../libs/domain/src/swf/swf-comments.utils.ts";
 import {
@@ -147,7 +150,8 @@ export class SwfRunner {
     if (this.isRecordStale) {
       await this.saveRecord(pipeline);
     }
-    if (!pipeline.currentRun) {
+    const run = pipeline.currentRun;
+    if (!run) {
       this.waitOnce(`the pipeline ended at ${pipeline.step}`);
       return;
     }
@@ -164,6 +168,7 @@ export class SwfRunner {
       this.waitOnce(`the agent runs a turn of ${pipeline.step}`);
       return;
     }
+    this.keepTranscript(run);
     const result = this.deps.files.readResult();
     if (result !== null) {
       await this.acceptResult(pipeline, result, status);
@@ -331,8 +336,11 @@ export class SwfRunner {
       this.deps.log(`the conversation of ${pipeline.step} runs with ${Object.entries(options).map(([key, value]) => `${key} ${value}`).join(", ")}`);
     }
     const status = await this.deps.clearConversation();
+    // The relay that stopped for the fresh conversation wrote the previous run's transcript to its end.
+    const previous = pipeline.lastEndedRun;
+    if (previous) this.keepTranscript(previous);
     const outcome = await this.deps.sendPrompt({ sessionId: status.acpSessionId, cwd: this.deps.worktree, text });
-    pipeline.recordPrompt(status.lastTurnEndedAt ?? 0);
+    pipeline.recordPrompt(status.lastTurnEndedAt ?? 0, status.acpSessionId);
     this.deps.files.writePipeline(pipeline);
     this.lookedUpTurn = null;
     this.lastWait = "";
@@ -379,6 +387,15 @@ export class SwfRunner {
     await this.deps.github.editLabels(repo, pipeline.issue, [this.labels.failed], this.labels.carriedBy({ labels: this.lookedUpLabels }));
     await this.deps.github.comment(repo, pipeline.issue, stoppedComment(step, this.deps.vmName));
     await this.saveRecord(pipeline);
+  }
+
+  /** Copies the transcript of `run` (`SwfFiles.keepTranscript`); a failure is logged, since the pipeline goes on without it. */
+  private keepTranscript(run: Run): void {
+    try {
+      this.deps.files.keepTranscript(run);
+    } catch (error) {
+      this.deps.log(`failed to keep the transcript of run ${run.n}: ${messageOf(error)}`, "warn");
+    }
   }
 
   /** The relay's status for a prompt into the running conversation; throws when the relay went away meanwhile. */

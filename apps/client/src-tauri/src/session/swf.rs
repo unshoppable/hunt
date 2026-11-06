@@ -1,10 +1,11 @@
 //! The pipeline record of a software-factory session (`SessionMode::Swf`). The gateway's poller mirrors the record of the
 //! session's issue onto its VM into `.hunt/swf/` of the worktree (`hunt-ctl swf-record`): `pipeline.json` holds the
 //! record (`libs/domain/src/swf/pipeline.domain.ts`), `steps/<nn>-<step>.md` the body of the step result the run `nn`
-//! ended with. `.hunt/` stays out of the file sync, so the folder is pulled on its own: when the session is opened,
+//! ended with and `transcripts/<nn>-<step>.jsonl` the Claude Code transcript of its conversation, which the swf runner
+//! copies there. `.hunt/` stays out of the file sync, so the folder is pulled on its own: when the session is opened,
 //! whenever the VM's status helper reports the record written (`relay_watch`; after every turn that ended with an older
-//! helper) and with the retrieval, before the remote side is dropped. The
-//! Factory tab then reads the pipeline from the local worktree (`read_pipeline`, `read_step`), also once the VM is gone.
+//! helper) and with the retrieval, before the remote side is dropped. The Factory tab then reads the pipeline from the
+//! local worktree (`read_pipeline`, `read_step`, `read_transcript`), also once the VM is gone.
 //! A pull never fails its caller: failures are logged, a VM without the folder yet copies nothing, and the pulls of a
 //! session run one after the other.
 
@@ -25,9 +26,12 @@ use crate::session::sync;
 pub const SWF_DIR: &str = ".hunt/swf";
 const PIPELINE_FILE: &str = "pipeline.json";
 const STEPS_DIR: &str = "steps";
+const TRANSCRIPTS_DIR: &str = "transcripts";
+const STEP_EXTENSION: &str = ".md";
+const TRANSCRIPT_EXTENSION: &str = ".jsonl";
 /// What a pull copies. rsync copies the files directly inside a listed folder (`--files-from` without `-r`), so the steps
-/// folder is listed on its own.
-const PULLED_PATHS: [&str; 2] = [".hunt/swf/", ".hunt/swf/steps/"];
+/// and transcripts folders are listed on their own.
+const PULLED_PATHS: [&str; 3] = [".hunt/swf/", ".hunt/swf/steps/", ".hunt/swf/transcripts/"];
 
 /// Per-session locks, so that overlapping pulls of a session run one after the other.
 static PULL_LOCKS: LazyLock<Mutex<HashMap<Uuid, Arc<tokio::sync::Mutex<()>>>>> = LazyLock::new(Default::default);
@@ -49,10 +53,12 @@ pub struct SwfPipelineFiles {
     pub pipeline: serde_json::Value,
     /// The step result files, ascending by run.
     pub steps: Vec<SwfStepFile>,
+    /// The transcript files of the runs' conversations, ascending by run.
+    pub transcripts: Vec<SwfStepFile>,
 }
 
-/// A file `steps/<nn>-<step>.md`: the body of the result the run `n` of `step` ended with; mirror of `SwfStepFile` in
-/// src/sessions/swf-pipeline.types.ts.
+/// A file `steps/<nn>-<step>.md` or `transcripts/<nn>-<step>.jsonl` of the run `n` of `step`: the body of the result it
+/// ended with or the transcript of its conversation; mirror of `SwfStepFile` in src/sessions/swf-pipeline.types.ts.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SwfStepFile {
@@ -117,33 +123,43 @@ pub fn read_pipeline(worktree: &Path) -> Result<Option<SwfPipelineFiles>, String
     let content = std::fs::read_to_string(&path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     let pipeline =
         serde_json::from_str(&content).map_err(|error| format!("failed to read {}: it is not valid JSON: {error}", path.display()))?;
-    let steps = step_files(&dir.join(STEPS_DIR))?.into_iter().map(|(_, file)| file).collect();
-    Ok(Some(SwfPipelineFiles { pipeline, steps }))
+    let steps = run_files(&dir.join(STEPS_DIR), STEP_EXTENSION)?.into_iter().map(|(_, file)| file).collect();
+    let transcripts = run_files(&dir.join(TRANSCRIPTS_DIR), TRANSCRIPT_EXTENSION)?.into_iter().map(|(_, file)| file).collect();
+    Ok(Some(SwfPipelineFiles { pipeline, steps, transcripts }))
 }
 
 /// The body of the step result the run `n` in `worktree` ended with; `None` without one.
 pub fn read_step(worktree: &Path, n: u32) -> Result<Option<String>, String> {
-    let steps = worktree.join(SWF_DIR).join(STEPS_DIR);
-    let Some((name, _)) = step_files(&steps)?.into_iter().find(|(_, file)| file.n == n) else {
+    read_run_file(&worktree.join(SWF_DIR).join(STEPS_DIR), STEP_EXTENSION, n)
+}
+
+/// The transcript of the conversation of the run `n` in `worktree`, as JSON lines; `None` without one.
+pub fn read_transcript(worktree: &Path, n: u32) -> Result<Option<String>, String> {
+    read_run_file(&worktree.join(SWF_DIR).join(TRANSCRIPTS_DIR), TRANSCRIPT_EXTENSION, n)
+}
+
+/// The content of the file `<nn>-<step><extension>` of the run `n` in the folder `dir`; `None` without one.
+fn read_run_file(dir: &Path, extension: &str, n: u32) -> Result<Option<String>, String> {
+    let Some((name, _)) = run_files(dir, extension)?.into_iter().find(|(_, file)| file.n == n) else {
         return Ok(None);
     };
-    let path = steps.join(name);
+    let path = dir.join(name);
     std::fs::read_to_string(&path).map(Some).map_err(|error| format!("failed to read {}: {error}", path.display()))
 }
 
-/// The step result files in the folder `steps` with their file names, ascending by run; a missing folder holds none, and
-/// files named otherwise are left out.
-fn step_files(steps: &Path) -> Result<Vec<(String, SwfStepFile)>, String> {
-    let entries = match std::fs::read_dir(steps) {
+/// The files `<nn>-<step><extension>` in the folder `dir` with their file names, ascending by run; a missing folder holds
+/// none, and files named otherwise are left out.
+fn run_files(dir: &Path, extension: &str) -> Result<Vec<(String, SwfStepFile)>, String> {
+    let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(format!("failed to list {}: {error}", steps.display())),
+        Err(error) => return Err(format!("failed to list {}: {error}", dir.display())),
     };
     let mut files = Vec::new();
     for entry in entries {
-        let entry = entry.map_err(|error| format!("failed to list {}: {error}", steps.display()))?;
+        let entry = entry.map_err(|error| format!("failed to list {}: {error}", dir.display()))?;
         let name = entry.file_name().to_string_lossy().into_owned();
-        if let Some(file) = parse_step_file(&name) {
+        if let Some(file) = parse_run_file(&name, extension) {
             files.push((name, file));
         }
     }
@@ -151,9 +167,9 @@ fn step_files(steps: &Path) -> Result<Vec<(String, SwfStepFile)>, String> {
     Ok(files)
 }
 
-/// The run and step a file `<nn>-<step>.md` holds the result of; `None` for any other name.
-fn parse_step_file(name: &str) -> Option<SwfStepFile> {
-    let stem = name.strip_suffix(".md")?;
+/// The run and step of a file `<nn>-<step><extension>`; `None` for any other name.
+fn parse_run_file(name: &str, extension: &str) -> Option<SwfStepFile> {
+    let stem = name.strip_suffix(extension)?;
     let (n, step) = stem.split_once('-')?;
     if step.is_empty() {
         return None;
@@ -175,12 +191,30 @@ mod tests {
 
     #[test]
     fn step_file_names_give_the_run_and_the_step() {
-        assert_eq!(parse_step_file("01-plan.md"), Some(SwfStepFile { n: 1, step: "plan".into() }));
-        assert_eq!(parse_step_file("12-human-review.md"), Some(SwfStepFile { n: 12, step: "human-review".into() }));
-        assert_eq!(parse_step_file("100-merge.md"), Some(SwfStepFile { n: 100, step: "merge".into() }));
-        for name in ["plan.md", "01-plan.txt", "x-plan.md", "01-.md", ".DS_Store", "01-plan"] {
-            assert_eq!(parse_step_file(name), None, "{name}");
+        assert_eq!(parse_run_file("01-plan.md", ".md"), Some(SwfStepFile { n: 1, step: "plan".into() }));
+        assert_eq!(parse_run_file("12-human-review.md", ".md"), Some(SwfStepFile { n: 12, step: "human-review".into() }));
+        assert_eq!(parse_run_file("100-merge.md", ".md"), Some(SwfStepFile { n: 100, step: "merge".into() }));
+        assert_eq!(parse_run_file("03-verify.jsonl", ".jsonl"), Some(SwfStepFile { n: 3, step: "verify".into() }));
+        for name in ["plan.md", "01-plan.txt", "x-plan.md", "01-.md", ".DS_Store", "01-plan", "01-plan.jsonl"] {
+            assert_eq!(parse_run_file(name, ".md"), None, "{name}");
         }
+    }
+
+    #[test]
+    fn the_pipeline_lists_the_transcripts_of_its_runs_and_reads_each() {
+        let dir = tempfile::tempdir().unwrap();
+        write(dir.path(), ".hunt/swf/pipeline.json", r#"{"step": "implement"}"#);
+        write(dir.path(), ".hunt/swf/transcripts/02-implement.jsonl", "{\"type\":\"user\"}\n");
+        write(dir.path(), ".hunt/swf/transcripts/01-plan.jsonl", "plan");
+        write(dir.path(), ".hunt/swf/transcripts/01-plan.md", "ignored");
+
+        let pipeline = read_pipeline(dir.path()).unwrap().unwrap();
+        let transcripts: Vec<(u32, &str)> = pipeline.transcripts.iter().map(|file| (file.n, file.step.as_str())).collect();
+        assert_eq!(transcripts, vec![(1, "plan"), (2, "implement")]);
+        assert!(pipeline.steps.is_empty());
+
+        assert_eq!(read_transcript(dir.path(), 2).unwrap().as_deref(), Some("{\"type\":\"user\"}\n"));
+        assert_eq!(read_transcript(dir.path(), 3).unwrap(), None);
     }
 
     #[test]

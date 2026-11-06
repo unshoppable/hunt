@@ -506,21 +506,27 @@ describe("Pipeline.recordPrompt", () => {
   it("records the turn at which the step's prompt went out", () => {
     const pipeline = pipelineAt("verify");
     expect(pipeline.isPromptPending).toBe(true);
-    pipeline.recordPrompt(1_000);
+    pipeline.recordPrompt(1_000, "acp-1");
     expect(pipeline.promptTurn).toBe(1_000);
     expect(pipeline.isPromptPending).toBe(false);
   });
 
+  it("names the conversation of the prompt on the current run", () => {
+    const pipeline = pipelineAt("verify");
+    pipeline.recordPrompt(1_000, "acp-1");
+    expect(pipeline.currentRun?.sessionId).toBe("acp-1");
+  });
+
   it("refuses a second prompt for the step", () => {
     const pipeline = pipelineAt("verify", { promptTurn: 1_000 });
-    expect(() => pipeline.recordPrompt(2_000)).toThrow("the prompt of the step verify was sent already");
+    expect(() => pipeline.recordPrompt(2_000, "acp-2")).toThrow("the prompt of the step verify was sent already");
     expect(pipeline.promptTurn).toBe(1_000);
   });
 
   it("refuses a prompt at a step of the poller, which has none", () => {
     const pipeline = pipelineAt("checks", { pullRequest: 31 });
     expect(pipeline.isPromptPending).toBe(false);
-    expect(() => pipeline.recordPrompt(0)).toThrow("the step checks has no prompt for the agent");
+    expect(() => pipeline.recordPrompt(0, "acp-1")).toThrow("the step checks has no prompt for the agent");
   });
 });
 

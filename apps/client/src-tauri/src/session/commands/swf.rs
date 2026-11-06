@@ -1,5 +1,6 @@
-//! The commands of the Factory tab: the pipeline record of a software-factory session and the results of its steps, read
-//! from `.hunt/swf/` of its local worktree (`session::swf`), which the pulls of the session keep up to date.
+//! The commands of the Factory tab: the pipeline record of a software-factory session, the results of its steps and the
+//! transcripts of their conversations, read from `.hunt/swf/` of its local worktree (`session::swf`), which the pulls of
+//! the session keep up to date.
 
 use tauri::AppHandle;
 use uuid::Uuid;
@@ -28,4 +29,15 @@ pub async fn read_swf_step(app: AppHandle, session_id: Uuid, n: u32) -> Result<O
         return Ok(None);
     }
     swf::read_step(&record.worktree_path, n)
+}
+
+/// The transcript of the conversation of the run `n` of the session `session_id` (`transcripts/<nn>-<step>.jsonl`), as
+/// JSON lines; `None` without one, or without a local worktree.
+#[tauri::command]
+pub async fn read_swf_transcript(app: AppHandle, session_id: Uuid, n: u32) -> Result<Option<String>, String> {
+    let record = store::find_session(&app, session_id)?;
+    if !record.worktree_path.is_dir() {
+        return Ok(None);
+    }
+    swf::read_transcript(&record.worktree_path, n)
 }

@@ -16,6 +16,7 @@ import { DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton, SaveDiagr
 import { DIAGRAM_TYPES, KINDS_BY_TYPE } from "../diagram-types.constants";
 import { addTable, emptyErd, serializeShapeDiagram } from "./erd-edit.utils";
 import { addEdge, addGroup, addNode, clearPositions, emptyDiagram, setBends, setPositions } from "./shape-edit.utils";
+import { placeWithoutOverlaps } from "./element-overlap.utils";
 import { decorateShapeFlow, hasManualChanges, hasManualLayout, layoutShapeDiagram, shapeNodeSize, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shape-diagram.utils";
 import { CHANGE_EDGE_COLOR, CrowFootDefs, EdgeBendsContext, SHAPE_EDGE_TYPES, SHAPE_NODE_TYPES } from "./ShapeNodes";
 import { parseShapeDiagram } from "./shape-schema.utils";
@@ -139,11 +140,13 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
     [diagram, isErd, setNodes, setEdges],
   );
 
-  // The flags follow the mouse and the selection without a new layout.
+  // The flags follow the mouse and the selection without a new layout. They go onto the nodes React Flow holds, which
+  // carry their measured size: fresh copies of the laid out nodes would count as unmeasured, and React Flow would
+  // unmount every edge until it measured them again, so each hover would route every edge anew.
   useEffect(() => {
-    const decorated = decorateShapeFlow(layoutRef.current.nodes, layoutRef.current.edges, { hoveredEdgeId, hoveredNodeId, selectedNodeId, selectedEdgeId }, isErd);
-    setNodes(decorated.nodes);
-    setEdges(decorated.edges);
+    const focus = { hoveredEdgeId, hoveredNodeId, selectedNodeId, selectedEdgeId };
+    setNodes((current) => decorateShapeFlow(current, layoutRef.current.edges, focus, isErd).nodes);
+    setEdges(decorateShapeFlow([], layoutRef.current.edges, focus, isErd).edges);
   }, [hoveredEdgeId, hoveredNodeId, selectedNodeId, selectedEdgeId, isErd, setNodes, setEdges]);
 
   /** Shows `next` at once and writes it to the diagram file after `WRITE_DELAY_MS`; the reload it triggers is recognised and skipped. */
@@ -211,23 +214,25 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
     select({ kind: "group", id: added.id }, true);
   };
 
-  /** Fixes every element where it is now, so the one just dragged stays where it was dropped. */
   /** Fixes the corners of the connection `edgeId` whose segment the user moved, or lets Hunt route it again. */
   const moveConnection = (edgeId: string, bends: ShapePosition[] | null) => {
     if (diagram) applyEdit(setBends(diagram, edgeId, bends));
   };
 
-  const keepPositions = () => {
+  /**
+   * Fixes every element where it is now, so the ones just dragged stay where they were dropped; dropped onto another
+   * element, they move aside to the nearest free spot.
+   */
+  const keepPositions = (droppedIds: ReadonlySet<string>) => {
     if (!diagram) return;
     const boundaries = new Map(nodes.filter((node) => node.type === "boundary").map((node) => [node.id, node.position]));
-    const positions = new Map(
-      nodes
-        .filter((node) => node.type !== "boundary")
-        .map((node) => {
-          const origin = node.parentId ? (boundaries.get(node.parentId) ?? { x: 0, y: 0 }) : { x: 0, y: 0 };
-          return [node.id, { x: origin.x + node.position.x, y: origin.y + node.position.y }];
-        }),
-    );
+    const boxes = nodes
+      .filter((node) => node.type !== "boundary")
+      .map((node) => {
+        const origin = node.parentId ? (boundaries.get(node.parentId) ?? { x: 0, y: 0 }) : { x: 0, y: 0 };
+        return { id: node.id, x: origin.x + node.position.x, y: origin.y + node.position.y, width: node.width ?? 0, height: node.height ?? 0 };
+      });
+    const positions = placeWithoutOverlaps([...boxes.filter((box) => !droppedIds.has(box.id)), ...boxes.filter((box) => droppedIds.has(box.id))]);
     applyEdit(setPositions(diagram, positions));
   };
 
@@ -354,11 +359,11 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
                 onNodeClick={(_event, node) => select({ kind: node.type === "boundary" ? "group" : "node", id: node.id })}
                 onEdgeClick={(_event, edge) => select({ kind: "edge", id: edge.id })}
                 onPaneClick={() => setSelection(null)}
-                onNodeDragStop={(_event, node) => {
+                onNodeDragStop={(_event, node, dropped) => {
                   // A press without a move keeps the automatic layout.
                   const before = layoutRef.current.nodes.find((candidate) => candidate.id === node.id)?.position;
                   if (before && before.x === node.position.x && before.y === node.position.y) return;
-                  keepPositions();
+                  keepPositions(new Set(dropped.map((candidate) => candidate.id)));
                 }}
                 onConnectEnd={connect}
                 fitView

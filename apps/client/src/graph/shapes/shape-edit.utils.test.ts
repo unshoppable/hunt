@@ -29,6 +29,13 @@ describe("elements", () => {
     expect(updateNode(next, "open", { parent: "nope" }).nodes[1].parent).toBe("shop");
   });
 
+  it("colors an element and drops the color again", () => {
+    const colored = updateNode(states, "open", { color: "violet" });
+    expect(colored.nodes[1].color).toBe("violet");
+    expect(updateNode(colored, "open", { label: "Opened" }).nodes[1].color).toBe("violet");
+    expect(updateNode(colored, "open", { color: null }).nodes[1]).toEqual({ id: "open", kind: "state", label: "Open" });
+  });
+
   it("removes an element with its connections", () => {
     const next = removeNode(states, "open");
     expect(next.nodes.map((node) => node.id)).toEqual(["start"]);

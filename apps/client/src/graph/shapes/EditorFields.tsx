@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
+import type { ShapeColor } from "./shape-diagram.types";
+import { COLOR_STYLE, SHAPE_COLORS } from "./shape-color.constants";
 
 /** The text fields and section headings shared by the editors beside a shape diagram (`TableEditor`, `ShapeElementEditor`). */
 export const INPUT = "h-7 w-full min-w-0 rounded-md border border-white/10 bg-(--surface-input) px-2 text-[13px] text-neutral-100 outline-none placeholder:text-neutral-500 focus:border-blue-400/70";
@@ -56,6 +58,22 @@ export function CommitTextarea({ value, onCommit, placeholder }: { value: string
         commitKeys(event, () => setDraft(value));
       }}
     />
+  );
+}
+
+/** The color of an element as a row of swatches, the first one for none; a click picks a color at once. */
+export function ColorField({ value, onChange }: { value?: ShapeColor; onChange: (color: ShapeColor | null) => void }) {
+  const swatch = (isOn: boolean) => `size-5 rounded-full border transition-shadow ${isOn ? "border-white ring-2 ring-blue-400/70" : "border-white/20 hover:border-white/60"}`;
+  return (
+    <div role="radiogroup" aria-label="Color" className="flex flex-col gap-1">
+      <span className="text-neutral-400">Color</span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <button type="button" role="radio" aria-checked={!value} title="No color" onClick={() => onChange(null)} className={`${swatch(!value)} bg-(--surface-input) bg-[linear-gradient(135deg,transparent_45%,rgb(163_163_163/0.7)_45%,rgb(163_163_163/0.7)_55%,transparent_55%)]`} />
+        {SHAPE_COLORS.map((color) => (
+          <button key={color} type="button" role="radio" aria-checked={value === color} title={color} onClick={() => onChange(color)} className={`${swatch(value === color)} ${COLOR_STYLE[color].swatch}`} />
+        ))}
+      </div>
+    </div>
   );
 }
 

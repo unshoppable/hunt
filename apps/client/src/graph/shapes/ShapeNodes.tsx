@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { createContext, memo, useContext, useDeferredValue, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   BaseEdge,
   EdgeLabelRenderer,
@@ -16,6 +16,7 @@ import {
 import type { ShapeChange, ShapeKind, TableColumn } from "./shape-diagram.types";
 import { EDGE_COLOR, EDGE_COLOR_HIGHLIGHTED, LABEL_HEIGHT, MAX_LABEL_WIDTH, orthogonalPath, pathMidpoint } from "../layout.utils";
 import { HANDLE_STYLE } from "../DiagramNodes";
+import { COLOR_STYLE } from "./shape-color.constants";
 import { isMovableSegment, moveSegment, routeAroundObstacles, routeThroughBends, type Obstacle } from "./edge-route.utils";
 import { TABLE_ROW_HEIGHT, columnPortId, crowMarker, tableHeaderHeight, tableRowCenterY, type BoundaryFlowNode, type CrowTone, type ShapeFlowEdge, type ShapeFlowNode } from "./shape-diagram.utils";
 
@@ -23,7 +24,8 @@ import { TABLE_ROW_HEIGHT, columnPortId, crowMarker, tableHeaderHeight, tableRow
  * Style contract of the shape diagrams, shared by every branch: the agent's file holds content only, Hunt draws
  * every element in the colors below, so the same diagram looks the same wherever it was generated. Boxes are
  * Tailwind classes, SVG shapes use the matching `fill-*`/`stroke-*` utilities; added and changed elements reuse the
- * green and amber of the dependency diagram (emerald for added files, amber for the outdated hint).
+ * green and amber of the dependency diagram (emerald for added files, amber for the outdated hint). An element the
+ * user colored takes that color's shades (`COLOR_STYLE`) instead of its kind's, keeping its kind's outline.
  */
 /** Fill and border of a box per element kind; external systems are dimmed and dashed. */
 const BOX_STYLE: Record<Exclude<ShapeKind, "person" | "database" | "queue" | "start" | "end" | "decision" | "table">, string> = {
@@ -33,6 +35,8 @@ const BOX_STYLE: Record<Exclude<ShapeKind, "person" | "database" | "queue" | "st
   state: "rounded-xl border-indigo-400/50 bg-indigo-500/15 text-neutral-100",
   action: "border-white/25 bg-white/6 text-neutral-100",
 };
+/** The outline a box keeps when it is colored. */
+const BOX_OUTLINE: Partial<Record<ShapeKind, string>> = { state: "rounded-xl", externalSystem: "border-dashed opacity-70" };
 const PERSON_STYLE = "border-sky-400/50 bg-sky-500/15 text-neutral-100";
 const PERSON_ICON_STYLE = "fill-sky-300/80";
 const DATABASE_STYLE = "fill-violet-500/15 stroke-violet-400/60";
@@ -90,7 +94,7 @@ function VerticalHandles() {
 
 /** A system, external system, container, state (rounded) or action (with its actor above the label) as a box. */
 export const BoxNodeView = memo(function BoxNodeView({ data }: NodeProps<ShapeFlowNode>) {
-  const style = BOX_STYLE[data.kind as keyof typeof BOX_STYLE] ?? BOX_STYLE.action;
+  const style = data.color ? `${COLOR_STYLE[data.color].box} text-neutral-100 ${BOX_OUTLINE[data.kind] ?? ""}` : (BOX_STYLE[data.kind as keyof typeof BOX_STYLE] ?? BOX_STYLE.action);
   return (
     <div className={`relative flex h-full w-full flex-col items-center justify-center rounded-lg border px-3 py-2 ${style} ${data.change ? CHANGE_RING[data.change] : ""}`}>
       <VerticalHandles />
@@ -108,10 +112,10 @@ export const BoxNodeView = memo(function BoxNodeView({ data }: NodeProps<ShapeFl
 /** A person: head and shoulders above the label. */
 export const PersonNodeView = memo(function PersonNodeView({ data }: NodeProps<ShapeFlowNode>) {
   return (
-    <div className={`relative flex h-full w-full flex-col items-center justify-center rounded-2xl border px-3 py-2 ${PERSON_STYLE} ${data.change ? CHANGE_RING[data.change] : ""}`}>
+    <div className={`relative flex h-full w-full flex-col items-center justify-center rounded-2xl border px-3 py-2 ${data.color ? `${COLOR_STYLE[data.color].box} text-neutral-100` : PERSON_STYLE} ${data.change ? CHANGE_RING[data.change] : ""}`}>
       <VerticalHandles />
       <ChangeTag change={data.change} />
-      <svg viewBox="0 0 24 24" className={`mb-1 size-6 shrink-0 ${PERSON_ICON_STYLE}`} aria-hidden="true">
+      <svg viewBox="0 0 24 24" className={`mb-1 size-6 shrink-0 ${data.color ? COLOR_STYLE[data.color].icon : PERSON_ICON_STYLE}`} aria-hidden="true">
         <circle cx="12" cy="7" r="4.5" />
         <path d="M3 22a9 9 0 0 1 18 0z" />
       </svg>
@@ -130,7 +134,7 @@ export const DatabaseNodeView = memo(function DatabaseNodeView({ data }: NodePro
     <div className={`relative h-full w-full ${data.change ? `rounded-xl ${CHANGE_RING[data.change]}` : ""}`}>
       <VerticalHandles />
       <ChangeTag change={data.change} />
-      <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} className={`absolute inset-0 ${DATABASE_STYLE}`} strokeWidth={SHAPE_STROKE} aria-hidden="true">
+      <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} className={`absolute inset-0 ${data.color ? COLOR_STYLE[data.color].svg : DATABASE_STYLE}`} strokeWidth={SHAPE_STROKE} aria-hidden="true">
         <path d={body} />
         <ellipse cx={width / 2} cy={CAP_RADIUS + inset} rx={rx} ry={CAP_RADIUS} fill="none" />
       </svg>
@@ -151,7 +155,7 @@ export const QueueNodeView = memo(function QueueNodeView({ data }: NodeProps<Sha
     <div className={`relative h-full w-full ${data.change ? `rounded-full ${CHANGE_RING[data.change]}` : ""}`}>
       <VerticalHandles />
       <ChangeTag change={data.change} />
-      <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} className={`absolute inset-0 ${QUEUE_STYLE}`} strokeWidth={SHAPE_STROKE} aria-hidden="true">
+      <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} className={`absolute inset-0 ${data.color ? COLOR_STYLE[data.color].svg : QUEUE_STYLE}`} strokeWidth={SHAPE_STROKE} aria-hidden="true">
         <path d={body} />
         <ellipse cx={width - CAP_RADIUS - inset} cy={height / 2} rx={CAP_RADIUS} ry={ry} fill="none" />
       </svg>
@@ -193,7 +197,7 @@ export const DecisionNodeView = memo(function DecisionNodeView({ data }: NodePro
     <div className={`relative h-full w-full ${data.change ? `rounded-xl ${CHANGE_RING[data.change]}` : ""}`}>
       <VerticalHandles />
       <ChangeTag change={data.change} />
-      <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} className={`absolute inset-0 ${DECISION_STYLE}`} strokeWidth={SHAPE_STROKE} strokeLinejoin="round" aria-hidden="true">
+      <svg viewBox={`0 0 ${width} ${height}`} width={width} height={height} className={`absolute inset-0 ${data.color ? COLOR_STYLE[data.color].svg : DECISION_STYLE}`} strokeWidth={SHAPE_STROKE} strokeLinejoin="round" aria-hidden="true">
         <polygon points={points} />
       </svg>
       <div className="absolute inset-y-0 flex items-center justify-center text-center text-neutral-100" style={{ left: width * 0.22, right: width * 0.22 }} title={data.description ? `${data.label}\n${data.description}` : data.label}>
@@ -250,14 +254,17 @@ function TableRow({ column, isLit }: { column: TableColumn; isLit: boolean }) {
 
 /**
  * An ERD table as a card: a header with the table's name, its description as a second line and the change tag, then
- * one row per column. Each row has an invisible handle on the left (incoming) and the right (outgoing), named by
+ * one row per column; a colored table has its border and header in that color. Each row has an invisible handle on the left (incoming) and the right (outgoing), named by
  * `columnPortId`, so a relationship joins the two columns it is on. The panel marks the selected table (the one in
  * the editor), the hovered one and fades the tables unrelated to the hovered one.
  */
 export const TableNodeView = memo(function TableNodeView({ id, data }: NodeProps<ShapeFlowNode>) {
   const columns = data.columns ?? [];
   const lit = new Set(data.litColumns ?? []);
-  const tone = TABLE_TONE[data.change ?? "none"];
+  // A change mark keeps its border, a color tints the header; each shows where the other leaves room.
+  const changeTone = TABLE_TONE[data.change ?? "none"];
+  const colorTone = data.color ? COLOR_STYLE[data.color] : null;
+  const tone = { card: data.change || !colorTone ? changeTone.card : colorTone.card, header: colorTone ? colorTone.header : changeTone.header };
   const ring = data.isSelected ? "ring-2 ring-blue-400/80" : data.isHovered ? "ring-1 ring-white/20" : "";
   return (
     <div
@@ -325,18 +332,33 @@ const POPOVER_GAP = 6;
 /** Opacity of an edge while another edge or an unrelated node is hovered. */
 const MUTED_OPACITY = 0.3;
 
-/** The elements a connection must go around, in flow coordinates; boundaries hold elements and are crossed. */
-function selectObstacles(state: ReactFlowState): Obstacle[] {
-  return [...state.nodeLookup.values()]
-    .filter((node) => node.type !== "boundary" && !node.hidden)
-    .map((node) => ({ ...node.internals.positionAbsolute, width: node.measured.width ?? node.width ?? 0, height: node.measured.height ?? node.height ?? 0 }));
+/**
+ * The elements the connection between `source` and `target` must go around, in flow coordinates; boundaries hold
+ * elements and are crossed. Null while elements are dragged that the connection does not end at: rerouting every
+ * connection on each move of the mouse is too slow, so only those of the dragged elements follow it right away.
+ */
+function selectRouteObstacles(source: string, target: string) {
+  return (state: ReactFlowState): Obstacle[] | null => {
+    const nodes = [...state.nodeLookup.values()];
+    const isOthersDragged = nodes.some((node) => node.dragging) && !state.nodeLookup.get(source)?.dragging && !state.nodeLookup.get(target)?.dragging;
+    if (isOthersDragged) return null;
+    return nodes
+      .filter((node) => node.type !== "boundary" && !node.hidden)
+      .map((node) => ({ ...node.internals.positionAbsolute, width: node.measured.width ?? node.width ?? 0, height: node.measured.height ?? node.height ?? 0 }));
+  };
 }
 
-function isSameObstacles(a: Obstacle[], b: Obstacle[]): boolean {
-  return a.length === b.length && a.every((obstacle, index) => {
-    const other = b[index];
-    return obstacle.x === other.x && obstacle.y === other.y && obstacle.width === other.width && obstacle.height === other.height;
-  });
+/** Equal when nothing moved, and while the selection is null, so a frozen connection keeps the elements from before. */
+function isSameRouteObstacles(a: Obstacle[] | null, b: Obstacle[] | null): boolean {
+  if (b === null) return true;
+  return (
+    a !== null &&
+    a.length === b.length &&
+    a.every((obstacle, index) => {
+      const other = b[index];
+      return obstacle.x === other.x && obstacle.y === other.y && obstacle.width === other.width && obstacle.height === other.height;
+    })
+  );
 }
 
 /** Saves the corners of a connection whose segment the user moved, or null to let Hunt route it again. */
@@ -349,15 +371,16 @@ function selectZoom(state: ReactFlowState): number {
   return state.transform[2];
 }
 
-/** While an element is dragged, ELK's routes no longer fit it. */
-function selectIsDragging(state: ReactFlowState): boolean {
-  return [...state.nodeLookup.values()].some((node) => node.dragging);
+/** While an element the connection ends at is dragged, ELK's route no longer fits it. */
+function selectIsEndDragged(source: string, target: string) {
+  return (state: ReactFlowState): boolean => Boolean(state.nodeLookup.get(source)?.dragging || state.nodeLookup.get(target)?.dragging);
 }
 
 /**
  * A connection through the corners the user fixed (`routeThroughBends`), else on ELK's orthogonal route, or, when it
- * has none (a manual layout) or an element is being dragged, on Hunt's own orthogonal route around every element
- * (`routeAroundObstacles`); React Flow's stepped path between the handles only when the elements leave no way. Every
+ * has none (a manual layout) or an element it ends at is being dragged, on Hunt's own orthogonal route around every
+ * element (`routeAroundObstacles`), which keeps its course while other elements are dragged; React Flow's stepped
+ * path between the handles while that route is still being worked out or the elements leave no way. Every
  * segment but the two at the handles can be dragged across its direction, which fixes the corners in the diagram; a
  * double click on one lets Hunt route the connection again. It is drawn brighter while it is hovered or lit by a hovered node and faded while another one is; an added or
  * changed connection keeps its change color. The markers come from the layout (arrowheads, or crow's feet for an
@@ -365,21 +388,34 @@ function selectIsDragging(state: ReactFlowState): boolean {
  * edge without either (an ERD relationship) shows its label only in the hover card, which floats above the label box
  * or the middle of the route while the mouse is on the edge or its label.
  */
-export function ShapeEdgeView({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerStart, markerEnd, selected }: EdgeProps<ShapeFlowEdge>) {
+export function ShapeEdgeView(props: EdgeProps<ShapeFlowEdge>) {
+  const { id, source: sourceId, target: targetId, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerStart, markerEnd, selected } = props;
   const [isLabelHovered, setIsLabelHovered] = useState(false);
-  const obstacles = useStore(selectObstacles, isSameObstacles);
-  const isDragging = useStore(selectIsDragging);
+  const obstacles = useStore(useMemo(() => selectRouteObstacles(sourceId, targetId), [sourceId, targetId]), isSameRouteObstacles);
+  const isEndDragged = useStore(useMemo(() => selectIsEndDragged(sourceId, targetId), [sourceId, targetId]));
   const zoom = useStore(selectZoom);
   const saveBends = useContext(EdgeBendsContext);
   const points = data?.points;
   const bends = data?.bends;
-  const isOnElkRoute = !bends && Boolean(points && points.length >= 2) && !isDragging;
+  const isOnElkRoute = !bends && Boolean(points && points.length >= 2) && !isEndDragged;
+  const ends = useMemo(
+    () => ({ source: { x: sourceX, y: sourceY, side: sourcePosition }, target: { x: targetX, y: targetY, side: targetPosition } }),
+    [sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition],
+  );
+  // Routing around the elements takes milliseconds per connection, too long for every move of a dragged element with
+  // many connections. It runs in a deferred render that a newer move restarts; meanwhile the connection keeps its route
+  // while its ends stay put and takes React Flow's stepped path while they move.
+  const routing = useMemo(() => ({ ends, obstacles }), [ends, obstacles]);
+  const deferredRouting = useDeferredValue(routing);
+  const routed = useMemo(
+    () => !bends && !isOnElkRoute && deferredRouting.obstacles && routeAroundObstacles(deferredRouting.ends.source, deferredRouting.ends.target, deferredRouting.obstacles),
+    [bends, isOnElkRoute, deferredRouting],
+  );
   const route = useMemo(() => {
-    const source = { x: sourceX, y: sourceY, side: sourcePosition };
-    const target = { x: targetX, y: targetY, side: targetPosition };
-    if (bends) return routeThroughBends(source, target, bends);
-    return isOnElkRoute && points ? points : routeAroundObstacles(source, target, obstacles);
-  }, [bends, isOnElkRoute, points, sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition, obstacles]);
+    if (bends) return routeThroughBends(ends.source, ends.target, bends);
+    if (isOnElkRoute && points) return points;
+    return routed && deferredRouting.ends === ends ? routed : null;
+  }, [bends, isOnElkRoute, points, ends, routed, deferredRouting]);
   /** The course while a segment is dragged, kept after the drop until the saved bends come back in `data`. */
   const [draft, setDraft] = useState<{ points: XYPosition[]; bends: XYPosition[] | undefined } | null>(null);
   /** Set by a drag, so the click that ends it does not open the editor. */

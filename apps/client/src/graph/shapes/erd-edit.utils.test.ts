@@ -100,5 +100,7 @@ describe("serializeShapeDiagram", () => {
     expect(parsed.diagram).toEqual(erd);
     expect(serializeShapeDiagram(parsed.diagram)).toBe(text);
     expect(JSON.parse(serializeShapeDiagram(emptyErd()))).toEqual({ type: "erd", nodes: [], edges: [] });
+    const colored: ShapeDiagram = { ...erd, nodes: erd.nodes.map((node, index) => (index ? node : { ...node, color: "cyan" as const })) };
+    expect(parseShapeDiagram(JSON.parse(serializeShapeDiagram(colored)), "erd").diagram).toEqual(colored);
   });
 });

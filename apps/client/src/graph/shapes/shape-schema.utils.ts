@@ -1,6 +1,7 @@
 import type { ShapeDiagramType } from "../../common/diagram/diagram.types";
 import type { Cardinality, ShapeChange, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeNode, ShapePosition, TableColumn } from "./shape-diagram.types";
 import { KINDS_BY_TYPE } from "../diagram-types.constants";
+import { SHAPE_COLORS, isShapeColor } from "./shape-color.constants";
 
 export type ParsedShapeDiagram = {
   diagram: ShapeDiagram;
@@ -61,7 +62,7 @@ function parseColumn(value: unknown): TableColumn | undefined {
  * saved elsewhere) against the schema and keeps whatever is usable, so a sloppy agent output still renders while the
  * panel lists what was wrong. A file of another type, or no object at all, yields an empty diagram. Nodes without a
  * valid id, label or kind, duplicate ids, tables without a usable column and edges whose endpoints or columns do not
- * exist are dropped; an unknown `parent`, `position` or `change` is cleared. A missing label on a transition or on an
+ * exist are dropped; an unknown `parent`, `position`, `color` or `change` is cleared. A missing label on a transition or on an
  * edge leaving a decision is reported but the edge stays.
  */
 export function parseShapeDiagram(value: unknown, expected: ShapeDiagramType, file = `${expected}.react-flow.json`): ParsedShapeDiagram {
@@ -158,6 +159,13 @@ export function parseShapeDiagram(value: unknown, expected: ShapeDiagramType, fi
         node.position = position;
       } else {
         problems.push(`Node "${raw.id}" has the position ${JSON.stringify(raw.position)} instead of numbers \`x\` and \`y\`; cleared.`);
+      }
+    }
+    if (raw.color !== undefined) {
+      if (isShapeColor(raw.color)) {
+        node.color = raw.color;
+      } else {
+        problems.push(`Node "${raw.id}" has the color ${JSON.stringify(raw.color)} instead of one of ${SHAPE_COLORS.join(", ")}; cleared.`);
       }
     }
     if (raw.change !== undefined) {

@@ -2,6 +2,7 @@ import type { Edge, Node, XYPosition } from "@xyflow/react";
 import type { Cardinality, ShapeChange, ShapeDiagram, ShapeGroup, ShapeKind, ShapeNode } from "./shape-diagram.types";
 import type { LayoutInput, LayoutNode, LayoutPort, LayoutSpacing } from "../layout.utils";
 import { GROUP_PADDING as BOUNDARY_PADDING, edgeMarker, layoutGraph } from "../layout.utils";
+import { placeWithoutOverlaps } from "./element-overlap.utils";
 
 /**
  * The style contract of the shape diagrams: Hunt sizes every element from its content with these constants, so a
@@ -197,7 +198,8 @@ export function hasManualChanges(diagram: ShapeDiagram): boolean {
 
 /**
  * Where every element and boundary goes. ELK lays out the whole diagram; in a manual layout each placed element moves
- * to its `position`, the others keep ELK's place, and every boundary is fitted around its elements again. Shape
+ * to its `position`, the others keep ELK's place, an element that overlaps another moves aside (`placeWithoutOverlaps`)
+ * and every boundary is fitted around its elements again. Shape
  * positions are relative to their boundary, like React Flow expects for a `parentId`.
  */
 function placeElements(
@@ -211,7 +213,7 @@ function placeElements(
     return { shapes: new Map(diagram.nodes.map((node) => [node.id, positions.get(node.id) ?? { x: 0, y: 0 }])), boundaries };
   }
 
-  const absolute = new Map(
+  const wanted = new Map(
     diagram.nodes.map((node) => {
       if (node.position) return [node.id, node.position];
       const relative = positions.get(node.id) ?? { x: 0, y: 0 };
@@ -219,6 +221,10 @@ function placeElements(
       return [node.id, { x: origin.x + relative.x, y: origin.y + relative.y }];
     }),
   );
+  // ELK's places ignore the placed elements, and a table grows with its columns: whatever overlaps moves aside, the
+  // elements without a place of their own first.
+  const ordered = [...diagram.nodes.filter((node) => node.position), ...diagram.nodes.filter((node) => !node.position)];
+  const absolute = placeWithoutOverlaps(ordered.map((node) => ({ id: node.id, ...(wanted.get(node.id) ?? { x: 0, y: 0 }), ...shapeNodeSize(node) })));
   for (const [groupId, boundary] of boundaries) {
     const members = diagram.nodes.filter((node) => node.parent === groupId);
     if (!members.length) continue;

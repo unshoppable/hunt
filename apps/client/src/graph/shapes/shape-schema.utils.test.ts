@@ -163,6 +163,19 @@ describe("parseShapeDiagram", () => {
     expect(parsed.problems).toHaveLength(3);
   });
 
+  it("keeps a color of the palette and clears any other", () => {
+    const parsed = parseShapeDiagram(
+      {
+        type: "states",
+        nodes: [{ id: "a", kind: "state", label: "A", color: "pink" }, { id: "b", kind: "state", label: "B", color: "#ff0000" }],
+        edges: [{ source: "a", target: "b", label: "go" }],
+      },
+      "states",
+    );
+    expect(parsed.diagram.nodes.map((node) => node.color)).toEqual(["pink", undefined]);
+    expect(parsed.problems).toEqual([expect.stringContaining('Node "b" has the color "#ff0000"')]);
+  });
+
   it("keeps the bends of a connection with at least two numeric points and clears any other", () => {
     const nodes = [{ id: "a", kind: "state", label: "A" }, { id: "b", kind: "state", label: "B" }, { id: "c", kind: "state", label: "C" }];
     const bends = [{ x: 10, y: 0 }, { x: 10, y: 50 }];

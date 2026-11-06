@@ -1,4 +1,4 @@
-import type { Cardinality, ShapeChange, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeKind, ShapeNode, ShapePosition } from "./shape-diagram.types";
+import type { Cardinality, ShapeChange, ShapeColor, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeKind, ShapeNode, ShapePosition } from "./shape-diagram.types";
 import { tableIdFor } from "./erd-edit.utils";
 import { shapeEdgeId } from "./shape-diagram.utils";
 
@@ -9,7 +9,7 @@ import { shapeEdgeId } from "./shape-diagram.utils";
  */
 
 /** The fields of an element the editor changes; an empty text and a null drop the field. */
-export type NodePatch = { label?: string; description?: string; kind?: ShapeKind; parent?: string | null; actor?: string; change?: ShapeChange | null };
+export type NodePatch = { label?: string; description?: string; kind?: ShapeKind; parent?: string | null; actor?: string; color?: ShapeColor | null; change?: ShapeChange | null };
 export type EdgePatch = { label?: string; description?: string; change?: ShapeChange | null; cardinality?: { source: Cardinality; target: Cardinality } };
 export type GroupPatch = { label?: string; change?: ShapeChange | null };
 
@@ -51,6 +51,11 @@ export function updateNode(diagram: ShapeDiagram, id: string, patch: NodePatch):
         delete next.parent;
       } else if (patch.parent !== undefined && groupIds.has(patch.parent)) {
         next.parent = patch.parent;
+      }
+      if (patch.color === null) {
+        delete next.color;
+      } else if (patch.color) {
+        next.color = patch.color;
       }
       setChange(next, patch.change);
       return next;

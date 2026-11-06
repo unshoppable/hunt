@@ -9,6 +9,9 @@ export type TableColumn = { name: string; type: string; isPrimaryKey?: boolean; 
 /** What the session did to an element: Hunt highlights added and changed elements, everything else is the unchanged context. */
 export type ShapeChange = "added" | "changed";
 
+/** A color the user gives elements to segment the diagram, e.g. the tables of one domain; Hunt owns the shades. */
+export type ShapeColor = "blue" | "cyan" | "green" | "violet" | "pink" | "red" | "orange" | "gray";
+
 /** Top-left corner of an element on the canvas, in absolute diagram coordinates. */
 export type ShapePosition = { x: number; y: number };
 
@@ -16,7 +19,8 @@ export type ShapePosition = { x: number; y: number };
  * One element of a shape diagram. `id` is a stable kebab-case id derived from the name, so the same element has the same
  * id on every branch; `description` is the second line under the label (a container's technology, a system's purpose);
  * `parent` names the group the element sits in; `actor` is who performs an action; `columns` are the rows of a table;
- * `position` is where the user placed it, absent while ELK lays the element out.
+ * `position` is where the user placed it, absent while ELK lays the element out; `color` segments it, absent for the
+ * default look.
  */
 export type ShapeNode = {
   id: string;
@@ -27,6 +31,7 @@ export type ShapeNode = {
   actor?: string;
   columns?: TableColumn[];
   position?: ShapePosition;
+  color?: ShapeColor;
   change?: ShapeChange;
 };
 

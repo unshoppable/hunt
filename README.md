@@ -613,12 +613,16 @@ A shape diagram is `.hunt/diagrams/<type>.react-flow.json` (`c4-container.react-
 boundary groups, and edges with a label, a description, the ERD's columns and cardinalities, plus a `change` mark on
 everything the session added or altered. The file holds content and, once someone dragged an element, the `position`
 of every element: shapes, colors and sizes are Hunt's (`ShapeNodes.tsx`, `shape-diagram.utils.ts`), ELK lays out
-every element without a position, and a manual layout routes its edges orthogonally around every element, keeping
-some distance where there is room (`graph/shapes/edge-route.utils.ts`). Dragging a segment of an edge moves it across
+every element without a position, an element that overlaps another (or is dropped onto it) moves aside to the nearest
+free spot (`graph/shapes/element-overlap.utils.ts`), and a manual layout routes its edges orthogonally around every
+element, keeping some distance where there is room (`graph/shapes/edge-route.utils.ts`); while an element is dragged,
+only its own edges follow it, rerouted in a deferred render. Dragging a segment of an edge moves it across
 its direction and stores the edge's corners as `bends`; a double click on it lets Hunt route it again, and
 *Auto-layout* drops the positions and bends again. Every shape diagram is editable in the tab: a click on an element, a
 connection or a boundary label opens its editor (`ShapeElementEditor.tsx`, the ERD's tables `TableEditor.tsx`; the
-edits are `shape-edit.utils.ts` and `erd-edit.utils.ts`), the toolbar adds elements and boundaries, and a drag from
+edits are `shape-edit.utils.ts` and `erd-edit.utils.ts`), where a row of swatches gives the element one of eight
+`color`s to segment the diagram, e.g. the tables of one domain (`shape-color.constants.ts`; Hunt owns the shades),
+the toolbar adds elements and boundaries, and a drag from
 the dot under an element connects it to the element it is dropped on. *Save…* writes a generated diagram into the
 repository, into one of the folders the pattern of *Settings → Architecture* names (`apps/*/docs/diagrams` by
 default, a `*` segment standing for every subfolder; `graph/diagram-save.utils.ts`), as `<name>.react-flow.json`, and

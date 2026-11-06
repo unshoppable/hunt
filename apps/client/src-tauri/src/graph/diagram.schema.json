@@ -79,6 +79,10 @@
           "properties": { "x": { "type": "number" }, "y": { "type": "number" } },
           "description": "Top-left corner of the element in absolute diagram coordinates, set when someone placed it by hand in the Architecture tab. Keep it unchanged for an element that stays and leave it out for a new one; Hunt places elements without a position automatically."
         },
+        "color": {
+          "enum": ["blue", "cyan", "green", "violet", "pink", "red", "orange", "gray"],
+          "description": "Color that segments the diagram, e.g. one per domain for the tables of an ERD; Hunt owns the shades. Keep it unchanged for an element that stays and leave it out unless someone asked for a segmentation."
+        },
         "change": { "$ref": "#/$defs/change" }
       },
       "if": { "properties": { "kind": { "const": "table" } } },

@@ -53,25 +53,27 @@ export function routeAroundObstacles(source: RouteEnd, target: RouteEnd, obstacl
  * around all of `obstacles`. Returns the grid points of the cheapest way, or null when there is none.
  */
 function searchGrid(start: XYPosition, end: XYPosition, startDirection: number, endDirection: number, obstacles: Obstacle[], shaping: Obstacle[]): XYPosition[] | null {
-  const boxes = obstacles.map((obstacle) => padded(obstacle, CLEARANCE));
-  const elements = obstacles.map((obstacle) => padded(obstacle, 0));
   const xs = gridLines(start.x, end.x, shaping.map((obstacle) => [obstacle.x, obstacle.x + obstacle.width]));
   const ys = gridLines(start.y, end.y, shaping.map((obstacle) => [obstacle.y, obstacle.y + obstacle.height]));
   const columns = xs.length;
   const cellCount = columns * ys.length;
   const startCell = ys.indexOf(start.y) * columns + xs.indexOf(start.x);
   const endCell = ys.indexOf(end.y) * columns + xs.indexOf(end.x);
-  const isFree = (x: number, y: number) => {
-    for (const box of boxes) if (isInside(box, x, y)) return false;
-    return true;
-  };
+  // A step along a row or a column only comes closer than `COMFORT` to the elements whose padded box that line
+  // crosses, and only those can block it, so each step looks at a handful of elements instead of all of them.
+  const near = obstacles.map((obstacle) => ({ element: padded(obstacle, 0), box: padded(obstacle, CLEARANCE), reach: padded(obstacle, COMFORT) }));
+  const rowNear = ys.map((y) => near.filter(({ reach }) => y > reach.top && y < reach.bottom));
+  const columnNear = xs.map((x) => near.filter(({ reach }) => x > reach.left && x < reach.right));
   // Whether a cell lies outside every element (0 not yet known), and the cost of the step to the cell on the right
   // (`2 * cell`) and below (`2 * cell + 1`): NaN not yet known, Infinity when it crosses an element. The search asks for
   // the same cells and steps many times, so each is worked out once.
   const freeCells = new Int8Array(cellCount);
   const stepCosts = new Float64Array(cellCount * 2).fill(NaN);
   const isFreeCell = (cell: number) => {
-    if (!freeCells[cell]) freeCells[cell] = isFree(xs[cell % columns], ys[Math.floor(cell / columns)]) ? 1 : -1;
+    if (!freeCells[cell]) {
+      const [x, y] = [xs[cell % columns], ys[Math.floor(cell / columns)]];
+      freeCells[cell] = rowNear[Math.floor(cell / columns)].some(({ box }) => isInside(box, x, y)) ? -1 : 1;
+    }
     return freeCells[cell] > 0;
   };
   /**
@@ -84,17 +86,29 @@ function searchGrid(start: XYPosition, end: XYPosition, startDirection: number, 
     if (Number.isNaN(stepCosts[key])) {
       const neighbour = isDown ? cell + columns : cell + 1;
       const [x1, y1, x2, y2] = [xs[cell % columns], ys[Math.floor(cell / columns)], xs[neighbour % columns], ys[Math.floor(neighbour / columns)]];
-      if (!isFreeCell(cell) || !isFreeCell(neighbour) || !isFree((x1 + x2) / 2, (y1 + y2) / 2)) {
+      const candidates = isDown ? columnNear[cell % columns] : rowNear[Math.floor(cell / columns)];
+      if (!isFreeCell(cell) || !isFreeCell(neighbour) || candidates.some(({ box }) => isInside(box, (x1 + x2) / 2, (y1 + y2) / 2))) {
         stepCosts[key] = Infinity;
       } else {
         let distance = COMFORT;
-        for (const element of elements) distance = Math.min(distance, distanceToSegment(element, x1, y1, x2, y2));
+        for (const { element } of candidates) distance = Math.min(distance, distanceToSegment(element, x1, y1, x2, y2));
         stepCosts[key] = (x2 - x1 + y2 - y1) * (1 + (CLOSENESS_COST * (COMFORT - distance)) / (COMFORT - CLEARANCE));
       }
     }
     return stepCosts[key];
   };
-  const remaining = (cell: number) => Math.abs(xs[cell % columns] - end.x) + Math.abs(ys[Math.floor(cell / columns)] - end.y);
+  /**
+   * Lower bound of what is left from `cell`, entered in `direction`: the distance to the end and the bends it takes
+   * at least to enter the end in `endDirection` (none straight ahead, one from the side, two otherwise). Among states
+   * of the same bound the one further along goes first, so the search does not widen over a row of equal ways.
+   */
+  const remaining = (cell: number, direction: number, spent: number) => {
+    const dx = end.x - xs[cell % columns];
+    const dy = end.y - ys[Math.floor(cell / columns)];
+    const isAhead = cell === endCell || (dx * DY[endDirection] === dy * DX[endDirection] && dx * DX[endDirection] + dy * DY[endDirection] > 0);
+    const bends = direction === endDirection ? (isAhead ? 0 : 2) : direction === (endDirection + 2) % 4 ? 2 : 1;
+    return Math.abs(dx) + Math.abs(dy) + (cell === endCell ? 0 : bends * BEND_COST) - spent * 1e-6;
+  };
 
   // A state is a cell entered in one of the four directions, so a bend can cost more than its length.
   const cost = new Float64Array(cellCount * 4).fill(Infinity);
@@ -102,7 +116,7 @@ function searchGrid(start: XYPosition, end: XYPosition, startDirection: number, 
   const open = new MinHeap();
   const startState = startCell * 4 + startDirection;
   cost[startState] = 0;
-  open.push(startState, remaining(startCell));
+  open.push(startState, remaining(startCell, startDirection, 0));
   let goal = -1;
   while (open.size) {
     const state = open.pop();
@@ -131,7 +145,7 @@ function searchGrid(start: XYPosition, end: XYPosition, startDirection: number, 
       if (nextCost >= cost[nextState]) continue;
       cost[nextState] = nextCost;
       previous[nextState] = state;
-      open.push(nextState, nextCost + remaining(nextCell));
+      open.push(nextState, nextCost + remaining(nextCell, next, nextCost));
     }
   }
   if (goal < 0) return null;

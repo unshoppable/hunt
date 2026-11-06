@@ -3,10 +3,11 @@ import { DANGER_BUTTON_XS, GHOST_BUTTON_XS, ICON_BUTTON_XS } from "../../ui/butt
 import { confirmDestructive } from "../../ui/confirm.utils";
 import { CloseIcon, PlusIcon, TrashIcon } from "../../ui/Icons";
 import { addColumn, moveColumn, relationshipsOf, removeColumn, removeTable, updateColumn, updateTable } from "./erd-edit.utils";
-import { CommitInput, CommitTextarea, INPUT, SECTION_LABEL } from "./EditorFields";
+import { ColorField, CommitInput, CommitTextarea, INPUT, SECTION_LABEL } from "./EditorFields";
+import { updateNode } from "./shape-edit.utils";
 
 /**
- * The editor of one ERD table beside the canvas: name, description and the columns with their types and key
+ * The editor of one ERD table beside the canvas: name, description, color and the columns with their types and key
  * flags, plus the relationships the table takes part in. Every field commits on blur or Enter (Escape reverts) and
  * hands the changed diagram to `onChange`, which the panel shows at once and writes to the diagram file. Removing a
  * column or the table asks first when relationships go with it.
@@ -61,6 +62,7 @@ export function TableEditor({
           <span className="text-neutral-400">Description</span>
           <CommitTextarea value={table.description ?? ""} onCommit={(description) => onChange(updateTable(diagram, table.id, { description }))} placeholder="What the table holds" />
         </label>
+        <ColorField value={table.color} onChange={(color) => onChange(updateNode(diagram, table.id, { color }))} />
 
         <section className="flex flex-col gap-1.5">
           <div className="flex items-center">

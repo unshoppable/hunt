@@ -4,7 +4,7 @@ import { confirmDestructive } from "../../ui/confirm.utils";
 import { Dropdown } from "../../ui/Dropdown";
 import { CloseIcon, TrashIcon } from "../../ui/Icons";
 import { KINDS_BY_TYPE } from "../diagram-types.constants";
-import { CommitInput, CommitTextarea, INPUT, SECTION_LABEL } from "./EditorFields";
+import { ColorField, CommitInput, CommitTextarea, INPUT, SECTION_LABEL } from "./EditorFields";
 import { shapeEdgeId } from "./shape-diagram.utils";
 import { removeEdge, removeGroup, removeNode, updateEdge, updateGroup, updateNode } from "./shape-edit.utils";
 
@@ -105,6 +105,7 @@ export function ShapeElementEditor({
             />
           </Field>
         ) : null}
+        {node.kind !== "start" && node.kind !== "end" ? <ColorField value={node.color} onChange={(color) => onChange(updateNode(diagram, node.id, { color }))} /> : null}
         <ChangeField value={node.change} onChange={(change) => onChange(updateNode(diagram, node.id, { change }))} />
       </EditorFrame>
     );

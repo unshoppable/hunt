@@ -613,8 +613,10 @@ A shape diagram is `.hunt/diagrams/<type>.react-flow.json` (`c4-container.react-
 boundary groups, and edges with a label, a description, the ERD's columns and cardinalities, plus a `change` mark on
 everything the session added or altered. The file holds content and, once someone dragged an element, the `position`
 of every element: shapes, colors and sizes are Hunt's (`ShapeNodes.tsx`, `shape-diagram.utils.ts`), ELK lays out
-every element without a position, and a manual layout draws its edges as stepped paths between the handles until
-*Auto-layout* drops the positions again. Every shape diagram is editable in the tab: a click on an element, a
+every element without a position, and a manual layout routes its edges orthogonally around every element, keeping
+some distance where there is room (`graph/shapes/edge-route.utils.ts`). Dragging a segment of an edge moves it across
+its direction and stores the edge's corners as `bends`; a double click on it lets Hunt route it again, and
+*Auto-layout* drops the positions and bends again. Every shape diagram is editable in the tab: a click on an element, a
 connection or a boundary label opens its editor (`ShapeElementEditor.tsx`, the ERD's tables `TableEditor.tsx`; the
 edits are `shape-edit.utils.ts` and `erd-edit.utils.ts`), the toolbar adds elements and boundaries, and a drag from
 the dot under an element connects it to the element it is dropped on. *Save…* writes a generated diagram into the

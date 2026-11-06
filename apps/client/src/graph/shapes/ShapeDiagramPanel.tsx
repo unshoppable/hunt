@@ -15,9 +15,9 @@ import { errorText } from "../../ui/error-text.utils";
 import { DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton, SaveDiagramButton } from "../DiagramToolbar";
 import { DIAGRAM_TYPES, KINDS_BY_TYPE } from "../diagram-types.constants";
 import { addTable, emptyErd, serializeShapeDiagram } from "./erd-edit.utils";
-import { addEdge, addGroup, addNode, clearPositions, emptyDiagram, setPositions } from "./shape-edit.utils";
-import { decorateShapeFlow, hasManualLayout, layoutShapeDiagram, shapeNodeSize, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shape-diagram.utils";
-import { CHANGE_EDGE_COLOR, CrowFootDefs, SHAPE_EDGE_TYPES, SHAPE_NODE_TYPES } from "./ShapeNodes";
+import { addEdge, addGroup, addNode, clearPositions, emptyDiagram, setBends, setPositions } from "./shape-edit.utils";
+import { decorateShapeFlow, hasManualChanges, hasManualLayout, layoutShapeDiagram, shapeNodeSize, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shape-diagram.utils";
+import { CHANGE_EDGE_COLOR, CrowFootDefs, EdgeBendsContext, SHAPE_EDGE_TYPES, SHAPE_NODE_TYPES } from "./ShapeNodes";
 import { parseShapeDiagram } from "./shape-schema.utils";
 import { KIND_NAMES, ShapeElementEditor, type ShapeSelection } from "./ShapeElementEditor";
 import { TableEditor } from "./TableEditor";
@@ -212,6 +212,11 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
   };
 
   /** Fixes every element where it is now, so the one just dragged stays where it was dropped. */
+  /** Fixes the corners of the connection `edgeId` whose segment the user moved, or lets Hunt route it again. */
+  const moveConnection = (edgeId: string, bends: ShapePosition[] | null) => {
+    if (diagram) applyEdit(setBends(diagram, edgeId, bends));
+  };
+
   const keepPositions = () => {
     if (!diagram) return;
     const boundaries = new Map(nodes.filter((node) => node.type === "boundary").map((node) => [node.id, node.position]));
@@ -240,7 +245,7 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
   };
 
   const selectedNode = diagram && selection?.kind === "node" ? diagram.nodes.find((node) => node.id === selection.id) : undefined;
-  const isManual = diagram ? hasManualLayout(diagram) : false;
+  const hasManualEdits = diagram ? hasManualChanges(diagram) : false;
   const isOutdated = Boolean(diagram) && Boolean(status?.isOutdated);
   const generatedAt = status?.generatedAt ? new Date(status.generatedAt).toLocaleString() : null;
   const hint = isGeneratingGraph
@@ -296,8 +301,8 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
             </>
           )
         ) : null}
-        {isManual ? (
-          <button type="button" onClick={() => diagram && applyEdit(clearPositions(diagram))} title="Drop the positions set by hand and lay the diagram out automatically" className={SECONDARY_BUTTON_XS}>
+        {hasManualEdits ? (
+          <button type="button" onClick={() => diagram && applyEdit(clearPositions(diagram))} title="Drop the positions and connection courses set by hand and lay the diagram out automatically" className={SECONDARY_BUTTON_XS}>
             Auto-layout
           </button>
         ) : null}
@@ -327,6 +332,7 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
             </div>
           ) : null}
           <ReactFlowProvider key={`${layoutVersion}:${zoomScale}`}>
+            <EdgeBendsContext.Provider value={moveConnection}>
             {diagram?.nodes.length ? (
               <ReactFlow
                 nodes={nodes}
@@ -376,6 +382,7 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
             ) : diagram === undefined ? null : (
               <div className="flex h-full items-center justify-center p-6 text-center text-sm text-neutral-500">{emptyText}</div>
             )}
+            </EdgeBendsContext.Provider>
           </ReactFlowProvider>
         </div>
         {diagram && selection ? (
@@ -408,7 +415,9 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
           {isErd ? `${diagram?.nodes.length ?? 0} tables · ${diagram?.edges.length ?? 0} relationships` : `${diagram?.nodes.length ?? 0} elements · ${diagram?.edges.length ?? 0} connections`}
         </span>
         {diagram?.nodes.length && !selection ? (
-          <span className="shrink-0">{isErd ? "Click a table to edit it, drag it to move it" : "Click to edit, drag to move, drag from the dot below an element to connect it"}</span>
+          <span className="shrink-0">{isErd
+              ? "Click a table to edit it, drag it or a line to move it"
+              : "Click to edit, drag an element or a line to move it, drag from the dot below an element to connect it"}</span>
         ) : null}
         {problems.length ? (
           <button type="button" onClick={() => setShowProblems((value) => !value)} className="shrink-0 text-amber-300/90 hover:text-amber-200">

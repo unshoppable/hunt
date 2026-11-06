@@ -142,7 +142,7 @@ export function setPositions(diagram: ShapeDiagram, positions: ReadonlyMap<strin
   };
 }
 
-/** Drops every element's position, so ELK lays the diagram out again. */
+/** Drops every element's position and every connection's bends, so ELK lays the diagram out again. */
 export function clearPositions(diagram: ShapeDiagram): ShapeDiagram {
   return {
     ...diagram,
@@ -151,7 +151,25 @@ export function clearPositions(diagram: ShapeDiagram): ShapeDiagram {
       const { position: _position, ...rest } = node;
       return rest;
     }),
+    edges: diagram.edges.map(withoutBends),
   };
+}
+
+/** Fixes the course of the connection whose `shapeEdgeId` is `id` at `bends`, rounded to whole pixels; null lets Hunt route it again. */
+export function setBends(diagram: ShapeDiagram, id: string, bends: ShapePosition[] | null): ShapeDiagram {
+  return {
+    ...diagram,
+    edges: diagram.edges.map((edge) => {
+      if (shapeEdgeId(diagram, edge) !== id) return edge;
+      return bends ? { ...edge, bends: bends.map(roundPosition) } : withoutBends(edge);
+    }),
+  };
+}
+
+function withoutBends(edge: ShapeEdge): ShapeEdge {
+  if (!edge.bends) return edge;
+  const { bends: _bends, ...rest } = edge;
+  return rest;
 }
 
 function takenIds(diagram: ShapeDiagram): string[] {

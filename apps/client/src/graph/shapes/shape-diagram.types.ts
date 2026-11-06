@@ -38,7 +38,8 @@ export type Cardinality = "one" | "many";
 /**
  * A connection between two nodes. `label` is the event (states), the yes/no answer of a decision (process) or the
  * relationship (C4); ERD edges join `sourceColumn` of `source` with `targetColumn` of `target` and carry the
- * `cardinality` of both ends.
+ * `cardinality` of both ends. `bends` are the corners of its orthogonal course from source to target, in absolute
+ * diagram coordinates, once the user moved a segment of it; absent while Hunt routes it.
  */
 export type ShapeEdge = {
   source: string;
@@ -48,6 +49,7 @@ export type ShapeEdge = {
   sourceColumn?: string;
   targetColumn?: string;
   cardinality?: { source: Cardinality; target: Cardinality };
+  bends?: ShapePosition[];
   change?: ShapeChange;
 };
 

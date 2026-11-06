@@ -61,7 +61,7 @@ export type ShapeDiagramFlowNode = ShapeFlowNode | BoundaryFlowNode;
 /**
  * `points` is ELK's orthogonal route from source to target, `labelCenter` the middle of the label box ELK reserved
  * on that route (null when the edge was laid out without one); `hasInlineLabel` puts the label on the middle of the
- * path React Flow draws when there is no route (a manual layout); `cardinality` and the columns are set on ERD
+ * route the view draws around the elements when there is no ELK route (a manual layout); `cardinality` and the columns are set on ERD
  * relationships only.
  */
 export type ShapeEdgeData = {
@@ -73,6 +73,8 @@ export type ShapeEdgeData = {
   sourceColumn?: string;
   targetColumn?: string;
   cardinality?: { source: Cardinality; target: Cardinality };
+  /** The corners the user fixed by moving a segment; the view draws the edge through them instead of routing it. */
+  bends?: XYPosition[];
   change?: ShapeChange;
   /** The mouse is on the edge's path; the view then shows its hover card. */
   isHovered?: boolean;
@@ -188,6 +190,11 @@ export function hasManualLayout(diagram: ShapeDiagram): boolean {
   return diagram.nodes.some((node) => node.position);
 }
 
+/** True once the user placed an element or moved a connection by hand, which *Auto-layout* undoes. */
+export function hasManualChanges(diagram: ShapeDiagram): boolean {
+  return hasManualLayout(diagram) || diagram.edges.some((edge) => edge.bends);
+}
+
 /**
  * Where every element and boundary goes. ELK lays out the whole diagram; in a manual layout each placed element moves
  * to its `position`, the others keep ELK's place, and every boundary is fitted around its elements again. Shape
@@ -235,7 +242,7 @@ function placeElements(
 /**
  * Lays the diagram out and returns React Flow nodes (boundaries before the shapes inside them) and edges. Shape
  * positions are relative to their boundary; edge routes are absolute. In a manual layout the edges drop ELK's routes,
- * which no longer fit the moved elements, and React Flow draws them between their handles. Waits and aborts like
+ * which no longer fit the moved elements, and the view routes them around the elements itself. Waits and aborts like
  * `layoutGraph`.
  */
 export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSignal): Promise<{ nodes: ShapeDiagramFlowNode[]; edges: ShapeFlowEdge[] }> {
@@ -288,6 +295,7 @@ export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSi
       sourceColumn: edge.sourceColumn,
       targetColumn: edge.targetColumn,
       cardinality: edge.cardinality,
+      bends: edge.bends,
       change: edge.change,
     };
     const flowEdge: ShapeFlowEdge = {

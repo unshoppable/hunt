@@ -221,6 +221,14 @@ export function parseShapeDiagram(value: unknown, expected: ShapeDiagramType, fi
     } else if (!label && expected === "process" && source.kind === "decision") {
       problems.push(`Edge ${raw.source} → ${raw.target} leaves a decision without an answer label.`);
     }
+    if (raw.bends !== undefined) {
+      const bends = Array.isArray(raw.bends) ? raw.bends.map(parsePosition) : [];
+      if (bends.length >= 2 && bends.every((bend) => bend !== undefined)) {
+        edge.bends = bends;
+      } else {
+        problems.push(`Edge ${raw.source} → ${raw.target} has the bends ${JSON.stringify(raw.bends)} instead of at least two points with numbers \`x\` and \`y\`; cleared.`);
+      }
+    }
     if (raw.change !== undefined) {
       const change = parseChange(raw.change);
       if (change) {

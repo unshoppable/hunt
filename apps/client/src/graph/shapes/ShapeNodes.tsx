@@ -1,8 +1,22 @@
-import { memo, useState } from "react";
-import { BaseEdge, EdgeLabelRenderer, Handle, Position, getSmoothStepPath, type EdgeProps, type EdgeTypes, type NodeProps, type NodeTypes } from "@xyflow/react";
+import { createContext, memo, useContext, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import {
+  BaseEdge,
+  EdgeLabelRenderer,
+  Handle,
+  Position,
+  getSmoothStepPath,
+  useStore,
+  type EdgeProps,
+  type EdgeTypes,
+  type NodeProps,
+  type NodeTypes,
+  type ReactFlowState,
+  type XYPosition,
+} from "@xyflow/react";
 import type { ShapeChange, ShapeKind, TableColumn } from "./shape-diagram.types";
 import { EDGE_COLOR, EDGE_COLOR_HIGHLIGHTED, LABEL_HEIGHT, MAX_LABEL_WIDTH, orthogonalPath, pathMidpoint } from "../layout.utils";
 import { HANDLE_STYLE } from "../DiagramNodes";
+import { isMovableSegment, moveSegment, routeAroundObstacles, routeThroughBends, type Obstacle } from "./edge-route.utils";
 import { TABLE_ROW_HEIGHT, columnPortId, crowMarker, tableHeaderHeight, tableRowCenterY, type BoundaryFlowNode, type CrowTone, type ShapeFlowEdge, type ShapeFlowNode } from "./shape-diagram.utils";
 
 /*
@@ -311,21 +325,97 @@ const POPOVER_GAP = 6;
 /** Opacity of an edge while another edge or an unrelated node is hovered. */
 const MUTED_OPACITY = 0.3;
 
+/** The elements a connection must go around, in flow coordinates; boundaries hold elements and are crossed. */
+function selectObstacles(state: ReactFlowState): Obstacle[] {
+  return [...state.nodeLookup.values()]
+    .filter((node) => node.type !== "boundary" && !node.hidden)
+    .map((node) => ({ ...node.internals.positionAbsolute, width: node.measured.width ?? node.width ?? 0, height: node.measured.height ?? node.height ?? 0 }));
+}
+
+function isSameObstacles(a: Obstacle[], b: Obstacle[]): boolean {
+  return a.length === b.length && a.every((obstacle, index) => {
+    const other = b[index];
+    return obstacle.x === other.x && obstacle.y === other.y && obstacle.width === other.width && obstacle.height === other.height;
+  });
+}
+
+/** Saves the corners of a connection whose segment the user moved, or null to let Hunt route it again. */
+export const EdgeBendsContext = createContext<((edgeId: string, bends: XYPosition[] | null) => void) | null>(null);
+
+/** Width of the invisible strip along a movable segment that takes the mouse. */
+const SEGMENT_GRIP_WIDTH = 10;
+
+function selectZoom(state: ReactFlowState): number {
+  return state.transform[2];
+}
+
+/** While an element is dragged, ELK's routes no longer fit it. */
+function selectIsDragging(state: ReactFlowState): boolean {
+  return [...state.nodeLookup.values()].some((node) => node.dragging);
+}
+
 /**
- * A connection on ELK's orthogonal route, or React Flow's stepped path between the handles when it has none (a manual
- * layout), drawn brighter while it is hovered or lit by a hovered node and faded while another one is; an added or
+ * A connection through the corners the user fixed (`routeThroughBends`), else on ELK's orthogonal route, or, when it
+ * has none (a manual layout) or an element is being dragged, on Hunt's own orthogonal route around every element
+ * (`routeAroundObstacles`); React Flow's stepped path between the handles only when the elements leave no way. Every
+ * segment but the two at the handles can be dragged across its direction, which fixes the corners in the diagram; a
+ * double click on one lets Hunt route the connection again. It is drawn brighter while it is hovered or lit by a hovered node and faded while another one is; an added or
  * changed connection keeps its change color. The markers come from the layout (arrowheads, or crow's feet for an
- * ERD). The label sits on the box ELK reserved for it or, with `hasInlineLabel`, on the middle of the stepped path; an
+ * ERD). The label sits on the box ELK reserved for it or, off ELK's route, on the middle of the drawn path; an
  * edge without either (an ERD relationship) shows its label only in the hover card, which floats above the label box
  * or the middle of the route while the mouse is on the edge or its label.
  */
 export function ShapeEdgeView({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerStart, markerEnd, selected }: EdgeProps<ShapeFlowEdge>) {
   const [isLabelHovered, setIsLabelHovered] = useState(false);
-  const points = data?.points ?? [];
+  const obstacles = useStore(selectObstacles, isSameObstacles);
+  const isDragging = useStore(selectIsDragging);
+  const zoom = useStore(selectZoom);
+  const saveBends = useContext(EdgeBendsContext);
+  const points = data?.points;
+  const bends = data?.bends;
+  const isOnElkRoute = !bends && Boolean(points && points.length >= 2) && !isDragging;
+  const route = useMemo(() => {
+    const source = { x: sourceX, y: sourceY, side: sourcePosition };
+    const target = { x: targetX, y: targetY, side: targetPosition };
+    if (bends) return routeThroughBends(source, target, bends);
+    return isOnElkRoute && points ? points : routeAroundObstacles(source, target, obstacles);
+  }, [bends, isOnElkRoute, points, sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition, obstacles]);
+  /** The course while a segment is dragged, kept after the drop until the saved bends come back in `data`. */
+  const [draft, setDraft] = useState<{ points: XYPosition[]; bends: XYPosition[] | undefined } | null>(null);
+  /** Set by a drag, so the click that ends it does not open the editor. */
+  const wasDraggedRef = useRef(false);
+  const drawn = draft && draft.bends === bends ? draft.points : route;
   const [fallbackPath, fallbackX, fallbackY] = getSmoothStepPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, borderRadius: 8 });
-  const path = points.length >= 2 ? orthogonalPath(points) : fallbackPath;
-  const labelCenter = data?.labelCenter ?? (data?.hasInlineLabel ? { x: fallbackX, y: fallbackY } : null);
-  const anchor = labelCenter ?? (points.length >= 2 ? pathMidpoint(points) : { x: fallbackX, y: fallbackY });
+  const path = drawn ? orthogonalPath(drawn) : fallbackPath;
+  const middle = drawn ? pathMidpoint(drawn) : { x: fallbackX, y: fallbackY };
+
+  const startSegmentDrag = (event: ReactPointerEvent<SVGPathElement>, index: number) => {
+    if (!saveBends || !drawn || event.button !== 0) return;
+    event.stopPropagation();
+    const grip = event.currentTarget;
+    const base = drawn;
+    const from = { x: event.clientX, y: event.clientY };
+    let moved: XYPosition[] | null = null;
+    wasDraggedRef.current = false;
+    grip.setPointerCapture(event.pointerId);
+    const onMove = (move: PointerEvent) => {
+      moved = moveSegment(base, index, { x: (move.clientX - from.x) / zoom, y: (move.clientY - from.y) / zoom });
+      wasDraggedRef.current = true;
+      setDraft({ points: moved, bends });
+    };
+    const onEnd = () => {
+      grip.removeEventListener("pointermove", onMove);
+      grip.removeEventListener("pointerup", onEnd);
+      grip.removeEventListener("pointercancel", onEnd);
+      if (moved) saveBends(id, moved.slice(1, -1));
+    };
+    grip.addEventListener("pointermove", onMove);
+    grip.addEventListener("pointerup", onEnd);
+    grip.addEventListener("pointercancel", onEnd);
+  };
+  const hasLabelOnPath = Boolean(data?.labelCenter) || Boolean(data?.hasInlineLabel);
+  const labelCenter = hasLabelOnPath ? (isOnElkRoute ? (data?.labelCenter ?? middle) : middle) : null;
+  const anchor = labelCenter ?? middle;
   const isHighlighted = Boolean(selected) || Boolean(data?.isHovered) || Boolean(data?.isLit) || isLabelHovered;
   const isMuted = Boolean(data?.isMuted) && !isHighlighted;
   const showsLabelInCard = !labelCenter && Boolean(data?.label);
@@ -340,6 +430,31 @@ export function ShapeEdgeView({ id, sourceX, sourceY, targetX, targetY, sourcePo
         markerEnd={markerEnd}
         style={{ stroke, strokeWidth: isHighlighted ? 1.8 : 1.2, opacity: isMuted ? MUTED_OPACITY : 1, transition: "opacity 150ms" }}
       />
+      {saveBends && drawn
+        ? drawn.slice(0, -1).map((point, index) => {
+            if (!isMovableSegment(drawn, index)) return null;
+            const next = drawn[index + 1];
+            return (
+              <path
+                key={index}
+                d={`M ${point.x} ${point.y} L ${next.x} ${next.y}`}
+                className="nodrag nopan"
+                fill="none"
+                stroke="transparent"
+                strokeWidth={SEGMENT_GRIP_WIDTH}
+                style={{ pointerEvents: "stroke", cursor: point.y === next.y ? "row-resize" : "col-resize" }}
+                onPointerDown={(event) => startSegmentDrag(event, index)}
+                onClick={(event) => {
+                  if (wasDraggedRef.current) event.stopPropagation();
+                }}
+                onDoubleClick={(event) => {
+                  event.stopPropagation();
+                  if (bends) saveBends(id, null);
+                }}
+              />
+            );
+          })
+        : null}
       {labelCenter && data?.label ? (
         <EdgeLabelRenderer>
           <div

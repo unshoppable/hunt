@@ -130,6 +130,17 @@
           },
           "description": "erd only: crow's-foot ends of the relationship."
         },
+        "bends": {
+          "type": "array",
+          "minItems": 2,
+          "items": {
+            "type": "object",
+            "required": ["x", "y"],
+            "additionalProperties": false,
+            "properties": { "x": { "type": "number" }, "y": { "type": "number" } }
+          },
+          "description": "Corners of the connection's course in absolute diagram coordinates, set when someone moved a segment of it by hand in the Architecture tab. Keep them unchanged for a connection that stays and leave them out for a new one; Hunt routes connections without bends automatically."
+        },
         "change": { "$ref": "#/$defs/change" }
       }
     }

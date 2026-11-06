@@ -155,6 +155,7 @@ export function serializeShapeDiagram(diagram: ShapeDiagram): string {
       sourceColumn: edge.sourceColumn,
       targetColumn: edge.targetColumn,
       cardinality: edge.cardinality,
+      bends: edge.bends?.map((bend) => ({ x: bend.x, y: bend.y })),
       change: edge.change,
     })),
   };

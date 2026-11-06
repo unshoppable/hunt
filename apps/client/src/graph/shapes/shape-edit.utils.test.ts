@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ShapeDiagram } from "./shape-diagram.types";
-import { addEdge, addGroup, addNode, clearPositions, emptyDiagram, removeEdge, removeGroup, removeNode, setPositions, updateEdge, updateGroup, updateNode } from "./shape-edit.utils";
+import { addEdge, addGroup, addNode, clearPositions, emptyDiagram, removeEdge, removeGroup, removeNode, setBends, setPositions, updateEdge, updateGroup, updateNode } from "./shape-edit.utils";
 
 const states: ShapeDiagram = {
   type: "states",
@@ -69,5 +69,12 @@ describe("positions", () => {
     const placed = setPositions(states, new Map([["open", { x: 1.6, y: 2.2 }]]));
     expect(placed.nodes.map((node) => node.position)).toEqual([undefined, { x: 2, y: 2 }]);
     expect(clearPositions(placed).nodes.some((node) => "position" in node)).toBe(false);
+  });
+
+  it("fixes a connection's corners rounded, lets Hunt route it again, and drops them with the positions", () => {
+    const bent = setBends(states, "start->open", [{ x: 10.4, y: 0 }, { x: 10.4, y: 80.6 }]);
+    expect(bent.edges[0].bends).toEqual([{ x: 10, y: 0 }, { x: 10, y: 81 }]);
+    expect("bends" in setBends(bent, "start->open", null).edges[0]).toBe(false);
+    expect("bends" in clearPositions(bent).edges[0]).toBe(false);
   });
 });

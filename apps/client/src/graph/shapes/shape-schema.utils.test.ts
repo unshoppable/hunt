@@ -163,6 +163,17 @@ describe("parseShapeDiagram", () => {
     expect(parsed.problems).toHaveLength(3);
   });
 
+  it("keeps the bends of a connection with at least two numeric points and clears any other", () => {
+    const nodes = [{ id: "a", kind: "state", label: "A" }, { id: "b", kind: "state", label: "B" }, { id: "c", kind: "state", label: "C" }];
+    const bends = [{ x: 10, y: 0 }, { x: 10, y: 50 }];
+    const parsed = parseShapeDiagram(
+      { type: "states", nodes, edges: [{ source: "a", target: "b", label: "go", bends }, { source: "b", target: "c", label: "on", bends: [{ x: 1, y: 2 }] }] },
+      "states",
+    );
+    expect(parsed.diagram.edges.map((edge) => edge.bends)).toEqual([bends, undefined]);
+    expect(parsed.problems).toHaveLength(1);
+  });
+
   it("keeps a numeric position and clears any other, naming the file it was given", () => {
     const parsed = parseShapeDiagram(
       { type: "states", nodes: [{ id: "a", kind: "state", label: "A", position: { x: 10.5, y: -4 } }, { id: "b", kind: "state", label: "B", position: { x: "1", y: 2 } }], edges: [] },

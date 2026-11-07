@@ -1,6 +1,6 @@
 import { Position, type XYPosition } from "@xyflow/react";
 import { describe, expect, it } from "vitest";
-import { countCrossings, isMovableSegment, moveSegment, routeAroundObstacles, routeConnections, routeThroughBends, type Obstacle } from "./edge-route.utils";
+import { carryRoute, countCrossings, isMovableSegment, moveSegment, routeAroundObstacles, routeConnections, routeThroughBends, routedWire, STUB, stubRoute, type Obstacle } from "./edge-route.utils";
 
 /** True when a segment of the route runs through the inside of `obstacle`. */
 function crosses(points: XYPosition[], obstacle: Obstacle): boolean {
@@ -124,13 +124,14 @@ describe("routeAroundObstacles with routed connections", () => {
     expect(route.some((point) => point.y === 50 && point.x < 400)).toBe(false);
   });
 
-  it("may run on top of a connection that ends in the same handle", () => {
+  it("runs beside a connection into the same handle and joins it only on the stub into that handle", () => {
     const sibling = { id: "sibling", source: { x: 200, y: 20, side: Position.Right }, target: { x: 600, y: 50, side: Position.Left }, points: [{ x: 200, y: 20 }, { x: 400, y: 20 }, { x: 400, y: 50 }, { x: 600, y: 50 }] };
     const route = routeAroundObstacles({ x: 200, y: 80, side: Position.Right }, { x: 600, y: 50, side: Position.Left }, [source, target], [sibling])!;
-    expect(route).toHaveLength(4);
-    const lastRun = route.slice(-2);
-    expect(lastRun[0].y).toBe(50);
-    expect(lastRun[0].x).toBeLessThan(600);
+    expect(isOrthogonal(route)).toBe(true);
+    // The sibling runs along y = 50 from x = 400 to the handle; this route reaches y = 50 only at the stub.
+    const onSiblingRun = route.filter((point) => point.y === 50 && point.x < 600 - STUB);
+    expect(onSiblingRun).toHaveLength(0);
+    expect(route[route.length - 2]).toEqual({ x: 600 - STUB, y: 50 });
   });
 });
 
@@ -184,6 +185,57 @@ describe("countCrossings", () => {
     expect(countCrossings([across, down])).toBe(1);
     expect(countCrossings([down, merging])).toBe(0);
     expect(countCrossings([across])).toBe(0);
+  });
+});
+
+describe("stubRoute", () => {
+  it("leaves and enters the handles straight by a stub and joins the stubs with an elbow", () => {
+    const route = stubRoute({ x: 100, y: 50, side: Position.Bottom }, { x: 400, y: 200, side: Position.Left });
+    expect(route).toEqual([
+      { x: 100, y: 50 },
+      { x: 100, y: 50 + STUB },
+      { x: 400 - STUB, y: 50 + STUB },
+      { x: 400 - STUB, y: 200 },
+      { x: 400, y: 200 },
+    ]);
+    expect(isOrthogonal(route)).toBe(true);
+  });
+});
+
+describe("carryRoute", () => {
+  it("keeps the corners of the route and moves the runs at both ends onto the handles", () => {
+    const points = [
+      { x: 0, y: 0 },
+      { x: 50, y: 0 },
+      { x: 50, y: 100 },
+      { x: 100, y: 100 },
+    ];
+    expect(carryRoute({ x: 0, y: 10, side: Position.Right }, { x: 100, y: 120, side: Position.Left }, points)).toEqual([
+      { x: 0, y: 10 },
+      { x: 50, y: 10 },
+      { x: 50, y: 120 },
+      { x: 100, y: 120 },
+    ]);
+  });
+
+  it("falls back to the stub route when the route was straight", () => {
+    const source = { x: 0, y: 10, side: Position.Right };
+    const target = { x: 100, y: 120, side: Position.Left };
+    expect(carryRoute(source, target, [{ x: 0, y: 0 }, { x: 100, y: 0 }])).toEqual(stubRoute(source, target));
+  });
+});
+
+describe("routedWire", () => {
+  it("puts the ends on the first and last point, on the sides the first and last run leave and enter", () => {
+    const points = [
+      { x: 100, y: 50 },
+      { x: 72, y: 50 },
+      { x: 72, y: 200 },
+      { x: 100, y: 200 },
+    ];
+    expect(routedWire("a", points)).toEqual({ id: "a", source: { x: 100, y: 50, side: Position.Left }, target: { x: 100, y: 200, side: Position.Left }, points });
+    expect(routedWire("b", [{ x: 0, y: 0 }, { x: 0, y: 40 }])).toEqual({ id: "b", source: { x: 0, y: 0, side: Position.Bottom }, target: { x: 0, y: 40, side: Position.Top }, points: [{ x: 0, y: 0 }, { x: 0, y: 40 }] });
+    expect(routedWire("c", [{ x: 0, y: 0 }])).toBeNull();
   });
 });
 

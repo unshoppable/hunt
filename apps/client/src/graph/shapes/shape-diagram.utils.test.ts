@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ShapeDiagram } from "./shape-diagram.types";
-import { columnPortId, decorateShapeFlow, erdMarkers, layoutShapeDiagram, portColumn, relationshipSides, shapeNodeSize, TABLE_HEADER_HEIGHT, TABLE_HEADER_HEIGHT_WITH_DESCRIPTION, TABLE_ROW_HEIGHT, tableRowCenterY, toLayoutInput } from "./shape-diagram.utils";
+import { columnPortId, decorateShapeFlow, erdMarkers, isChangeDiagram, isContextConnection, layoutShapeDiagram, portColumn, relationshipEnds, relationshipSides, shapeNodeSize, TABLE_HEADER_HEIGHT, TABLE_HEADER_HEIGHT_WITH_DESCRIPTION, TABLE_ROW_HEIGHT, tableRowCenterY, toLayoutInput, withoutDeleted } from "./shape-diagram.utils";
 
 // Node has no Web Worker; ELK's in-thread stand-in runs the layouts instead.
 const elkWorker = (await import("elkjs/lib/elk-worker.js")) as unknown as { Worker: typeof Worker };
@@ -89,6 +89,19 @@ describe("relationshipSides", () => {
     expect(relationshipSides(right, left)).toEqual({ source: "left", target: "right" });
     expect(relationshipSides({ x: 0, y: 0, width: 200, height: 100 }, { x: 240, y: 300, width: 200, height: 100 })).toEqual({ source: "right", target: "right" });
     expect(relationshipSides({ x: 0, y: 0, width: 300, height: 100 }, { x: 20, y: 300, width: 100, height: 100 })).toEqual({ source: "left", target: "left" });
+  });
+});
+
+describe("relationshipEnds", () => {
+  it("puts the ends on the rows of the columns, on the sides the placement calls for", () => {
+    const [orders, customers] = erd.nodes;
+    const source = { box: { x: 0, y: 0, ...shapeNodeSize(orders) }, table: orders, column: "customer_id" };
+    const target = { box: { x: 600, y: 40, ...shapeNodeSize(customers) }, table: customers, column: "id" };
+    expect(relationshipEnds(source, target)).toEqual({
+      source: { x: shapeNodeSize(orders).width, y: tableRowCenterY(orders, 1), side: "right" },
+      target: { x: 600, y: 40 + tableRowCenterY(customers, 0), side: "left" },
+    });
+    expect(relationshipEnds({ ...source, column: "missing" }, target)).toBeNull();
   });
 });
 
@@ -199,11 +212,57 @@ describe("layoutShapeDiagram", () => {
   });
 });
 
+describe("withoutDeleted", () => {
+  it("drops a connection, an element with its connections, or a boundary leaving its elements where they are", async () => {
+    const flow = await layoutShapeDiagram(container);
+    expect(withoutDeleted(flow, { kind: "edge", id: "web->api" }).edges.map((edge) => edge.id)).toEqual(["customer->web", "api->db", "api->payments"]);
+    const withoutApi = withoutDeleted(flow, { kind: "node", id: "api" });
+    expect(withoutApi.nodes.map((node) => node.id)).toEqual(["shop", "customer", "web", "db", "payments"]);
+    expect(withoutApi.edges.map((edge) => edge.id)).toEqual(["customer->web"]);
+    const shop = flow.nodes.find((node) => node.id === "shop");
+    const web = flow.nodes.find((node) => node.id === "web");
+    const withoutShop = withoutDeleted(flow, { kind: "group", id: "shop" });
+    expect(withoutShop.nodes.map((node) => node.id)).toEqual(["customer", "web", "api", "db", "payments"]);
+    expect(withoutShop.nodes.find((node) => node.id === "web")).toMatchObject({ parentId: undefined, position: { x: shop!.position.x + web!.position.x, y: shop!.position.y + web!.position.y } });
+    expect(withoutShop.edges).toBe(flow.edges);
+  });
+});
+
+describe("isContextConnection", () => {
+  const changed: ShapeDiagram = {
+    type: "c4-container",
+    nodes: [
+      { id: "web", kind: "container", label: "Web app", change: "added" },
+      { id: "api", kind: "container", label: "API", change: "changed" },
+      { id: "db", kind: "database", label: "Database" },
+    ],
+    edges: [
+      { source: "web", target: "api" },
+      { source: "api", target: "db" },
+      { source: "db", target: "db", change: "changed" },
+    ],
+  };
+
+  it("is false for every connection of a diagram without change marks", () => {
+    expect(isChangeDiagram(erd)).toBe(false);
+    expect(erd.edges.map((edge) => isContextConnection(erd, edge))).toEqual([false]);
+  });
+
+  it("marks the connections that carry no change and join no added element", () => {
+    expect(isChangeDiagram(changed)).toBe(true);
+    expect(changed.edges.map((edge) => isContextConnection(changed, edge))).toEqual([false, true, false]);
+  });
+
+  it("flows into the edge data of the layout", async () => {
+    const { edges } = await layoutShapeDiagram({ ...changed, edges: changed.edges.slice(0, 2) });
+    expect(edges.map((edge) => edge.data?.isContext)).toEqual([false, true]);
+  });
+});
+
 describe("erdMarkers", () => {
-  it("picks the marker per cardinality and tone, the change color winning over the highlight", () => {
+  it("picks the marker per cardinality and tone", () => {
     expect(erdMarkers({ cardinality: { source: "many", target: "one" } }, false)).toEqual({ markerStart: "crow-many-rest", markerEnd: "crow-one-rest" });
     expect(erdMarkers({ cardinality: { source: "many", target: "one" } }, true)).toEqual({ markerStart: "crow-many-lit", markerEnd: "crow-one-lit" });
-    expect(erdMarkers({ cardinality: { source: "one", target: "one" }, change: "added" }, true)).toEqual({ markerStart: "crow-one-added", markerEnd: "crow-one-added" });
     expect(erdMarkers({}, false)).toEqual({ markerStart: "crow-one-rest", markerEnd: "crow-one-rest" });
   });
 });

@@ -1,12 +1,12 @@
-import { createContext, memo, useContext, useDeferredValue, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { createContext, memo, useContext, useDeferredValue, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   BaseEdge,
   EdgeLabelRenderer,
   Handle,
   Position,
-  getSmoothStepPath,
   useConnection,
   useStore,
+  useStoreApi,
   type EdgeProps,
   type EdgeTypes,
   type NodeProps,
@@ -15,17 +15,34 @@ import {
   type XYPosition,
 } from "@xyflow/react";
 import type { ShapeChange, ShapeKind, TableColumn } from "./shape-diagram.types";
-import { EDGE_COLOR, EDGE_COLOR_HIGHLIGHTED, LABEL_HEIGHT, MAX_LABEL_WIDTH, orthogonalPath, pathMidpoint } from "../layout.utils";
+import { CONTEXT_EDGE_DASH, EDGE_COLOR, EDGE_COLOR_HIGHLIGHTED, LABEL_HEIGHT, MAX_LABEL_WIDTH, orthogonalPath, pathMidpoint } from "../layout.utils";
 import { COLOR_STYLE } from "./shape-color.constants";
-import { isMovableSegment, moveSegment, routeAroundObstacles, routeThroughBends, type Obstacle } from "./edge-route.utils";
-import { TABLE_ROW_HEIGHT, columnPortId, crowMarker, portColumn, tableHeaderHeight, tableRowCenterY, type BoundaryFlowNode, type CrowTone, type ShapeFlowEdge, type ShapeFlowNode } from "./shape-diagram.utils";
+import { carryRoute, isMovableSegment, moveSegment, routeAroundObstacles, routeThroughBends, routedWire, stubRoute, type Obstacle, type RouteEnd, type RoutedConnection } from "./edge-route.utils";
+import {
+  TABLE_ROW_HEIGHT,
+  columnPortId,
+  crowMarker,
+  portColumn,
+  relationshipEnds,
+  tableHeaderHeight,
+  tableRowCenterY,
+  type BoundaryFlowNode,
+  type CrowTone,
+  type ShapeEdgeData,
+  type ShapeFlowEdge,
+  type ShapeFlowNode,
+  type ShapeNodeData,
+} from "./shape-diagram.utils";
 
 /*
  * Style contract of the shape diagrams, shared by every branch: the agent's file holds content only, Hunt draws
  * every element in the colors below, so the same diagram looks the same wherever it was generated. Boxes are
  * Tailwind classes, SVG shapes use the matching `fill-*`/`stroke-*` utilities; added and changed elements reuse the
- * green and amber of the dependency diagram (emerald for added files, amber for the outdated hint). An element the
- * user colored takes that color's shades (`COLOR_STYLE`) instead of its kind's, keeping its kind's outline.
+ * green and amber of the dependency diagram (emerald for added files, amber for the outdated hint). Connections
+ * carry no change color: like the dependency diagram, a diagram of a change draws the connections that are
+ * unchanged context dashed and the rest plain, and a diagram without change marks draws every connection plain.
+ * An element the user colored takes that color's shades (`COLOR_STYLE`) instead of its kind's, keeping its kind's
+ * outline.
  */
 /** Fill and border of a box per element kind; external systems are dimmed and dashed. */
 const BOX_STYLE: Record<Exclude<ShapeKind, "person" | "database" | "queue" | "start" | "end" | "decision" | "table">, string> = {
@@ -50,13 +67,13 @@ const TABLE_TONE: Record<ShapeChange | "none", { card: string; header: string }>
   changed: { card: "border-amber-400/50", header: "bg-amber-400/10" },
 };
 const BOUNDARY_STYLE = "border-dashed border-white/15 bg-white/[0.025]";
-/** Ring around an element and its corner tag per change; the edge stroke uses the matching hex colors. */
+/** Ring around an element and its corner tag per change; the minimap uses the matching hex colors. */
 const CHANGE_RING: Record<ShapeChange, string> = { added: "ring-2 ring-emerald-400/70", changed: "ring-2 ring-amber-400/70" };
 const CHANGE_TAG: Record<ShapeChange, string> = {
   added: "border-emerald-400/40 bg-emerald-400/15 text-emerald-300",
   changed: "border-amber-400/40 bg-amber-400/15 text-amber-300",
 };
-export const CHANGE_EDGE_COLOR: Record<ShapeChange, string> = { added: "#34d399", changed: "#fbbf24" };
+export const CHANGE_COLOR: Record<ShapeChange, string> = { added: "#34d399", changed: "#fbbf24" };
 
 /** Stroke width of the SVG shapes. */
 const SHAPE_STROKE = 1.2;
@@ -405,55 +422,136 @@ function selectIsEndDragged(source: string, target: string) {
   return (state: ReactFlowState): boolean => Boolean(state.nodeLookup.get(source)?.dragging || state.nodeLookup.get(target)?.dragging);
 }
 
+type Ends = { source: RouteEnd; target: RouteEnd };
+
+/**
+ * Where the relationship on `sourceColumn` and `targetColumn` leaves and enters its tables as they stand now
+ * (`relationshipEnds`), in flow coordinates; null while a table is missing or not measured yet. While a table is
+ * dragged and until the next layout arrives, React Flow's handles still sit where the last layout put them, on the
+ * sides that placement called for; these ends are already on the sides the next layout will pick.
+ */
+function selectLiveEnds(source: string, target: string, sourceColumn: string | undefined, targetColumn: string | undefined) {
+  return (state: ReactFlowState): Ends | null => {
+    const end = (nodeId: string, column: string | undefined) => {
+      const node = state.nodeLookup.get(nodeId);
+      if (!node || node.type !== "table") return null;
+      const box = { ...node.internals.positionAbsolute, width: node.measured.width ?? node.width ?? 0, height: node.measured.height ?? node.height ?? 0 };
+      return box.width && box.height ? { box, table: node.data as ShapeNodeData, column } : null;
+    };
+    const sourceEnd = end(source, sourceColumn);
+    const targetEnd = end(target, targetColumn);
+    return sourceEnd && targetEnd ? relationshipEnds(sourceEnd, targetEnd) : null;
+  };
+}
+
+function isSameEnd(a: RouteEnd, b: RouteEnd): boolean {
+  return a.x === b.x && a.y === b.y && a.side === b.side;
+}
+
+function isSameEnds(a: Ends | null, b: Ends | null): boolean {
+  return a === b || (a !== null && b !== null && isSameEnd(a.source, b.source) && isSameEnd(a.target, b.target));
+}
+
+/** How far a route's end may sit from the handle it was routed for and still fit it: React Flow measures the handles at the current zoom, the routes are computed. */
+const END_TOLERANCE = 4;
+
+/** True when the route from `points` starts and ends at `ends`, so it still fits the elements it was routed between. */
+function fitsEnds(points: XYPosition[], ends: Ends): boolean {
+  if (points.length < 2) return false;
+  const near = (point: XYPosition, end: RouteEnd) => Math.abs(point.x - end.x) <= END_TOLERANCE && Math.abs(point.y - end.y) <= END_TOLERANCE;
+  return near(points[0], ends.source) && near(points[points.length - 1], ends.target);
+}
+
+/**
+ * The routes of the other connections drawn now, which a fresh route of connection `id` keeps clear of: the ones
+ * on their layout route, which the connections of a dragged element have left.
+ */
+function routedWiresExcept(state: ReactFlowState, id: string): RoutedConnection[] {
+  return state.edges.flatMap((edge) => {
+    const points = (edge.data as ShapeEdgeData | undefined)?.points;
+    if (edge.id === id || !points || state.nodeLookup.get(edge.source)?.dragging || state.nodeLookup.get(edge.target)?.dragging) return [];
+    const wire = routedWire(edge.id, points);
+    return wire ? [wire] : [];
+  });
+}
+
 /**
  * A connection through the corners the user fixed (`routeThroughBends`), else on the orthogonal route the layout gave
- * it (ELK's, or Hunt's own clear of the other connections in a manual layout), or, when it has none or an element it
- * ends at is being dragged, on Hunt's own orthogonal route around every element (`routeAroundObstacles`), which keeps
- * its course while other elements are dragged; React Flow's stepped path between the handles while that route is
- * still being worked out or the elements leave no way. Every
- * segment but the two at the handles can be dragged across its direction, which fixes the corners in the diagram; a
- * double click on one lets Hunt route the connection again. It is drawn brighter while it is hovered or lit by a hovered node and faded while another one is; an added or
- * changed connection keeps its change color. The markers come from the layout (arrowheads, or crow's feet for an
- * ERD). The label sits on the box ELK reserved for it or, off ELK's route, on the middle of the drawn path; an
- * edge without either (an ERD relationship) shows its label only in the hover card, which floats above the label box
- * or the middle of the route while the mouse is on the edge or its label.
+ * it (ELK's, or Hunt's own clear of the other connections in a manual layout), or, when it has none or no longer
+ * fits its ends because an element it ends at is dragged or was just dropped, on Hunt's own orthogonal route around
+ * every element and clear of the other connections (`routeAroundObstacles`), which keeps its course while other
+ * elements are dragged. That route takes a moment; until it is there the connection carries the shape of its last
+ * route to its moving ends (`carryRoute`), or runs on a plain stub route when it has none or the elements leave no
+ * way. The ends of a manual ERD's relationship follow the tables as they stand (`selectLiveEnds`), so the drawn
+ * relationship leaves and enters on the sides the next layout will pick instead of jumping sides after the drop.
+ * Every segment but the two at the handles can be dragged across its direction, which fixes the corners in the
+ * diagram; a double click on one lets Hunt route the connection again. It is drawn brighter while it is hovered or
+ * lit by a hovered node and faded while another one is; unchanged context in a diagram of a change is dashed. The
+ * markers come from the layout (arrowheads, or crow's feet for an ERD). The label sits on the box ELK reserved for
+ * it or, off ELK's route, on the middle of the drawn path; an edge without either (an ERD relationship) shows its
+ * label only in the hover card, which floats above the label box or the middle of the route while the mouse is on
+ * the edge or its label.
  */
 export function ShapeEdgeView(props: EdgeProps<ShapeFlowEdge>) {
   const { id, source: sourceId, target: targetId, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, markerStart, markerEnd, selected } = props;
   const [isLabelHovered, setIsLabelHovered] = useState(false);
+  const store = useStoreApi();
   const obstacles = useStore(useMemo(() => selectRouteObstacles(sourceId, targetId), [sourceId, targetId]), isSameRouteObstacles);
   const isEndDragged = useStore(useMemo(() => selectIsEndDragged(sourceId, targetId), [sourceId, targetId]));
   const zoom = useStore(selectZoom);
   const saveBends = useContext(EdgeBendsContext);
   const points = data?.points;
   const bends = data?.bends;
-  const isOnLayoutRoute = !bends && Boolean(points && points.length >= 2) && !isEndDragged;
-  const ends = useMemo(
-    () => ({ source: { x: sourceX, y: sourceY, side: sourcePosition }, target: { x: targetX, y: targetY, side: targetPosition } }),
+  const sourceColumn = data?.sourceColumn;
+  const targetColumn = data?.targetColumn;
+  // A relationship of a manual ERD follows its tables; one of an ELK layout only while a table is dragged, since the
+  // drop makes the layout manual.
+  const followsTables = Boolean(sourceColumn && targetColumn) && (Boolean(data?.endsFollowTables) || isEndDragged);
+  const liveEnds = useStore(
+    useMemo(() => (followsTables ? selectLiveEnds(sourceId, targetId, sourceColumn, targetColumn) : () => null), [followsTables, sourceId, targetId, sourceColumn, targetColumn]),
+    isSameEnds,
+  );
+  const handleEnds = useMemo(
+    (): Ends => ({ source: { x: sourceX, y: sourceY, side: sourcePosition }, target: { x: targetX, y: targetY, side: targetPosition } }),
     [sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition],
   );
+  const ends = liveEnds ?? handleEnds;
+  const isOnLayoutRoute = !bends && Boolean(points && fitsEnds(points, ends)) && !isEndDragged;
   // Routing around the elements takes milliseconds per connection, too long for every move of a dragged element with
   // many connections. It runs in a deferred render that a newer move restarts; meanwhile the connection keeps its route
-  // while its ends stay put and takes React Flow's stepped path while they move.
+  // while its ends stay put and carries its shape to the ends while they move.
   const routing = useMemo(() => ({ ends, obstacles }), [ends, obstacles]);
   const deferredRouting = useDeferredValue(routing);
   const routed = useMemo(
-    () => !bends && !isOnLayoutRoute && deferredRouting.obstacles && routeAroundObstacles(deferredRouting.ends.source, deferredRouting.ends.target, deferredRouting.obstacles),
-    [bends, isOnLayoutRoute, deferredRouting],
+    () =>
+      !bends &&
+      !isOnLayoutRoute &&
+      deferredRouting.obstacles &&
+      routeAroundObstacles(deferredRouting.ends.source, deferredRouting.ends.target, deferredRouting.obstacles, routedWiresExcept(store.getState(), id)),
+    [bends, isOnLayoutRoute, deferredRouting, store, id],
   );
   const route = useMemo(() => {
     if (bends) return routeThroughBends(ends.source, ends.target, bends);
     if (isOnLayoutRoute && points) return points;
     return routed && deferredRouting.ends === ends ? routed : null;
   }, [bends, isOnLayoutRoute, points, ends, routed, deferredRouting]);
+  /** The last route drawn and the sides its ends were on; its shape is carried to the ends while no route fits them. */
+  const lastRouteRef = useRef<{ points: XYPosition[]; sides: [Position, Position] } | null>(null);
+  useEffect(() => {
+    if (route) lastRouteRef.current = { points: route, sides: [ends.source.side, ends.target.side] };
+  }, [route, ends]);
+  const last = lastRouteRef.current;
+  const interim = useMemo(
+    () => (last && last.sides[0] === ends.source.side && last.sides[1] === ends.target.side ? carryRoute(ends.source, ends.target, last.points) : stubRoute(ends.source, ends.target)),
+    [last, ends],
+  );
   /** The course while a segment is dragged, kept after the drop until the saved bends come back in `data`. */
   const [draft, setDraft] = useState<{ points: XYPosition[]; bends: XYPosition[] | undefined } | null>(null);
   /** Set by a drag, so the click that ends it does not open the editor. */
   const wasDraggedRef = useRef(false);
-  const drawn = draft && draft.bends === bends ? draft.points : route;
-  const [fallbackPath, fallbackX, fallbackY] = getSmoothStepPath({ sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, borderRadius: 8 });
-  const path = drawn ? orthogonalPath(drawn) : fallbackPath;
-  const middle = drawn ? pathMidpoint(drawn) : { x: fallbackX, y: fallbackY };
+  const drawn = draft && draft.bends === bends ? draft.points : (route ?? interim);
+  const path = orthogonalPath(drawn);
+  const middle = pathMidpoint(drawn);
 
   const startSegmentDrag = (event: ReactPointerEvent<SVGPathElement>, index: number) => {
     if (!saveBends || !drawn || event.button !== 0) return;
@@ -486,7 +584,7 @@ export function ShapeEdgeView(props: EdgeProps<ShapeFlowEdge>) {
   const isMuted = Boolean(data?.isMuted) && !isHighlighted;
   const showsLabelInCard = !labelCenter && Boolean(data?.label);
   const showsCard = (Boolean(data?.isHovered) || isLabelHovered) && (showsLabelInCard || Boolean(data?.description));
-  const stroke = data?.change ? CHANGE_EDGE_COLOR[data.change] : isHighlighted ? EDGE_COLOR_HIGHLIGHTED : EDGE_COLOR;
+  const stroke = isHighlighted ? EDGE_COLOR_HIGHLIGHTED : EDGE_COLOR;
   return (
     <>
       <BaseEdge
@@ -494,7 +592,7 @@ export function ShapeEdgeView(props: EdgeProps<ShapeFlowEdge>) {
         path={path}
         markerStart={markerStart}
         markerEnd={markerEnd}
-        style={{ stroke, strokeWidth: isHighlighted ? 2 : 1.5, opacity: isMuted ? MUTED_OPACITY : 1, transition: "opacity 150ms" }}
+        style={{ stroke, strokeWidth: isHighlighted ? 2 : 1.5, strokeDasharray: data?.isContext ? CONTEXT_EDGE_DASH : undefined, opacity: isMuted ? MUTED_OPACITY : 1, transition: "opacity 150ms" }}
       />
       {saveBends && drawn
         ? drawn.slice(0, -1).map((point, index) => {
@@ -556,8 +654,8 @@ export const SHAPE_EDGE_TYPES: EdgeTypes = { shape: ShapeEdgeView };
 
 /** Size of the crow's foot markers in px; `refX` puts the foot's open end on the node border. */
 const CROW_SIZE = 16;
-/** Stroke of the crow's feet per tone: like the edge at rest, lit while hovered, or in its change color. */
-const CROW_TONE_COLOR: Record<CrowTone, string> = { rest: EDGE_COLOR, lit: EDGE_COLOR_HIGHLIGHTED, added: CHANGE_EDGE_COLOR.added, changed: CHANGE_EDGE_COLOR.changed };
+/** Stroke of the crow's feet per tone: like the edge at rest, lit while hovered. */
+const CROW_TONE_COLOR: Record<CrowTone, string> = { rest: EDGE_COLOR, lit: EDGE_COLOR_HIGHLIGHTED };
 
 /**
  * Crow's foot markers of an ERD, one per cardinality and tone, referenced by the edges through `crowMarker` ids:

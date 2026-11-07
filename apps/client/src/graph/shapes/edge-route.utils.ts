@@ -20,11 +20,11 @@ const BEND_COST = 40;
 /** What crossing a routed connection costs in px of length: a route takes a detour of up to this much to avoid one. */
 const CROSSING_COST = 200;
 /**
- * Extra cost per px of a run on top of a routed connection that does not end in the same handle; low, since a
- * narrow gap between elements often has room for one run only, and sharing it reads better than a detour that
- * crosses other connections.
+ * Extra cost per px of a run on top of a routed connection: two connections on one line cannot be told apart, so a
+ * run of more than a few px beside another costs more than crossing it, and a route shares a line only where the
+ * elements leave no other way.
  */
-const OVERLAP_COST = 3;
+const OVERLAP_COST = 10;
 /** Room between two connections that run side by side. */
 const WIRE_GAP = 12;
 
@@ -39,11 +39,8 @@ type Box = { left: number; top: number; right: number; bottom: number };
 export type Connection = { id: string; source: RouteEnd; target: RouteEnd };
 /** A connection with the corner points of its route from handle to handle, absent where the obstacles left no way. */
 export type RoutedConnection = Connection & { points?: XYPosition[] };
-/**
- * One straight run of a connection routed before, in flow coordinates, that a later route keeps clear of; a run
- * `isMerged` when both connections end in the same handle, so their runs may join on the way to it.
- */
-type Wire = { a: XYPosition; b: XYPosition; isMerged: boolean };
+/** One straight run of a connection routed before, in flow coordinates, that a later route keeps clear of. */
+type Wire = { a: XYPosition; b: XYPosition };
 
 /**
  * An orthogonal route from `source` to `target` that crosses no obstacle: it leaves and enters each handle straight
@@ -51,8 +48,9 @@ type Wire = { a: XYPosition; b: XYPosition; isMerged: boolean };
  * and takes the shortest way with the fewest bends. A* runs on a grid of lines along the elements at both distances
  * and through the middle of the gaps between them, so a route through a narrow gap runs down its middle. The
  * `routed` connections are soft obstacles: crossing one costs `CROSSING_COST`, running on top of one `OVERLAP_COST`
- * per px, so the route keeps `WIRE_GAP` beside them where it can; a connection into the same handle costs nothing
- * on the way to it. Returns the corner points from handle to handle, or null when the obstacles leave no way.
+ * per px, so the route keeps `WIRE_GAP` beside them where it can, also beside a connection into the same handle,
+ * which it joins on the stub into that handle. Returns the corner points from handle to handle, or null when the
+ * obstacles leave no way.
  */
 export function routeAroundObstacles(source: RouteEnd, target: RouteEnd, obstacles: Obstacle[], routed: RoutedConnection[] = []): XYPosition[] | null {
   const startDirection = SIDE_DIRECTION[source.side];
@@ -63,8 +61,7 @@ export function routeAroundObstacles(source: RouteEnd, target: RouteEnd, obstacl
   const kept = obstacles.filter((obstacle) => !isInside(padded(obstacle, CLEARANCE), start.x, start.y) && !isInside(padded(obstacle, CLEARANCE), end.x, end.y));
   const wires = routed.flatMap((connection): Wire[] => {
     const points = connection.points ?? [];
-    const isMerged = [connection.source, connection.target].some((end) => isSameHandle(end, source) || isSameHandle(end, target));
-    return points.slice(1).map((point, index) => ({ a: points[index], b: point, isMerged }));
+    return points.slice(1).map((point, index) => ({ a: points[index], b: point }));
   });
 
   // The grid comes from the elements near the two ends first: a route rarely leaves that area, and the other elements
@@ -141,14 +138,10 @@ function searchGrid(start: XYPosition, end: XYPosition, startDirection: number, 
   const columnNear = xs.map((x) => near.filter(({ reach }) => x > reach.left && x < reach.right));
   // Likewise the wires a step along a row or a column can cross (the ones across it that span the line, their ends
   // included, so a run through the corner of a wire counts as crossing it) or run on (the ones along it on the same
-  // line); a merged wire may be run on for free and joined at its corner, so it is left out of `along` and spans
-  // without its ends.
-  const spans = (wire: Wire, axis: "x" | "y", at: number) => {
-    const [low, high] = [Math.min(wire.a[axis], wire.b[axis]), Math.max(wire.a[axis], wire.b[axis])];
-    return wire.isMerged ? at > low && at < high : at >= low && at <= high;
-  };
-  const rowWires = ys.map((y) => ({ across: verticalWires.filter((wire) => spans(wire, "y", y)), along: horizontalWires.filter((wire) => !wire.isMerged && wire.a.y === y) }));
-  const columnWires = xs.map((x) => ({ across: horizontalWires.filter((wire) => spans(wire, "x", x)), along: verticalWires.filter((wire) => !wire.isMerged && wire.a.x === x) }));
+  // line).
+  const spans = (wire: Wire, axis: "x" | "y", at: number) => at >= Math.min(wire.a[axis], wire.b[axis]) && at <= Math.max(wire.a[axis], wire.b[axis]);
+  const rowWires = ys.map((y) => ({ across: verticalWires.filter((wire) => spans(wire, "y", y)), along: horizontalWires.filter((wire) => wire.a.y === y) }));
+  const columnWires = xs.map((x) => ({ across: horizontalWires.filter((wire) => spans(wire, "x", x)), along: verticalWires.filter((wire) => wire.a.x === x) }));
   /**
    * What the step from `from` to `to` along one line pays for the wires there: a crossing for each wire across it
    * that it starts on or passes (the step that reaches a wire pays nothing, so a run that turns onto it is not
@@ -299,6 +292,42 @@ export function countCrossings(routes: XYPosition[][]): number {
   return crossings;
 }
 
+/**
+ * A cheap orthogonal course from `source` to `target` while no route is known yet: out of each handle by `STUB`, the
+ * two stubs joined by an elbow. It may run across elements; a route replaces it as soon as one is found.
+ */
+export function stubRoute(source: RouteEnd, target: RouteEnd): XYPosition[] {
+  const beyond = (end: RouteEnd) => {
+    const direction = SIDE_DIRECTION[end.side];
+    return { x: end.x + DX[direction] * STUB, y: end.y + DY[direction] * STUB };
+  };
+  return routeThroughBends(source, target, [beyond(source), beyond(target)]);
+}
+
+/**
+ * The course of a route found for earlier ends, carried to `source` and `target`: its corners stay and the runs at
+ * both ends follow the handles (`routeThroughBends`), so a connection keeps its shape while an element it ends at
+ * moves and a fresh route is still being worked out. A straight route has no corners to carry and gives `stubRoute`.
+ */
+export function carryRoute(source: RouteEnd, target: RouteEnd, points: XYPosition[]): XYPosition[] {
+  const corners = points.slice(1, -1);
+  return corners.length ? routeThroughBends(source, target, corners) : stubRoute(source, target);
+}
+
+/**
+ * The routed connection a drawn route stands for, to keep a later route clear of it: its ends sit on the first and
+ * the last point, on the side of their element the first and the last run leave and enter. Null for a route of
+ * fewer than two points.
+ */
+export function routedWire(id: string, points: XYPosition[]): RoutedConnection | null {
+  if (points.length < 2) return null;
+  const sideLeaving = (from: XYPosition, to: XYPosition): Position =>
+    to.x !== from.x ? (to.x < from.x ? Position.Left : Position.Right) : to.y < from.y ? Position.Top : Position.Bottom;
+  const first = points[0];
+  const last = points[points.length - 1];
+  return { id, source: { ...first, side: sideLeaving(first, points[1]) }, target: { ...last, side: sideLeaving(last, points[points.length - 2]) }, points };
+}
+
 /** True for a segment of `points` the user may move: every one but the two that leave and enter a handle. */
 export function isMovableSegment(points: XYPosition[], index: number): boolean {
   return index >= 1 && index <= points.length - 3;
@@ -347,11 +376,6 @@ function gridLines(start: number, end: number, spans: [number, number][], wires:
 /** The box a wire spans; flat along its axis. */
 function wireBox(wire: Wire): Box {
   return { left: Math.min(wire.a.x, wire.b.x), top: Math.min(wire.a.y, wire.b.y), right: Math.max(wire.a.x, wire.b.x), bottom: Math.max(wire.a.y, wire.b.y) };
-}
-
-/** True when both ends sit on the same handle. */
-function isSameHandle(a: RouteEnd, b: RouteEnd): boolean {
-  return a.x === b.x && a.y === b.y && a.side === b.side;
 }
 
 /** Distance between an element and the axis-parallel segment from (x1, y1) to (x2, y2); 0 when they touch. */

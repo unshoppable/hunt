@@ -9,7 +9,7 @@ import type { DiagramNode, ShortPath } from "./diagram.utils";
 import type { MatchKind } from "./graph-search.utils";
 import { ReviewBars } from "./ReviewBars";
 import type { DependencyEdge, FileNode, FolderGroupNode } from "./layout.utils";
-import { EDGE_COLOR, EDGE_COLOR_HIGHLIGHTED, LABEL_HEIGHT, MAX_LABEL_WIDTH, orthogonalPath } from "./layout.utils";
+import { CONTEXT_EDGE_DASH, EDGE_COLOR, EDGE_COLOR_HIGHLIGHTED, LABEL_HEIGHT, MAX_LABEL_WIDTH, orthogonalPath } from "./layout.utils";
 
 /** Invisible handle where the layout attaches an edge to a node; shared by every diagram node. */
 export const HANDLE_STYLE = { opacity: 0, width: 1, height: 1, minWidth: 0, minHeight: 0, border: 0 };
@@ -199,9 +199,6 @@ export function ChangeBadge({ added, removed }: { added: number; removed: number
 const POPOVER_GAP = 6;
 /** Opacity of an edge while another edge or file is hovered. */
 const MUTED_OPACITY = 0.3;
-/** Dash pattern of an edge that points at an unchanged context file, matching the file's dashed border. */
-const CONTEXT_EDGE_DASH = "5 4";
-
 /**
  * A dependency on ELK's orthogonal route with its label centered on the box ELK reserved on it. The edge is
  * `selected` while it or its source file is hovered and is then drawn brighter with a boxed label; while something

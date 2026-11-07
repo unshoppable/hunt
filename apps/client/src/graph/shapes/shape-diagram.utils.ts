@@ -1,6 +1,6 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react";
 import { Position } from "@xyflow/react";
-import type { Cardinality, ShapeChange, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeKind, ShapeNode, TableColumn } from "./shape-diagram.types";
+import type { Cardinality, ShapeChange, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeKind, ShapeNode, ShapeSelection, TableColumn } from "./shape-diagram.types";
 import type { LayoutInput, LayoutNode, LayoutPort, LayoutResult, LayoutSpacing } from "../layout.utils";
 import { GROUP_PADDING as BOUNDARY_PADDING, edgeMarker, layoutGraph } from "../layout.utils";
 import { placeWithoutOverlaps } from "./element-overlap.utils";
@@ -84,7 +84,14 @@ export type ShapeEdgeData = {
   cardinality?: { source: Cardinality; target: Cardinality };
   /** The corners the user fixed by moving a segment; the view draws the edge through them instead of routing it. */
   bends?: XYPosition[];
+  /**
+   * The ends sit where `relationshipEnds` puts them on the tables as they stand (a manual ERD); the view works them
+   * out from the tables as they move, so a relationship is drawn where the next layout will put it.
+   */
+  endsFollowTables?: boolean;
   change?: ShapeChange;
+  /** The connection is unchanged context in a diagram of a change (`isContextConnection`); the view draws it dashed. */
+  isContext?: boolean;
   /** The mouse is on the edge's path; the view then shows its hover card. */
   isHovered?: boolean;
   /** The edge is hovered or belongs to the hovered node; the view then draws it brighter. */
@@ -169,8 +176,8 @@ export function tableRowCenterY(table: Pick<ShapeNode, "description">, index: nu
   return tableHeaderHeight(table) + index * TABLE_ROW_HEIGHT + TABLE_ROW_HEIGHT / 2;
 }
 
-/** Color of an ERD relationship's crow's feet: at rest, lit while hovered, or the change color it carries. */
-export type CrowTone = "rest" | "lit" | ShapeChange;
+/** Color of an ERD relationship's crow's feet: at rest, or lit while hovered. */
+export type CrowTone = "rest" | "lit";
 
 /**
  * Id of the crow's-foot marker for `cardinality` in `tone`; `CrowFootDefs` defines one marker per combination. React
@@ -180,10 +187,29 @@ export function crowMarker(cardinality: Cardinality, tone: CrowTone): string {
   return `crow-${cardinality}-${tone}`;
 }
 
-/** Marker ids of both ends of an ERD relationship, lit while the edge is highlighted unless it carries a change color. */
-export function erdMarkers(edge: Pick<ShapeEdgeData, "cardinality" | "change">, isHighlighted: boolean): { markerStart: string; markerEnd: string } {
-  const tone: CrowTone = edge.change ?? (isHighlighted ? "lit" : "rest");
+/** Marker ids of both ends of an ERD relationship, lit while the edge is highlighted. */
+export function erdMarkers(edge: Pick<ShapeEdgeData, "cardinality">, isHighlighted: boolean): { markerStart: string; markerEnd: string } {
+  const tone: CrowTone = isHighlighted ? "lit" : "rest";
   return { markerStart: crowMarker(edge.cardinality?.source ?? "one", tone), markerEnd: crowMarker(edge.cardinality?.target ?? "one", tone) };
+}
+
+/**
+ * True when the diagram shows a change: some element, boundary or connection carries a change mark. A diagram
+ * generated as a whole, on the user's request, carries none and shows everything alike.
+ */
+export function isChangeDiagram(diagram: Pick<ShapeDiagram, "nodes" | "groups" | "edges">): boolean {
+  return [...diagram.nodes, ...(diagram.groups ?? []), ...diagram.edges].some((element) => element.change);
+}
+
+/**
+ * True when `edge` is unchanged context in a diagram of a change: it carries no change mark and neither of its
+ * elements was added (a connection of an added element is new with it). The view draws such a connection dashed,
+ * like the dependency diagram draws a dependency on an unchanged file.
+ */
+export function isContextConnection(diagram: Pick<ShapeDiagram, "nodes" | "groups" | "edges">, edge: Pick<ShapeEdge, "source" | "target" | "change">): boolean {
+  if (edge.change || !isChangeDiagram(diagram)) return false;
+  const isAdded = (id: string) => diagram.nodes.find((node) => node.id === id)?.change === "added";
+  return !isAdded(edge.source) && !isAdded(edge.target);
 }
 
 /** Unique layout and React Flow id of an edge; ERD relationships add their columns, since two tables may share several. */
@@ -322,30 +348,46 @@ function relationshipSidesOf(diagram: ShapeDiagram, boxes: Map<string, Obstacle>
   );
 }
 
+/** One end of a relationship: the table's box where it stands, the table's rows and the column the relationship is on. */
+export type RelationshipEnd = { box: Obstacle; table: Pick<ShapeNode, "description" | "columns">; column: string | undefined };
+
+/**
+ * Where a relationship leaves its source table and enters its target table as the tables stand: at its columns'
+ * rows, on the sides `relationshipSides` picks for the two boxes. The layout routes a manual ERD from these ends,
+ * and the view works them out again from the tables as they move, so a relationship is drawn where the next layout
+ * will put it. Null when a column is missing.
+ */
+export function relationshipEnds(source: RelationshipEnd, target: RelationshipEnd): { source: RouteEnd; target: RouteEnd } | null {
+  const sides = relationshipSides(source.box, target.box);
+  const rowEnd = ({ box, table, column }: RelationshipEnd, side: HandleSide): RouteEnd | null => {
+    const index = table.columns?.findIndex((candidate) => candidate.name === column) ?? -1;
+    if (index < 0) return null;
+    return { x: side === "right" ? box.x + box.width : box.x, y: box.y + tableRowCenterY(table, index), side: side === "right" ? Position.Right : Position.Left };
+  };
+  const sourceEnd = rowEnd(source, sides.source);
+  const targetEnd = rowEnd(target, sides.target);
+  return sourceEnd && targetEnd ? { source: sourceEnd, target: targetEnd } : null;
+}
+
 /**
  * Where a connection leaves its source and enters its target on the placed elements: an ERD relationship at its
- * columns' rows on the sides it takes, every other connection at the bottom middle of its source and the top middle
- * of its target. Null when an end is missing.
+ * columns' rows on the sides the placement calls for (`relationshipEnds`), every other connection at the bottom
+ * middle of its source and the top middle of its target. Null when an end is missing.
  */
-function connectionEnds(diagram: ShapeDiagram, edge: ShapeEdge, boxes: Map<string, Obstacle>, sides: RelationshipSides | undefined): { source: RouteEnd; target: RouteEnd } | null {
+function connectionEnds(diagram: ShapeDiagram, edge: ShapeEdge, boxes: Map<string, Obstacle>): { source: RouteEnd; target: RouteEnd } | null {
   const sourceBox = boxes.get(edge.source);
   const targetBox = boxes.get(edge.target);
   if (!sourceBox || !targetBox) return null;
-  if (diagram.type !== "erd" || !sides) {
+  if (diagram.type !== "erd") {
     return {
       source: { x: sourceBox.x + sourceBox.width / 2, y: sourceBox.y + sourceBox.height, side: Position.Bottom },
       target: { x: targetBox.x + targetBox.width / 2, y: targetBox.y, side: Position.Top },
     };
   }
-  const rowEnd = (nodeId: string, column: string | undefined, box: Obstacle, side: HandleSide): RouteEnd | null => {
-    const node = diagram.nodes.find((candidate) => candidate.id === nodeId);
-    const index = node?.columns?.findIndex((candidate) => candidate.name === column) ?? -1;
-    if (!node || index < 0) return null;
-    return { x: side === "right" ? box.x + box.width : box.x, y: box.y + tableRowCenterY(node, index), side: side === "right" ? Position.Right : Position.Left };
-  };
-  const source = rowEnd(edge.source, edge.sourceColumn, sourceBox, sides.source);
-  const target = rowEnd(edge.target, edge.targetColumn, targetBox, sides.target);
-  return source && target ? { source, target } : null;
+  const sourceTable = diagram.nodes.find((candidate) => candidate.id === edge.source);
+  const targetTable = diagram.nodes.find((candidate) => candidate.id === edge.target);
+  if (!sourceTable || !targetTable) return null;
+  return relationshipEnds({ box: sourceBox, table: sourceTable, column: edge.sourceColumn }, { box: targetBox, table: targetTable, column: edge.targetColumn });
 }
 
 /**
@@ -363,7 +405,10 @@ export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSi
   const isManual = hasManualLayout(diagram);
   const facingSides = new Map(diagram.edges.map((edge): [string, RelationshipSides] => [shapeEdgeId(diagram, edge), { source: "right", target: "left" }]));
   let sides = facingSides;
-  let layout: LayoutResult = await layoutGraph(toLayoutInput(diagram, sides), signal);
+  // ELK's places and routes go unused once the user placed every element and no boundary needs a size; its run
+  // would only delay each edit.
+  const isAllPlaced = isManual && diagram.nodes.every((node) => node.position) && !diagram.groups?.length;
+  let layout: LayoutResult = isAllPlaced ? { positions: new Map(), groupSizes: new Map(), routes: new Map() } : await layoutGraph(toLayoutInput(diagram, sides), signal);
   let placed = placeElements(diagram, layout.positions, layout.groupSizes);
   if (isErd && isManual) {
     sides = relationshipSidesOf(diagram, absoluteBoxes(diagram, placed));
@@ -391,7 +436,7 @@ export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSi
     const boxes = absoluteBoxes(diagram, placed);
     const connections = diagram.edges.flatMap((edge): Connection[] => {
       const id = shapeEdgeId(diagram, edge);
-      const ends = connectionEnds(diagram, edge, boxes, sides.get(id));
+      const ends = connectionEnds(diagram, edge, boxes);
       return ends && !edge.bends ? [{ id, ...ends }] : [];
     });
     const routed = await routeConnections(connections, [...boxes.values()], signal);
@@ -443,7 +488,9 @@ export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSi
       targetColumn: edge.targetColumn,
       cardinality: edge.cardinality,
       bends: edge.bends,
+      endsFollowTables: isErd && isManual,
       change: edge.change,
+      isContext: isContextConnection(diagram, edge),
     };
     const flowEdge: ShapeFlowEdge = {
       id,
@@ -470,6 +517,28 @@ export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSi
   });
 
   return { nodes: [...boundaryNodes, ...shapeNodes], edges };
+}
+
+/**
+ * The flow without the deleted element, connection or boundary, as the next layout will drop it: an element takes
+ * its connections with it, the elements of a boundary stay where they are on the canvas. The panel shows this at
+ * once, since the layout that follows a deletion takes a moment.
+ */
+export function withoutDeleted<Flow extends { nodes: ShapeDiagramFlowNode[]; edges: ShapeFlowEdge[] }>(flow: Flow, deleted: ShapeSelection): Flow {
+  if (deleted.kind === "edge") return { ...flow, edges: flow.edges.filter((edge) => edge.id !== deleted.id) };
+  if (deleted.kind === "node") {
+    return { ...flow, nodes: flow.nodes.filter((node) => node.id !== deleted.id), edges: flow.edges.filter((edge) => edge.source !== deleted.id && edge.target !== deleted.id) };
+  }
+  const boundary = flow.nodes.find((node) => node.id === deleted.id);
+  return {
+    ...flow,
+    nodes: flow.nodes.flatMap((node) => {
+      if (node.id === deleted.id) return [];
+      if (node.parentId !== deleted.id) return [node];
+      const origin = boundary?.position ?? { x: 0, y: 0 };
+      return [{ ...node, parentId: undefined, position: { x: origin.x + node.position.x, y: origin.y + node.position.y } }];
+    }),
+  };
 }
 
 /** What the mouse is on and which element or connection the editor shows; every id null when nothing is. */

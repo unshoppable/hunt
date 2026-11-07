@@ -243,6 +243,8 @@ export async function layoutDiagram(diagram: Diagram, signal?: AbortSignal): Pro
 /** Stroke of an edge and its arrowhead at rest and while it or its source file is hovered. */
 export const EDGE_COLOR = "#6b7280";
 export const EDGE_COLOR_HIGHLIGHTED = "#e5e7eb";
+/** Dash pattern of an edge that is unchanged context in a diagram of a change, matching the dashed border of a context file. */
+export const CONTEXT_EDGE_DASH = "5 4";
 
 /** Arrowhead in the edge's color; sized in pixels so it keeps its size when the highlighted stroke gets thicker. */
 export function edgeMarker(isHighlighted: boolean): EdgeMarker {

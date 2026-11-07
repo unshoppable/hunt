@@ -22,8 +22,8 @@ import { DIAGRAM_TYPES, KINDS_BY_TYPE } from "../diagram-types.constants";
 import { addRelationship, addTable, emptyErd, serializeShapeDiagram } from "./erd-edit.utils";
 import { addEdge, addGroup, addNode, clearPositions, deletionOf, emptyDiagram, setBends, setPositions } from "./shape-edit.utils";
 import { placeWithoutOverlaps } from "./element-overlap.utils";
-import { decorateShapeFlow, hasManualChanges, layoutShapeDiagram, portColumn, shapeNodeSize, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shape-diagram.utils";
-import { CHANGE_EDGE_COLOR, CrowFootDefs, EdgeBendsContext, SHAPE_EDGE_TYPES, SHAPE_NODE_TYPES } from "./ShapeNodes";
+import { decorateShapeFlow, hasManualChanges, layoutShapeDiagram, portColumn, shapeNodeSize, withoutDeleted, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shape-diagram.utils";
+import { CHANGE_COLOR, CrowFootDefs, EdgeBendsContext, SHAPE_EDGE_TYPES, SHAPE_NODE_TYPES } from "./ShapeNodes";
 import { parseShapeDiagram } from "./shape-schema.utils";
 import { kindName, ShapeElementEditor } from "./ShapeElementEditor";
 import { TableEditor } from "./TableEditor";
@@ -231,9 +231,13 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
       const deletion = diagram ? deletionOf(diagram, target) : null;
       if (!deletion || (deletion.question && !(await confirmDestructive(deletion.question)))) return;
       applyEdit(deletion.diagram);
+      // The deleted goes off the canvas at once; the layout of the rest follows.
+      layoutRef.current = withoutDeleted(layoutRef.current, target);
+      setNodes((current) => withoutDeleted({ nodes: current, edges: [] }, target).nodes);
+      setEdges((current) => withoutDeleted({ nodes: [], edges: current }, target).edges);
       setSelection((current) => (current?.kind === target.kind && current.id === target.id ? null : current));
     },
-    [diagram, applyEdit],
+    [diagram, applyEdit, setNodes, setEdges],
   );
 
   // Delete and Backspace delete the selection while the focus is on the canvas or nowhere, never while typing in a field.
@@ -641,5 +645,5 @@ function ShapeMiniMap() {
 
 function miniMapNodeColor(node: ShapeDiagramFlowNode): string {
   if (node.type === "boundary") return "rgba(255, 255, 255, 0.05)";
-  return node.data.change ? CHANGE_EDGE_COLOR[node.data.change] : "#8a919e";
+  return node.data.change ? CHANGE_COLOR[node.data.change] : "#8a919e";
 }

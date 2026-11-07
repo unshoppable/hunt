@@ -115,9 +115,9 @@ readonly VOLTA_SHA256=6cec054c911fb925b629a09455775af6e95dc0f5694a4c28b63979ab9e
 # The Node and npm Volta runs where a repository pins none.
 readonly VOLTA_NODE=24.18.1
 readonly VOLTA_NPM=11.16.0
-# Debian packages on top of the VM's base: compilers for native npm modules and unzip for the agent's builds, rsync for
-# the file sync with the desktop app.
-readonly -a AGENT_PACKAGES=(g++ make python3 rsync unzip)
+# Debian packages on top of the VM's base: compilers for native npm modules, unzip and bzip2 (`tar -j`) for the agent's
+# builds and tests, rsync for the file sync with the desktop app.
+readonly -a AGENT_PACKAGES=(bzip2 g++ make python3 rsync unzip)
 # The desktop of vm/desktop: sway as headless compositor, FFmpeg for Waymote's H.264 encoder and the fonts of pages in
 # other scripts than Latin; the rest of Chromium's libraries comes with Playwright's browser.
 readonly -a DESKTOP_PACKAGES=(sway ffmpeg fonts-noto-cjk)

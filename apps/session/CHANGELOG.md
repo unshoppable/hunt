@@ -1,3 +1,9 @@
+## 0.33.14 (2026-11-07)
+
+### 🩹 Fixes
+
+- **session:** continue an swf step after a person's slash command and resume a failed step ([79bf6cd](https://github.com/unshoppable/hunt/commit/79bf6cd))
+
 ## 0.33.13 (2026-11-07)
 
 ### 🩹 Fixes

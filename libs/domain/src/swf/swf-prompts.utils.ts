@@ -51,6 +51,8 @@ export interface PromptFiles {
   swfReview: string;
   swfPr: string;
   swfNudge: string;
+  /** The prompt that sends the agent on with its step after a person's command or a resume ended or interrupted its turn. */
+  swfContinue: string;
   swfAnswer: string;
   /** The prompt that tells the agent its step result is unusable, with the `{{problem}}` placeholder. */
   swfBadResult: string;
@@ -236,6 +238,14 @@ export function answerPrompt(template: string, repo: Repository, answers: Commen
  * question, no failure was reported): `nudge.user-prompt.md` filled with the issue, the step and its labels.
  */
 export function nudgePrompt(template: string, repo: Repository, labels: WorkflowLabels, pipeline: Pipeline): string {
+  return fillPrompt(template, pipelineValues(repo, labels, pipeline));
+}
+
+/**
+ * The prompt the runner sends when a person's slash command ended the agent's turn before the step's result, or a
+ * person resumed the failed step in its conversation: `continue.user-prompt.md` filled with the issue and the step.
+ */
+export function continuePrompt(template: string, repo: Repository, labels: WorkflowLabels, pipeline: Pipeline): string {
   return fillPrompt(template, pipelineValues(repo, labels, pipeline));
 }
 

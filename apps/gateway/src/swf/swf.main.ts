@@ -33,6 +33,7 @@ import swfVerifyPrompt from "../../../../libs/domain/prompts/swf/3-verify.user-p
 import swfReviewPrompt from "../../../../libs/domain/prompts/swf/4-review.user-prompt.md?raw";
 import swfPrPrompt from "../../../../libs/domain/prompts/swf/5-pr.user-prompt.md?raw";
 import swfNudgePrompt from "../../../../libs/domain/prompts/swf/nudge.user-prompt.md?raw";
+import swfContinuePrompt from "../../../../libs/domain/prompts/swf/continue.user-prompt.md?raw";
 import swfAnswerPrompt from "../../../../libs/domain/prompts/swf/answer.user-prompt.md?raw";
 import swfBadResultPrompt from "../../../../libs/domain/prompts/swf/bad-result.user-prompt.md?raw";
 import swfGateFailedPrompt from "../../../../libs/domain/prompts/swf/gate-failed.user-prompt.md?raw";
@@ -72,6 +73,7 @@ function readPrompts(): PromptFiles {
     swfReview: swfReviewPrompt,
     swfPr: swfPrPrompt,
     swfNudge: swfNudgePrompt,
+    swfContinue: swfContinuePrompt,
     swfAnswer: swfAnswerPrompt,
     swfBadResult: swfBadResultPrompt,
     swfGateFailed: swfGateFailedPrompt,

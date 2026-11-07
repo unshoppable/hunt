@@ -549,6 +549,58 @@ describe("Pipeline.remind", () => {
   });
 });
 
+describe("Pipeline.continueAfterCommand", () => {
+  it("counts the turn after a person's command as the step's and keeps the reminder as it was", () => {
+    const fresh = pipelineAt("implement", { promptTurn: 1_000 });
+    fresh.continueAfterCommand(2_000);
+    expect(fresh).toMatchObject({ promptTurn: 2_000, reminded: false });
+    const reminded = pipelineAt("implement", { promptTurn: 1_000, reminded: true });
+    reminded.continueAfterCommand(2_000);
+    expect(reminded).toMatchObject({ promptTurn: 2_000, reminded: true });
+  });
+
+  it("refuses to go on while no turn ended since the prompt", () => {
+    expect(() => pipelineAt("implement", { promptTurn: 1_000 }).continueAfterCommand(1_000)).toThrow("no turn of the agent ended since the prompt of the step implement");
+  });
+});
+
+describe("Pipeline.resume", () => {
+  const LATER = NOW + 5 * 60_000;
+  const ENDED = { endedAt: "2026-10-25T10:05:00.000Z" };
+
+  it("begins a run of the failed step that resumes the failed one in its conversation, with nothing sent yet", () => {
+    const pipeline = pipelineAt("implement", { gateRuns: 2, promptTurn: 1_000, reminded: true, runs: [runOf(1, "plan", { ...ENDED, outcome: "passed" }), runOf(2, "implement", { sessionId: "acp-7" })] });
+    pipeline.fail(LATER);
+    expect(pipeline.hasFailed).toBe(true);
+    pipeline.resume(LATER);
+    expect(pipeline.runs.at(-1)).toEqual({ ...runOf(3, "implement", { resumes: 2 }), startedAt: "2026-10-25T10:05:00.000Z" });
+    expect(pipeline).toMatchObject({ step: "implement", gateRuns: 0, promptTurn: null, reminded: false, hasFailed: false, isPromptPending: true });
+    expect(pipeline.resumedConversation).toBe("acp-7");
+    pipeline.recordPrompt(3_000, "acp-7");
+    expect(pipeline.resumedConversation).toBeNull();
+  });
+
+  it("names no conversation for a failed run that had none and resumes a step of the poller too", () => {
+    const setup = pipelineAt("plan", { runs: [runOf(1, "plan")] });
+    setup.fail(LATER);
+    setup.resume(LATER);
+    expect(setup).toMatchObject({ isPromptPending: true, resumedConversation: null });
+    const merge = pipelineAt("merge", { pullRequest: 31, mergeSha: HEAD_SHA, runs: [runOf(1, "merge")] });
+    merge.fail(LATER);
+    merge.resume(LATER);
+    expect(merge).toMatchObject({ step: "merge", mergeSha: null, isPromptPending: false });
+    expect(merge.currentRun?.resumes).toBe(1);
+  });
+
+  it("refuses a pipeline that runs, passed or was restarted", () => {
+    expect(() => pipelineAt("implement", { runs: [runOf(1, "implement")] }).resume(LATER)).toThrow("the pipeline at implement has not failed; nothing to resume");
+    const merged = pipelineAt("merge", { pullRequest: 31, runs: [runOf(1, "merge")] });
+    merged.complete(LATER);
+    expect(merged.hasFailed).toBe(false);
+    expect(() => merged.resume(LATER)).toThrow("the pipeline at merge has not failed; nothing to resume");
+  });
+});
+
 describe("Pipeline.noteAnswersDelivered", () => {
   it("counts the turn after the answers as the step's and allows a reminder again", () => {
     const pipeline = pipelineAt("implement", { lastResultId: 1002, promptTurn: 500, reminded: true });

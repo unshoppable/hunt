@@ -121,6 +121,7 @@ services to start, which checks to run, which review criteria to judge by, how i
 | File | When | Where it lands |
 | --- | --- | --- |
 | `nudge.user-prompt.md` | the agent's turn ended while the issue is still at an agent step with no `result.md` and neither the question nor the failed label; once per step | the same conversation; reminds the agent to write the step's result, ask with the question label or give up; when the next turn ends the same way, the issue is marked as failed |
+| `continue.user-prompt.md` | a person's slash command (`/compact`, as its own prompt or steered into the running turn) ended the agent's turn of an agent step without a result (`lastTurnTookCommand` of the relay's status), as often as it happens; or a person resumed the step by taking `swf:failed` off and the relay still serves the failed run's conversation | the same conversation; sends the agent on with the step where it left off, to its result; spends no reminder |
 | `answer.user-prompt.md` | the poller found a comment by someone other than the app's bot user after the agent's question while the issue is labelled `swf:question` and handed it to the runner's inbox; each answer once, sent when the relay is idle; a stopped VM is started first | the same conversation; brings the answers and tells the agent to take the label back to the step and finish it |
 | `bad-result.user-prompt.md` | `result.md` holds a result the runner cannot use (malformed, or the result of another step than the current one); once the relay is idle | the same conversation; tells the agent why (`{{problem}}`) and to write the step's result again, without the file's final line break; the file is discarded, the pipeline stays at its step |
 | `gate-failed.user-prompt.md` | a usable result of an agent step failed the step's gate: a check of the gate failed or the working tree is not clean; up to `maxGateRuns` times per result | the same conversation; quotes the failed checks with the end of their output and the dirty files, and tells the agent to fix them, commit, push and write the result again; the pipeline stays at its step and counts the gate run, no return |
@@ -128,7 +129,7 @@ services to start, which checks to run, which review criteria to judge by, how i
 
 ## Placeholders
 
-The prompts of the steps, `nudge.user-prompt.md` and `answer.user-prompt.md` may use the issue (`number`, `repo`), the
+The prompts of the steps, `nudge.user-prompt.md`, `continue.user-prompt.md` and `answer.user-prompt.md` may use the issue (`number`, `repo`), the
 labels of the workflow (`requested`, `question`, `done`, `failed`, the current `step` and its `stepLabel`) and the `gh issue edit` commands that move between them
 (`relabelQuestion`, `relabelResume`, `relabelFailed`; `labelValues` in `swf/swf-prompts.utils.ts`); the prompts append `--title` to
 the question and resume commands, which put a red question mark and the word for a question back in front of the

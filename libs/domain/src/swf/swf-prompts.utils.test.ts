@@ -9,6 +9,7 @@ import { Pipeline, type Run } from "./pipeline.domain.ts";
 import {
   answerPrompt,
   badResultPrompt,
+  continuePrompt,
   gatePrompt,
   huntSessionFile,
   nudgePrompt,
@@ -62,6 +63,7 @@ const prompts = {
   swfReview: readFileSync(new URL("../../prompts/swf/4-review.user-prompt.md", import.meta.url), "utf8"),
   swfPr: readFileSync(new URL("../../prompts/swf/5-pr.user-prompt.md", import.meta.url), "utf8"),
   swfNudge: readFileSync(new URL("../../prompts/swf/nudge.user-prompt.md", import.meta.url), "utf8"),
+  swfContinue: readFileSync(new URL("../../prompts/swf/continue.user-prompt.md", import.meta.url), "utf8"),
   swfAnswer: readFileSync(new URL("../../prompts/swf/answer.user-prompt.md", import.meta.url), "utf8"),
   swfBadResult: readFileSync(new URL("../../prompts/swf/bad-result.user-prompt.md", import.meta.url), "utf8"),
   swfGateFailed: readFileSync(new URL("../../prompts/swf/gate-failed.user-prompt.md", import.meta.url), "utf8"),
@@ -407,6 +409,15 @@ describe("nudgePrompt", () => {
     expect(unwrapped).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:verify --add-label swf:question --title \"❓ RÜCKFRAGE: <title>\"`)");
     expect(text).toContain("(`gh issue edit 12 --repo acme/app --remove-label swf:verify --add-label swf:failed`)");
     expect(text.endsWith("When this turn ends with the issue still labelled `swf:verify` and no result, Hunt marks the issue as failed.\n")).toBe(true);
+    expect(text).not.toContain("{{");
+  });
+});
+
+describe("continuePrompt", () => {
+  it("names the issue and the step and sends the agent on to the step's result", () => {
+    const text = continuePrompt(prompts.swfContinue, REPO, WorkflowLabels.of("swf"), pipelineAt("implement"));
+    expect(unwrap(text).startsWith("Your turn of the step `implement` for issue #12 of acme/app ended before you finished it:")).toBe(true);
+    expect(text).toContain("`<!-- hunt:step {\"step\":\"implement\", …} -->`");
     expect(text).not.toContain("{{");
   });
 });

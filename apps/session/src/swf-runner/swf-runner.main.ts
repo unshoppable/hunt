@@ -35,6 +35,7 @@ import swfBadResultPrompt from "../../../../libs/domain/prompts/swf/bad-result.u
 import swfGateEscalatePrompt from "../../../../libs/domain/prompts/swf/gate-escalate.user-prompt.md?raw";
 import swfGateFailedPrompt from "../../../../libs/domain/prompts/swf/gate-failed.user-prompt.md?raw";
 import swfNudgePrompt from "../../../../libs/domain/prompts/swf/nudge.user-prompt.md?raw";
+import swfContinuePrompt from "../../../../libs/domain/prompts/swf/continue.user-prompt.md?raw";
 import { connectRelaySocket, sendPrompt } from "../../../../libs/domain/src/relay/relay-prompt.client.ts";
 import { SessionId } from "../../../../libs/domain/src/session/session-id.value-object.ts";
 import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
@@ -98,6 +99,7 @@ function readPrompts(): PromptFiles {
     swfReview: swfReviewPrompt,
     swfPr: swfPrPrompt,
     swfNudge: swfNudgePrompt,
+    swfContinue: swfContinuePrompt,
     swfAnswer: swfAnswerPrompt,
     swfBadResult: swfBadResultPrompt,
     swfGateFailed: swfGateFailedPrompt,

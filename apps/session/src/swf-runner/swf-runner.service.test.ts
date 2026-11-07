@@ -40,6 +40,7 @@ const PROMPTS: PromptFiles = {
   swfReview: readPrompt("swf/4-review.user-prompt.md"),
   swfPr: readPrompt("swf/5-pr.user-prompt.md"),
   swfNudge: readPrompt("swf/nudge.user-prompt.md"),
+  swfContinue: readPrompt("swf/continue.user-prompt.md"),
   swfAnswer: readPrompt("swf/answer.user-prompt.md"),
   swfBadResult: readPrompt("swf/bad-result.user-prompt.md"),
   swfGateFailed: readPrompt("swf/gate-failed.user-prompt.md"),
@@ -207,7 +208,7 @@ function harness(pipeline: Pipeline | null, status: RelaySessionStatus | null = 
     clearConversation: () => {
       h.clears++;
       h.events.push("clear");
-      h.status = { acpSessionId: `acp-fresh-${h.clears}`, turn: "idle", lastTurnEndedAt: null };
+      h.status = { acpSessionId: `acp-fresh-${h.clears}`, turn: "idle", lastTurnEndedAt: null, lastTurnTookCommand: false };
       return Promise.resolve(h.status);
     },
     sendPrompt: (request): Promise<PromptOutcome> => {
@@ -241,7 +242,7 @@ function harness(pipeline: Pipeline | null, status: RelaySessionStatus | null = 
 }
 
 function idle(fields: Partial<RelaySessionStatus> = {}): RelaySessionStatus {
-  return { acpSessionId: "acp-1", turn: "idle", lastTurnEndedAt: null, ...fields };
+  return { acpSessionId: "acp-1", turn: "idle", lastTurnEndedAt: null, lastTurnTookCommand: false, ...fields };
 }
 
 /**
@@ -624,12 +625,52 @@ describe("SwfRunner", () => {
     expect(h.github.calls.slice(2)).toEqual([
       "labels acme/app#12",
       "labels acme/app#12 +swf:failed -swf:verify",
-      `comment acme/app#12 ${stoppedComment("verify", VM)}`,
+      `comment acme/app#12 ${stoppedComment("verify", VM, "swf:failed")}`,
       `edit acme/app ${RECORD_ID}`,
     ]);
     expect(h.files.pipeline?.runs.at(-1)).toMatchObject({ step: "verify", outcome: "failed", endedAt: new Date(NOW + 120_000).toISOString() });
     expect(h.github.records.at(-1)).toBe(h.files.pipeline?.toComment());
     expect(h.prompts).toHaveLength(1);
+  });
+
+  it("sends the agent on after a person's slash command ended its turn, as often as it happens, without spending the reminder", async () => {
+    const h = harness(recorded("implement", 0), idle({ lastTurnEndedAt: 5_000, lastTurnTookCommand: true }));
+    h.github.labelsOnIssue = ["swf", "swf:implement"];
+    await h.runner.tick();
+    h.status = idle({ lastTurnEndedAt: 6_000, lastTurnTookCommand: true });
+    await h.runner.tick();
+    expect(h.clears).toBe(0);
+    expect(h.prompts.map((prompt) => prompt.sessionId)).toEqual(["acp-1", "acp-1"]);
+    expect(h.prompts[1].text).toContain("Your turn of the step `implement` for issue #12 of acme/app ended before you finished it");
+    expect(h.files.pipeline).toMatchObject({ promptTurn: 6_000, reminded: false });
+    expect(h.logs).toContain("a command ended the agent's turn of implement; sent it on (prompt started)");
+
+    h.status = idle({ lastTurnEndedAt: 7_000 });
+    await h.runner.tick();
+    expect(h.prompts.at(-1)?.text).toContain("Your last turn ended, but issue #12 of acme/app still has the label `swf:implement`");
+    expect(h.files.pipeline).toMatchObject({ promptTurn: 7_000, reminded: true });
+    expect(h.github.calls).not.toContain("labels acme/app#12 +swf:failed -swf:implement");
+  });
+
+  it("sends a resumed step on in the failed run's conversation, or its prompt into a fresh one when the relay serves another", async () => {
+    const failed = recorded("implement", 0);
+    failed.fail(NOW);
+    failed.resume(NOW);
+    const h = harness(failed, idle({ lastTurnEndedAt: 7_000 }));
+    await h.runner.tick();
+    expect(h.clears).toBe(0);
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0]).toMatchObject({ sessionId: "acp-1" });
+    expect(h.prompts[0].text).toContain("resumed the issue after Hunt had marked it as failed");
+    expect(h.files.pipeline?.currentRun).toMatchObject({ step: "implement", resumes: 2, sessionId: "acp-1" });
+    expect(h.files.pipeline?.promptTurn).toBe(7_000);
+    expect(h.logs).toContain("sent the agent on with the resumed step implement in its conversation (prompt started)");
+
+    const moved = harness(failed, idle({ acpSessionId: "acp-other", lastTurnEndedAt: 7_000 }));
+    await moved.runner.tick();
+    expect(moved.clears).toBe(1);
+    expect(moved.prompts[0].sessionId).toBe("acp-fresh-1");
+    expect(moved.prompts[0].text).toContain("Step `implement` for issue #12");
   });
 
   it("logs a failing pass once and saves the record at the next tick", async () => {

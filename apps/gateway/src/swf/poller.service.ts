@@ -56,6 +56,10 @@
  * `swf-record` per run that has a result comment), the step's run ended as `restarted` with a new run of the step
  * (`Pipeline.restart`), the runner started, which sends the step's prompt afresh, and a comment on the issue.
  *
+ * A failed issue is left alone while it carries `swf:failed`; once a person takes that label off an issue whose VM is
+ * still listed, the step it failed at resumes (`resume`, `Pipeline.resume`): a new run, the step's label, and the
+ * pipeline for the runner, which sends the agent on in the failed run's conversation.
+ *
  * On GitHub the poller and its sessions act as a GitHub App (`swf/github-app.client.ts`). The app's installation tokens
  * are valid for one hour and limited to one repository each: a session's clone, its commits (with the app's bot
  * identity) and its relay get the current one, and every poll hands a renewed token to each running session VM
@@ -363,6 +367,10 @@ export class Poller {
       this.deps.log(`${key}: the branch is ${pipeline.branch}`);
     }
     const context: SessionContext = { key, github, labels, sessionVm, sessionId, repo, issue, comments, bot, recordId, pipeline, watched };
+    if (pipeline.hasFailed && sessionVm) {
+      await this.resume(context);
+      return { context, state: pipeline.step };
+    }
     if (state === null) {
       // A label lost on the way, or taken off by a person: the record knows the step.
       this.deps.log(`${key}: the issue carries no label of the workflow; setting ${labels.step(pipeline.step)} from the pipeline record`, "warn");
@@ -370,6 +378,21 @@ export class Poller {
       return { context, state: pipeline.step };
     }
     return { context, state };
+  }
+
+  /**
+   * A person took the failed label off an issue whose VM is still there: the step the pipeline failed at runs again
+   * (`Pipeline.resume`), the issue gets its label back and the runner the pipeline; an agent step goes on in the failed
+   * run's conversation, and a stopped VM is started for it like for any pending prompt.
+   */
+  private async resume(context: SessionContext): Promise<void> {
+    const { key, repo, recordId, pipeline, labels, watched } = context;
+    pipeline.resume(this.deps.now());
+    await this.records.save(repo, recordId, pipeline);
+    this.deps.log(`${key}: ${labels.failed} was taken off; the step ${pipeline.step} resumes`);
+    await this.relabel(context, pipeline.step);
+    await this.recordOnVm(context);
+    watched.waiting = "";
   }
 
   /** Logs `reason` once while it lasts. */

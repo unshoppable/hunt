@@ -397,6 +397,7 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
       swfReview: readPrompt("4-review"),
       swfPr: readPrompt("5-pr"),
       swfNudge: readPrompt("nudge"),
+      swfContinue: readPrompt("continue"),
       swfAnswer: readPrompt("answer"),
       swfBadResult: readPrompt("bad-result"),
       swfGateFailed: readPrompt("gate-failed"),
@@ -928,6 +929,48 @@ describe("Poller.cycle follows running sessions", () => {
     expect(writes(session.github)).toEqual(["label acme/app#12 swf:implement", "unlabel acme/app#12 swf:plan"]);
     expect(session.stored.labels).toEqual(["bug", "swf:implement"]);
     expect(session.logs).toContain(`${KEY}: the issue is labelled swf:plan but the pipeline is at implement; relabelling`);
+  });
+
+  /** acme/app#12 failed at implement: the agent ended its turn twice without a result in the conversation acp-1. */
+  function failedAtImplement(): Pipeline {
+    const ended = { endedAt: new Date(NOW).toISOString() };
+    return recordAt("implement", {
+      promptTurn: 1_000,
+      reminded: true,
+      runs: [runOf(1, "plan", { ...ended, outcome: "passed" }), runOf(2, "implement", { ...ended, outcome: "failed", sessionId: "acp-1" })],
+    });
+  }
+
+  it("leaves a failed issue alone while it carries the failed label", async () => {
+    const session = followSession(failedAtImplement(), { labels: ["swf:failed"] });
+    await session.poller.cycle();
+    expect(writes(session.github)).toEqual([]);
+    expect(session.calls).toEqual([TOKEN_CALL]);
+  });
+
+  it("resumes the failed step once a person took the failed label off: a new run, the step's label and the pipeline for the runner", async () => {
+    const session = followSession(failedAtImplement(), { labels: ["bug"] });
+    await session.poller.cycle();
+    const resumed = Pipeline.fromComment(session.github.updates.at(-1)?.body ?? "")?.pipeline;
+    expect(resumed?.currentRun).toMatchObject({ n: 3, step: "implement", outcome: "running", resumes: 2 });
+    expect(resumed).toMatchObject({ promptTurn: null, reminded: false, resumedConversation: "acp-1" });
+    expect(writes(session.github).filter((call) => call.startsWith("label") || call.startsWith("unlabel"))).toEqual(["label acme/app#12 swf:implement"]);
+    expect(session.stored.labels).toEqual(["bug", "swf:implement"]);
+    expect(session.calls.at(-1)).toMatch(/^hunt-ctl swf-inbox [0-9a-f-]+ <<< .*\\"resumes\\":2/);
+    expect(session.logs).toContain(`${KEY}: swf:failed was taken off; the step implement resumes`);
+
+    session.github.threads[KEY] = threadOf(resumed as Pipeline);
+    await session.poller.cycle();
+    expect(session.calls.filter((call) => call.startsWith("hunt-ctl swf-inbox"))).toHaveLength(1);
+  });
+
+  it("starts the stopped VM of a resumed step and hands it the pipeline", async () => {
+    const session = followSession(failedAtImplement(), { labels: ["swf:implement"], vmStatus: "SUSPENDED" });
+    startable(session.compute, session.listed);
+    await session.poller.cycle();
+    expect(session.logs).toContain(`${KEY}: the step implement waits for its prompt while ${VM} is suspended; starting it`);
+    await settle(session.logs, `${KEY}: ${VM} runs again`);
+    expect(session.calls.at(-1)).toMatch(/^hunt-ctl swf-inbox [0-9a-f-]+ <<< .*\\"resumes\\":2/);
   });
 
   it("follows no VM that names another session's VM", async () => {

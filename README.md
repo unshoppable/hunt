@@ -1293,7 +1293,10 @@ poller refreshes), moves the label to the next step, saves the record comment an
 instead of a poll. An unusable result is discarded and the agent told why in the same conversation. A turn that ends
 without a result costs one `gh issue view` of the labels: `swf:question` means the agent asked and the runner waits
 for the poller to bring the answer, `swf:failed` that it gave up, else one reminder (`nudge.user-prompt.md`), and the
-issue is marked `swf:failed` when the next turn ends the same way. Each run records the ACP session of its
+issue is marked `swf:failed` when the next turn ends the same way. A person's slash command (`/compact`) ends the
+agent's turn too, as its own prompt or steered into the running turn; the relay reports such a turn
+(`lastTurnTookCommand` in `status.json`, `apps/session/src/relay/slash-command.utils.ts`), and the runner sends the
+agent on with `continue.user-prompt.md` instead, which spends no reminder. Each run records the ACP session of its
 conversation (`sessionId`, the Claude Code session ID), and the runner copies that conversation's transcript
 (`$CLAUDE_CONFIG_DIR/projects/<slug>/<sessionId>.jsonl`) to `.hunt/swf/transcripts/<nn>-<step>.jsonl` whenever no turn
 runs, and once more after the `clear` of the next step, when the stopped relay has written it completely; a failed copy
@@ -1337,7 +1340,12 @@ fallback prompt for a missing one; the step's result, labels and questions stay 
 pipeline: `swf:done`, the `done` status of `swf.projectStatus` (`Done` by default) in the projects and a comment. A pull
 request closed without a merge, a missing pull request or an agent that
 ends a step's turn twice without a result (one reminder in between) mark the issue `swf:failed` with a comment; a setup
-that fails does so too, and its VM stays for inspection.
+that fails does so too, and its VM stays for inspection. A person resumes a failed issue whose VM is still there by
+taking `swf:failed` off: the poller begins a new run of the failed step that `resumes` the failed one
+(`Pipeline.resume`), sets the step's label and hands the pipeline to the runner, starting a stopped VM first; an agent
+step goes on in the failed run's conversation with `continue.user-prompt.md` while the relay still serves it, else its
+prompt goes into a fresh conversation. An issue without its VM resumes the way a lost VM is replaced (below), once a
+person sets the step's label in place of `swf:failed`.
 
 A session VM may disappear while its issue is in progress: the reaper deletes a VM that was off for seven days (see
 below), which an issue waiting at `human-review` reaches, or a person deletes one. The poller finds such an issue with

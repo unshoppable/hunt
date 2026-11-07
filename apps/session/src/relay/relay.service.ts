@@ -30,6 +30,7 @@ import {
   type JsonRpcNotification,
   type Outcome,
 } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
+import { isCommandPrompt } from "./slash-command.utils.ts";
 import { SubagentSessions } from "./subagent-sessions.domain.ts";
 import { ToolCallLog } from "./tool-call-log.domain.ts";
 import { TrailingReply } from "./trailing-reply.domain.ts";
@@ -136,6 +137,9 @@ export class Relay {
   private turn: TurnState = "idle";
   private lastClientActivityAt: number | null = null;
   private lastTurnEndedAt: number | null = null;
+  /** Whether the running turn took in a slash command (`isCommandPrompt`), and whether the turn that ended last did. */
+  private hasTurnTakenCommand = false;
+  private lastTurnTookCommand = false;
   private nextAgentRequestId = 1;
   private nextClientRequestId = 1;
   private readonly agentRequests = new Map<JsonRpcId, AgentRequest>();
@@ -249,6 +253,7 @@ export class Relay {
       clientConnected: this.clients.size > 0,
       lastClientActivityAt: this.lastClientActivityAt,
       lastTurnEndedAt: this.lastTurnEndedAt,
+      lastTurnTookCommand: this.lastTurnTookCommand,
       pendingPermissionSince: oldestPermission?.receivedAt ?? null,
       question: this.state === "ready" && this.turn === "idle" && !oldestPermission && this.endsWithQuestion(),
     };
@@ -471,6 +476,7 @@ export class Relay {
     const prompt = this.queue.shift();
     if (!prompt) return;
     this.activePrompt = prompt;
+    this.hasTurnTakenCommand = isCommandPrompt(prompt.params, this.latestCommands);
     this.recordPrompt(prompt);
     this.sendToAgent("session/prompt", prompt.params, { kind: "prompt", request: prompt });
     this.setTurn("running");
@@ -509,10 +515,16 @@ export class Relay {
     this.sendToAgent(STEER_METHOD, request.params, { kind: "steer", request });
   }
 
-  /** Answers a forwarded steered prompt; one the running turn took in goes into the history like a prompt. */
+  /**
+   * Answers a forwarded steered prompt; one the running turn took in goes into the history like a prompt, and a slash
+   * command among them marks the turn as one that took a command.
+   */
   private finishSteer(request: ClientRequest, outcome: Outcome): void {
     if (isRecord(outcome.result) && outcome.result.outcome === "injected") {
       this.recordPrompt(request);
+      if (isCommandPrompt(request.params, this.latestCommands)) {
+        this.hasTurnTakenCommand = true;
+      }
     }
     this.answer(request, outcome);
   }
@@ -520,6 +532,8 @@ export class Relay {
   private finishPrompt(prompt: ClientRequest, outcome: Outcome): void {
     this.activePrompt = null;
     this.lastTurnEndedAt = this.deps.now();
+    this.lastTurnTookCommand = this.hasTurnTakenCommand;
+    this.hasTurnTakenCommand = false;
     this.answer(prompt, outcome);
     this.forwardNextPrompt();
     if (!this.activePrompt) {

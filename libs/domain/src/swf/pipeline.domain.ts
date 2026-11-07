@@ -35,6 +35,11 @@
  * them and, on a failure, gives the result back to the agent in the same conversation (`noteGateFailure`). `gateRuns`
  * counts those failures of the current run; past `maxGateRuns` the agent is asked to escalate (`gateEscalates`). A gate
  * failure is no return.
+ *
+ * An issue is marked as failed when the agent gives up or ends a step's turn twice without its result (`fail`); a run
+ * of a person's slash command such as `/compact` ends the agent's turn too, but counts as neither (`continueAfterCommand`).
+ * A person resumes a failed issue by taking `swf:failed` off: the step gets a new run that `resumes` the failed one
+ * (`resume`), and an agent step sends the agent on in the conversation of the failed run when the VM still serves it.
  */
 import * as z from "zod/mini";
 import { DomainModel } from "../model/domain.model.ts";
@@ -73,6 +78,8 @@ const ZodRun = z.object({
   cause: z.optional(z.int()),
   /** The ACP session of the conversation the prompt of this agent step's run went to; absent until the prompt went out. */
   sessionId: z.optional(z.string()),
+  /** The `n` of the failed run of the same step that this run resumes. */
+  resumes: z.optional(z.int()),
 });
 export type Run = z.infer<typeof ZodRun>;
 
@@ -234,6 +241,21 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   /** Whether the prompt of the current agent step is still to be sent. */
   get isPromptPending(): boolean {
     return this.waitsForAgent && this.promptTurn === null;
+  }
+
+  /**
+   * The conversation a resumed agent step goes on in while its prompt is pending: that of the failed run it resumes;
+   * null for any other run, after its prompt went out, or when the failed run had no conversation yet.
+   */
+  get resumedConversation(): string | null {
+    const resumes = this.currentRun?.resumes;
+    if (!this.isPromptPending || resumes === undefined) return null;
+    return this.runs.find((run) => run.n === resumes)?.sessionId ?? null;
+  }
+
+  /** Whether the pipeline ended because its issue was marked as failed, which a person can resume (`resume`). */
+  get hasFailed(): boolean {
+    return !this.currentRun && this.runs.at(-1)?.outcome === "failed";
   }
 
   /** One line on where the pipeline stands, for the people who read the issue. */
@@ -465,6 +487,17 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   }
 
   /**
+   * A person's slash command (`/compact`, …) ended the agent's turn at `lastTurnEndedAt` before the step's result: the
+   * agent was told to go on, and its next turn counts as the step's; the reminder stays as it was.
+   */
+  continueAfterCommand(lastTurnEndedAt: number): void {
+    if (!this.hasTurnEndedSincePrompt(lastTurnEndedAt)) throw new Error(`no turn of the agent ended since the prompt of the step ${this.step}`);
+    this.changeState(() => {
+      this.promptTurn = lastTurnEndedAt;
+    });
+  }
+
+  /**
    * The answers to the agent's question went to the agent, whose turn had ended at `lastTurnEndedAt` (0: none had): its
    * next turn counts as the step's, and one that ends without a result gets a reminder again.
    */
@@ -529,6 +562,16 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   }
 
   /**
+   * A person took the failed label off the issue at `now`: a run of the step the pipeline failed at begins, which
+   * `resumes` the failed run, with no prompt sent, no reminder and no gate failure yet; see `resumedConversation`.
+   */
+  resume(now: number): void {
+    const failed = this.runs.at(-1);
+    if (!this.hasFailed || !failed) throw new Error(`the pipeline at ${this.step} has not failed; nothing to resume`);
+    this.changeState(() => this.beginRun(this.step, now, { resumes: failed.n }));
+  }
+
+  /**
    * The session's VM was replaced, and with it the agent's conversation: the current agent step starts over on the new
    * VM at `now`, its run ends as `restarted` and a new run of the step begins, whose prompt is to be sent. A step that
    * waits for GitHub has nothing to start over.
@@ -573,14 +616,17 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
    */
   private moveTo(step: SwfStep, now: number, outcome: Exclude<RunOutcome, "running"> = "passed", cause?: number): void {
     this.endRun(outcome, now);
+    this.beginRun(step, now, cause === undefined ? {} : { cause });
+  }
+
+  /** Begins a run of `step` at `now` with `link` (its `cause` or the run it `resumes`), with no prompt sent, no reminder, no gate failure and no merge requested yet. */
+  private beginRun(step: SwfStep, now: number, link: Pick<Run, "cause" | "resumes">): void {
     this.step = step;
     this.promptTurn = null;
     this.reminded = false;
     this.gateRuns = 0;
     this.mergeSha = null;
-    const run: Run = { n: this.runs.length + 1, step, startedAt: isoOf(now), endedAt: null, outcome: "running" };
-    if (cause !== undefined) run.cause = cause;
-    this.runs = [...this.runs, run];
+    this.runs = [...this.runs, { n: this.runs.length + 1, step, startedAt: isoOf(now), endedAt: null, outcome: "running", ...link }];
   }
 
   /** Ends the current run as `outcome` at `now`; a record without a running run has nothing to end. */

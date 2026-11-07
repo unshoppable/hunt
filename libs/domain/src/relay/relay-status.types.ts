@@ -19,6 +19,11 @@ export interface RelayStatus {
   clientConnected: boolean;
   lastClientActivityAt: number | null;
   lastTurnEndedAt: number | null;
+  /**
+   * Whether the turn that ended last ran one of the session's slash commands (`/compact`, …), as its prompt or steered
+   * into it, which ends the agent's turn before it finished (`apps/session/src/relay/slash-command.utils.ts`).
+   */
+  lastTurnTookCommand: boolean;
   /** When the oldest unanswered permission request arrived; null when none is open. */
   pendingPermissionSince: number | null;
   /**

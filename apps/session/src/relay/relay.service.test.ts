@@ -485,6 +485,38 @@ describe("steering", () => {
     expect(harness.requestsTo("_session/steering")).toEqual([]);
     expect(client.sent).toEqual([{ jsonrpc: "2.0", id: "s1", result: { outcome: "promptRequired", reason: "noRunningTurn" } }]);
   });
+
+  it("reports a turn that took a steered slash command, and only that turn", async () => {
+    const harness = await startedHarness();
+    harness.update({ sessionUpdate: "available_commands_update", availableCommands: [{ name: "compact" }] });
+    const client = harness.loadedClient();
+    harness.relay.handleClientMessage(client, promptRequest("p1", "implement the plan"));
+    harness.relay.handleClientMessage(client, steerRequest("s1", "/compact"));
+    harness.respond(harness.requestsTo("_session/steering")[0], { result: { outcome: "injected" } });
+    expect(harness.relay.status().lastTurnTookCommand).toBe(false);
+
+    harness.respond(harness.requestsTo("session/prompt")[0], END_TURN);
+    expect(harness.relay.status()).toMatchObject({ turn: "idle", lastTurnTookCommand: true });
+
+    harness.relay.handleClientMessage(client, promptRequest("p2", "go on"));
+    harness.relay.handleClientMessage(client, steerRequest("s2", "/compact"));
+    harness.respond(harness.requestsTo("_session/steering")[1], { result: { outcome: "promptRequired", reason: "noRunningTurn" } });
+    harness.respond(harness.requestsTo("session/prompt")[1], END_TURN);
+    expect(harness.relay.status().lastTurnTookCommand).toBe(false);
+  });
+
+  it("reports a turn whose own prompt is a slash command", async () => {
+    const harness = await startedHarness();
+    harness.update({ sessionUpdate: "available_commands_update", availableCommands: [{ name: "compact" }] });
+    const client = harness.loadedClient();
+    harness.relay.handleClientMessage(client, promptRequest("p1", "/compact"));
+    harness.relay.handleClientMessage(client, promptRequest("p2", "/tmp is full"));
+
+    harness.respond(harness.requestsTo("session/prompt")[0], END_TURN);
+    expect(harness.relay.status()).toMatchObject({ turn: "running", lastTurnTookCommand: true });
+    harness.respond(harness.requestsTo("session/prompt")[1], END_TURN);
+    expect(harness.relay.status()).toMatchObject({ turn: "idle", lastTurnTookCommand: false });
+  });
 });
 
 describe("cancellation", () => {
@@ -999,6 +1031,7 @@ describe("status", () => {
       clientConnected: false,
       lastClientActivityAt: null,
       lastTurnEndedAt: null,
+      lastTurnTookCommand: false,
       pendingPermissionSince: null,
       question: false,
     });

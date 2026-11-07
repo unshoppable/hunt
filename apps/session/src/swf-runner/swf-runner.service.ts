@@ -27,10 +27,13 @@
  *    (`hunt-ctl set-branch`), so that snapshot, push and the desktop's adoption see it.
  * 4. With the relay idle: the answers waiting go to the agent in the same conversation; a pending step prompt goes into
  *    a fresh conversation (`hunt-ctl clear <id> --keep-stored`, which restarts the relay and reports the new session)
- *    with the step's model and effort as the conversation's config options, which the restarted relay applies; a turn
- *    that ended without a result is looked up on the issue once: the question label means the poller brings the answer,
- *    the failed label that the agent gave up, else the agent is reminded once and the issue is marked as failed the
- *    second time.
+ *    with the step's model and effort as the conversation's config options, which the restarted relay applies; the
+ *    pending prompt of a step a person resumed after it failed goes into the failed run's conversation instead, as
+ *    `continue.user-prompt.md`, while the relay still serves it. A turn that ended without a result is looked up on the
+ *    issue once: the question label means the poller brings the answer, the failed label that the agent gave up; a turn
+ *    that took a person's slash command (`/compact`, which ends the agent's turn) sends the agent on with
+ *    `continue.user-prompt.md` and counts as no reminder; else the agent is reminded once and the issue is marked as
+ *    failed the second time.
  *
  * A Hunt desktop connected to the VM changes nothing: the pipeline runs on so that the desktop watches it live. The
  * restart of the relay for a fresh conversation drops the desktop's connection, and the desktop connects again on its
@@ -46,6 +49,7 @@ import { stoppedComment } from "../../../../libs/domain/src/swf/swf-comments.uti
 import {
   answerPrompt,
   badResultPrompt,
+  continuePrompt,
   gatePrompt,
   nudgePrompt,
   stepPrompt,
@@ -179,14 +183,18 @@ export class SwfRunner {
       return;
     }
     if (pipeline.isPromptPending) {
-      await this.sendStepPrompt(pipeline);
+      if (pipeline.resumedConversation === status.acpSessionId) {
+        await this.sendResumePrompt(pipeline, status);
+      } else {
+        await this.sendStepPrompt(pipeline);
+      }
       return;
     }
     if (status.lastTurnEndedAt === null || !pipeline.hasTurnEndedSincePrompt(status.lastTurnEndedAt)) {
       this.waitOnce(`the agent works on ${pipeline.step}`);
       return;
     }
-    await this.handleTurnWithoutResult(pipeline, status.lastTurnEndedAt);
+    await this.handleTurnWithoutResult(pipeline, status, status.lastTurnEndedAt);
   }
 
   /**
@@ -349,11 +357,26 @@ export class SwfRunner {
   }
 
   /**
-   * The agent's turn ended at `lastTurnEndedAt` without a result: the issue's labels, read once per turn, say whether it
-   * asked a question (the poller brings the answer) or gave up; else the agent is reminded once and the issue is marked
-   * as failed the second time.
+   * Sends the agent on with the step a person resumed after it failed, in the conversation of the failed run that the
+   * relay still serves, so that it keeps what it knew.
    */
-  private async handleTurnWithoutResult(pipeline: Pipeline, lastTurnEndedAt: number): Promise<void> {
+  private async sendResumePrompt(pipeline: Pipeline, status: RelaySessionStatus): Promise<void> {
+    const text = continuePrompt(this.deps.prompts.swfContinue, Repository.fromSlug(pipeline.repo), this.labels, pipeline);
+    const outcome = await this.deps.sendPrompt({ sessionId: status.acpSessionId, cwd: this.deps.worktree, text });
+    pipeline.recordPrompt(status.lastTurnEndedAt ?? 0, status.acpSessionId);
+    this.deps.files.writePipeline(pipeline);
+    this.lookedUpTurn = null;
+    this.lastWait = "";
+    this.deps.log(`sent the agent on with the resumed step ${pipeline.step} in its conversation (prompt ${outcome})`);
+    await this.saveRecord(pipeline);
+  }
+
+  /**
+   * The agent's turn ended at `lastTurnEndedAt` without a result: the issue's labels, read once per turn, say whether it
+   * asked a question (the poller brings the answer) or gave up; a turn that took a person's slash command sends the
+   * agent on without a reminder; else the agent is reminded once and the issue is marked as failed the second time.
+   */
+  private async handleTurnWithoutResult(pipeline: Pipeline, status: RelaySessionStatus, lastTurnEndedAt: number): Promise<void> {
     const repo = Repository.fromSlug(pipeline.repo);
     if (this.lookedUpTurn !== lastTurnEndedAt) {
       this.lookedUpLabels = await this.deps.github.labels(repo, pipeline.issue);
@@ -367,6 +390,15 @@ export class SwfRunner {
       pipeline.fail(this.deps.now());
       this.deps.files.writePipeline(pipeline);
       this.deps.log(`the agent gave up at ${pipeline.step}; the issue is marked as failed`, "warn");
+      await this.saveRecord(pipeline);
+      return;
+    }
+    if (status.lastTurnTookCommand) {
+      const text = continuePrompt(this.deps.prompts.swfContinue, repo, this.labels, pipeline);
+      const outcome = await this.deps.sendPrompt({ sessionId: status.acpSessionId, cwd: this.deps.worktree, text });
+      pipeline.continueAfterCommand(lastTurnEndedAt);
+      this.deps.files.writePipeline(pipeline);
+      this.deps.log(`a command ended the agent's turn of ${pipeline.step}; sent it on (prompt ${outcome})`);
       await this.saveRecord(pipeline);
       return;
     }
@@ -385,7 +417,7 @@ export class SwfRunner {
     this.deps.log(`the agent ended its turn again without a result for ${step}; marking the issue as failed`, "warn");
     this.isRecordStale = true;
     await this.deps.github.editLabels(repo, pipeline.issue, [this.labels.failed], this.labels.carriedBy({ labels: this.lookedUpLabels }));
-    await this.deps.github.comment(repo, pipeline.issue, stoppedComment(step, this.deps.vmName));
+    await this.deps.github.comment(repo, pipeline.issue, stoppedComment(step, this.deps.vmName, this.labels.failed));
     await this.saveRecord(pipeline);
   }
 

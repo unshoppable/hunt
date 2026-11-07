@@ -55,6 +55,11 @@ const RAW_SDK_MESSAGES = TASK_MESSAGE_SUBTYPES.map((subtype) => ({ type: "system
  * a local session's agent gets the same (`build_session_meta` in apps/client/src-tauri/src/agent/acp/connection.rs).
  */
 const THINKING = { type: "adaptive", display: "summarized" };
+/**
+ * The Claude Code settings of the session (the SDK's flag tier): auto-compaction at 400k tokens instead of near the
+ * model's full window of 1M, as on the user's Mac, whose `~/.claude/settings.json` does not reach the VM.
+ */
+const SETTINGS = { autoCompactWindow: 400_000 };
 
 /** One client connection. */
 export interface ClientConnection {
@@ -159,7 +164,7 @@ export class Relay {
       this.answerWaitingInitializes();
 
       const config = this.deps.loadConfig();
-      const meta = { systemPrompt: { append: config.systemPromptAppend }, claudeCode: { emitRawSDKMessages: RAW_SDK_MESSAGES, options: { thinking: THINKING } } };
+      const meta = { systemPrompt: { append: config.systemPromptAppend }, claudeCode: { emitRawSDKMessages: RAW_SDK_MESSAGES, options: { thinking: THINKING, settings: SETTINGS } } };
       const setup = { cwd: config.cwd, mcpServers: this.deps.mcpServers, _meta: meta };
       if (config.acpSessionId) {
         this.adoptSessionId(config.acpSessionId);

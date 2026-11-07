@@ -148,7 +148,7 @@ describe("main", () => {
         systemPrompt: { append: "Commit locally only." },
         claudeCode: {
           emitRawSDKMessages: [{ type: "system", subtype: "task_progress" }, { type: "system", subtype: "task_notification" }],
-          options: { thinking: { type: "adaptive", display: "summarized" } },
+          options: { thinking: { type: "adaptive", display: "summarized" }, settings: { autoCompactWindow: 400_000 } },
         },
       },
     });

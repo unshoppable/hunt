@@ -1,3 +1,9 @@
+## 0.150.0 (2026-11-07)
+
+### 🚀 Features
+
+- **client:** read and set the state of every inspector tab through hunt-client ([ede3fba](https://github.com/unshoppable/hunt/commit/ede3fba))
+
 ## 0.149.0 (2026-11-07)
 
 ### 🚀 Features

@@ -1,3 +1,9 @@
+## 0.33.12 (2026-11-07)
+
+### 🩹 Fixes
+
+- **session:** suspend a session VM only after 15 idle checks in a row ([3b3513a](https://github.com/unshoppable/hunt/commit/3b3513a))
+
 ## 0.33.11 (2026-11-07)
 
 ### 🚀 Features

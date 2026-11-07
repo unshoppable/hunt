@@ -1,3 +1,9 @@
+## 0.46.6 (2026-11-07)
+
+### 🩹 Fixes
+
+- **session:** suspend a session VM only after 15 idle checks in a row ([3b3513a](https://github.com/unshoppable/hunt/commit/3b3513a))
+
 ## 0.46.5 (2026-11-07)
 
 This was a version bump only for gateway to align it with other projects, there were no code changes.

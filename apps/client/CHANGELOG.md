@@ -1,3 +1,9 @@
+## 0.149.0 (2026-11-07)
+
+### 🚀 Features
+
+- **client:** draw ERD relationships by dragging and keep a diagram's sources to mark it outdated ([b3c3dcf](https://github.com/unshoppable/hunt/commit/b3c3dcf))
+
 ## 0.148.0 (2026-11-06)
 
 ### 🚀 Features

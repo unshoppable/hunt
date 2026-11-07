@@ -1,3 +1,9 @@
+## 0.153.0 (2026-11-07)
+
+### 🚀 Features
+
+- **client:** set the type of the Factory and Checks tabs in the settings and show a run's result and conversation in a readable column ([0672f32](https://github.com/unshoppable/hunt/commit/0672f32))
+
 ## 0.152.0 (2026-11-07)
 
 ### 🚀 Features

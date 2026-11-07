@@ -1,3 +1,7 @@
+## 0.46.8 (2026-11-07)
+
+This was a version bump only for gateway to align it with other projects, there were no code changes.
+
 ## 0.46.7 (2026-11-07)
 
 ### 🩹 Fixes

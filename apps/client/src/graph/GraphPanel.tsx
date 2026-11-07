@@ -29,10 +29,13 @@ import { edgeMarker, layoutDiagram, type DependencyEdge, type DiagramFlowNode } 
 import { AliasChip, CommentCountsContext, DependencyEdgeView, FileNodeView, FolderGroupView, SearchHighlightContext, fileNodeMinWidth, type SearchHighlight } from "./DiagramNodes";
 import { REVIEW_LABELS, ReviewBars } from "./ReviewBars";
 import { parseGraph } from "./schema.utils";
+import { SharpViewport } from "./SharpViewport";
 
 const NODE_TYPES: NodeTypes = { file: FileNodeView, folder: FolderGroupView };
 const EDGE_TYPES: EdgeTypes = { dependency: DependencyEdgeView };
 const EMPTY_GRAPH: ArchitectureGraph = { nodes: [], edges: [] };
+/** The canvas pans while the right mouse button is held; the left button is for the diagram's elements. */
+const PAN_BUTTONS = [2];
 /** How long the mouse rests on a file before it counts as hovered; crossing a file on the way to the card does not. */
 const FILE_HOVER_DELAY = 100;
 
@@ -313,12 +316,14 @@ export function GraphPanel({ sessionId }: { sessionId: string }) {
                   minZoom={0.2}
                   maxZoom={2 * Math.max(1, zoomScale)}
                   colorMode="dark"
+                  panOnDrag={PAN_BUTTONS}
                   nodesDraggable={false}
                   nodesConnectable={false}
                   elementsSelectable={false}
                   zIndexMode="manual"
                   proOptions={{ hideAttribution: true }}
                 >
+                  <SharpViewport />
                   <Background gap={24} color="#2f343d" />
                   <Controls showInteractive={false} fitViewOptions={fitViewOptions} />
                   <DiagramMiniMap searchHighlight={searchHighlight} />

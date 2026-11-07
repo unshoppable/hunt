@@ -30,10 +30,13 @@ import { TableEditor } from "./TableEditor";
 import { TableFilterPopover } from "./TableFilterPopover";
 import { withoutTables } from "./table-filter.utils";
 import { ShapeToolbar, type ShapeTool } from "./ShapeToolbar";
+import { SharpViewport } from "../SharpViewport";
 
 /** How long after the last edit the diagram file is written; edits within that time are written together. */
 const WRITE_DELAY_MS = 400;
 const NO_HOVER = { hoveredEdgeId: null, hoveredNodeId: null };
+/** The canvas pans while the right mouse button is held; the left button is for the diagram's elements. */
+const PAN_BUTTONS = [2];
 
 /**
  * Where a shape diagram comes from: the file the agent generates for the session in `.hunt/diagrams/`, or a diagram
@@ -513,6 +516,7 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
                 maxZoom={2 * Math.max(1, zoomScale)}
                 colorMode="dark"
                 className={`${isErd ? "erd-canvas-editable" : "shape-canvas-editable"} ${isPlacing || tool === "connect" ? "shape-canvas-picking" : ""}`}
+                panOnDrag={PAN_BUTTONS}
                 nodesDraggable
                 nodesConnectable
                 elementsSelectable={false}
@@ -521,6 +525,7 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
                 proOptions={{ hideAttribution: true }}
               >
                 {isErd ? <CrowFootDefs /> : null}
+                <SharpViewport />
                 <Background gap={24} color="#2f343d" />
                 <Controls showInteractive={false} fitViewOptions={fitViewOptions} />
                 <ShapeMiniMap />

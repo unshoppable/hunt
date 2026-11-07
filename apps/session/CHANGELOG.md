@@ -1,3 +1,9 @@
+## 0.33.11 (2026-11-07)
+
+### 🚀 Features
+
+- **client:** attach the element's screenshot and Angular component to review annotations ([8cca777](https://github.com/unshoppable/hunt/commit/8cca777))
+
 ## 0.33.10 (2026-11-06)
 
 ### 🚀 Features

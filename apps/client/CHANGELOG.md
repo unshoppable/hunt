@@ -1,3 +1,13 @@
+## 0.152.0 (2026-11-07)
+
+### 🚀 Features
+
+- **client:** attach the element's screenshot and Angular component to review annotations ([8cca777](https://github.com/unshoppable/hunt/commit/8cca777))
+
+### 🩹 Fixes
+
+- **client:** draw shape diagram connections plain or dashed like the dependency diagram and drop deleted elements at once ([05f2251](https://github.com/unshoppable/hunt/commit/05f2251))
+
 ## 0.151.1 (2026-11-07)
 
 ### 🩹 Fixes

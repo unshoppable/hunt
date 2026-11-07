@@ -326,12 +326,24 @@ export function App() {
               ) : null}
             </nav>
             <div className="min-h-0 flex-1">
-              {isStartView && rightTab === "git" ? (
-                draft?.parentId ? (
-                  <GitPanel key={`git:${draft.parentId}`} scope={{ kind: "session", id: draft.parentId }} />
-                ) : startRepoPath ? (
-                  <GitPanel key={`git:repo:${startRepoPath}`} scope={{ kind: "repo", path: startRepoPath }} />
-                ) : null
+              {isStartView && draft?.parentId ? (
+                <>
+                  {/* The start view of a sub session works in its parent's worktree already: every tab shows the parent's panel, only the Diff is empty, since the sub session has not changed anything yet. */}
+                  {rightTab === "diff" ? (
+                    <p className="p-3 text-[13px] text-neutral-500">No changes.</p>
+                  ) : rightTab === "git" ? (
+                    <GitPanel key={`git:${draft.parentId}`} scope={{ kind: "session", id: draft.parentId }} />
+                  ) : rightTab === "editor" ? (
+                    <IdePanel sessionId={draft.parentId} />
+                  ) : rightTab === "graph" ? (
+                    <ArchitecturePanel key={`graph:${draft.parentId}`} sessionId={draft.parentId} />
+                  ) : rightTab === "checks" ? (
+                    <ChecksPanel key={`checks:${draft.parentId}`} sessionId={draft.parentId} />
+                  ) : null}
+                  <TerminalPanel key={`terminal:${draft.parentId}`} sessionId={draft.parentId} isVisible={rightTab === "terminal"} />
+                </>
+              ) : isStartView && rightTab === "git" && startRepoPath ? (
+                <GitPanel key={`git:repo:${startRepoPath}`} scope={{ kind: "repo", path: startRepoPath }} />
               ) : null}
               {!activeSessionId || draft || isCreatingActive ? null : (
                 <>

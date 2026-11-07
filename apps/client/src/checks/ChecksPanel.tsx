@@ -102,7 +102,7 @@ export function ChecksPanel({ sessionId }: { sessionId: string }) {
 
       {rows.length ? (
         <>
-          <div className="flex max-h-[45%] shrink-0 flex-col overflow-y-auto py-1.5 text-[13px]">
+          <div className="flex max-h-[45%] shrink-0 flex-col overflow-y-auto py-1.5 font-(family-name:--checks-font-family) text-(length:--checks-font-size)">
             {rows.map((row) => (
               <CheckRowView
                 key={row.definition.name}
@@ -159,7 +159,7 @@ function CheckRowView({
   const description = describeCheck(row, now);
   const isRunning = run?.state === "running";
   return (
-    <div className="tree-row flex h-9 min-w-0 shrink-0 cursor-default items-center gap-2.5 px-4" data-selected={isSelected} onClick={onSelect}>
+    <div className="tree-row flex min-h-9 min-w-0 shrink-0 cursor-default items-center gap-2.5 px-4" data-selected={isSelected} onClick={onSelect}>
       <StateIcon row={row} />
       <span className="shrink-0 font-mono text-neutral-100">{definition.name}</span>
       <span className="min-w-0 flex-1 truncate font-mono text-neutral-500" title={definition.cwd ? `${definition.command} (in ${definition.cwd})` : definition.command}>

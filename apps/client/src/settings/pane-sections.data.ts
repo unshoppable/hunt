@@ -12,6 +12,8 @@ export const SECTIONS: Section[] = [
   { pane: "editor", title: "Editor", hint: "Code editors of the Editor tab and the editor windows", fields: ["fontFamily", "fontSize", "lineHeight"] },
   { pane: "architecture", title: "Architecture", hint: "Text size the diagrams open with, and where the Save button puts them", fields: ["fontSize"] },
   { pane: "pullRequest", title: "PR Description", hint: "Description and conversation of the reviewed pull request", fields: ["fontFamily", "fontSize", "lineHeight"] },
+  { pane: "checks", title: "Checks", hint: "List of the checks; their output follows the Terminal settings", fields: ["fontFamily", "fontSize"] },
+  { pane: "factory", title: "Factory", hint: "Runs and step results of the pipeline; a run's conversation follows the Chat settings", fields: ["fontFamily", "fontSize", "lineHeight"] },
   { pane: "terminal", title: "Terminal", hint: "Service logs and shells on the VM of a remote session", fields: ["fontFamily", "fontSize", "lineHeight", "background"] },
 ];
 

@@ -55,6 +55,16 @@
   --pullRequest-indent: 0px;
   --pullRequest-bg: #272c35;
   --pullRequest-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --checks-font-size: 13px;
+  --checks-line-height: 1.5;
+  --checks-indent: 0px;
+  --checks-bg: #272c35;
+  --checks-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --factory-font-size: 14px;
+  --factory-line-height: 1.6;
+  --factory-indent: 0px;
+  --factory-bg: #272c35;
+  --factory-font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   --terminal-font-size: 16px;
   --terminal-line-height: 1.2;
   --terminal-indent: 0px;

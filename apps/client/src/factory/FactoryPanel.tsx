@@ -149,7 +149,7 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
               </ReactFlowProvider>
             ) : null}
           </div>
-          <div className="flex max-h-[40%] shrink-0 flex-col overflow-y-auto py-1.5 text-[13px]">
+          <div className={`flex max-h-[40%] shrink-0 flex-col overflow-y-auto py-1.5 ${FACTORY_TEXT}`}>
             {runs.length ? (
               runs.map((run) => (
                 <RunRow
@@ -228,7 +228,7 @@ function RunRow({ run, now, isOpenable, isSelected, onSelect }: { run: Run; now:
       <span className="w-16 shrink-0 text-right text-neutral-400 tabular-nums">{formatRunDuration(runDuration(run, now))}</span>
     </>
   );
-  const row = `flex h-7 w-full items-center gap-3 px-4 ${isSelected ? "bg-(--row-selected)" : ""}`;
+  const row = `flex min-h-7 w-full items-center gap-3 px-4 ${isSelected ? "bg-(--row-selected)" : ""}`;
   if (!isOpenable) return <div className={`${row} ${run.outcome === "running" ? "" : "opacity-80"}`}>{content}</div>;
   return (
     <button type="button" onClick={onSelect} className={`${row} rounded text-left hover:bg-(--row-hover)`} title="Show the step result and the conversation of this run">
@@ -236,6 +236,14 @@ function RunRow({ run, now, isOpenable, isSelected, onSelect }: { run: Run; now:
     </button>
   );
 }
+
+/** Heading of the two parts of a run's details, Result and Conversation: a ruled line that sets them apart from the result's own headings. */
+/** Type of the run list and the step result, as the Factory page of the settings sets it. */
+const FACTORY_TEXT = "font-(family-name:--factory-font-family) text-(length:--factory-font-size)";
+
+const SECTION_HEADING = "border-b border-(--line) pb-1.5 text-[18px] leading-snug font-semibold text-neutral-100";
+
+
 
 /** The run `n`: the step result it ended with, as the agent wrote it, rendered like the chat's markdown, and its conversation. */
 function RunDetails({ sessionId, n, run, stepCount, transcripts }: { sessionId: string; n: number; run: Run | null; stepCount: number; transcripts: SwfStepFile[] }) {
@@ -245,21 +253,25 @@ function RunDetails({ sessionId, n, run, stepCount, transcripts }: { sessionId: 
   useLoad(() => commands.readSwfStep(sessionId, n), { onValue: setText, onError: (reason) => setError(errorText(reason)) }, [sessionId, n, stepCount]);
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      <div className="flex flex-col gap-3 px-4 py-3 text-[13px]">
+      {/* A line length that stays readable on a wide panel. */}
+      <div className="mx-auto flex max-w-[1200px] flex-col gap-4 px-6 py-5 text-[13px]">
         {run ? (
           <div className="text-neutral-400">
             Run {run.n}, <span className="text-neutral-200">{STEP_LABELS[run.step]}</span>
           </div>
         ) : null}
-        {error ? (
-          <p className="leading-snug break-words text-red-300">{error}</p>
-        ) : text === null ? (
-          <p className="text-neutral-500">{run?.outcome === "running" ? "The run has not reported a step result yet." : `Run ${n} has no step result.`}</p>
-        ) : text === undefined ? null : text.trim() ? (
-          <MarkdownText text={text} className="markdown-document" />
-        ) : (
-          <p className="text-neutral-500 italic">The step result is empty.</p>
-        )}
+        <section className={`flex flex-col gap-3 ${FACTORY_TEXT} leading-(--factory-line-height)`}>
+          <h2 className={SECTION_HEADING}>Result</h2>
+          {error ? (
+            <p className="leading-snug break-words text-red-300">{error}</p>
+          ) : text === null ? (
+            <p className="text-neutral-500">{run?.outcome === "running" ? "The run has not reported a step result yet." : `Run ${n} has no step result.`}</p>
+          ) : text === undefined ? null : text.trim() ? (
+            <MarkdownText text={text} className="markdown-document" />
+          ) : (
+            <p className="text-neutral-500 italic">The step result is empty.</p>
+          )}
+        </section>
         <RunConversationSection sessionId={sessionId} n={n} transcripts={transcripts} />
       </div>
     </div>
@@ -282,8 +294,9 @@ function RunConversationSection({ sessionId, n, transcripts }: { sessionId: stri
   if (error) return <p className="leading-snug break-words text-red-300">{error}</p>;
   if (!conversation) return null;
   return (
-    <section className="mt-2 flex flex-col gap-3 border-t border-(--line) pt-3">
-      <div className="text-neutral-400">Conversation</div>
+    // `chat` gives the conversation the chat pane's type and its Markdown rules, so its rows read as they do there.
+    <section className="chat mt-8 flex flex-col gap-3">
+      <h2 className={SECTION_HEADING}>Conversation</h2>
       {conversation.items.length > 0 ? (
         <MessageList items={conversation.items} plan={[]} isBusy={false} isVerbose={false} basePath={conversation.cwd} />
       ) : (

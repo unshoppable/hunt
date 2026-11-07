@@ -218,8 +218,12 @@ a Chrome, since Playwright MCP takes over every tab of the Chrome it connects to
 - **Review widget**: Hunt attaches to every page of the Chrome over CDP (`Target.setAutoAttach`), adds the binding
   `__huntReview` and injects the review widget (`apps/client/src-tauri/resources/review.js`, built by
   `client:review-widget` from `apps/session/src/review/review-widget.main.ts`) before the page's own scripts. The widget hands an
-  annotation to the binding instead of posting it; Hunt checks it like the review server does, gives it an ID and a time
+  annotation to the binding instead of posting it; Hunt checks it like the review server does, gives it an ID and a time,
+  captures the picked element with 8 px around it (`Page.getLayoutMetrics`, then `Page.captureScreenshot` clipped to the
+  viewport; without an image after an error, a closed tab or 2 s), writes the PNG to
+  `<app data>/annotations/<session id>/<annotation id>.png` (deleted with the session), sets its path as `screenshotPath`
   and emits `review:annotation`, so it lands as a chip above the session's composer as on a VM (see "Remote sessions").
+  Neither the page nor a VM can set `screenshotPath`.
 
 Claude in Chrome stays available next to it, with the user's own Chrome and sign-ins: the prompt sends the agent there
 for every site other than the app it works on, and to Playwright when Claude in Chrome is off.
@@ -945,7 +949,7 @@ Every HTML page of a guarded port host carries a review widget, like Amp's: a *R
 picking, the element under the pointer is outlined, a click picks it and opens a comment box, and *Add* posts the
 annotation (the page's URL and title, a unique CSS selector, the element's text, shortened HTML, box and a few computed
 styles, its source file and line where React's debug info or a `data-source`/`data-inspector-*` attribute tells it,
-and the comment; `libs/domain/src/review/browser-annotation.utils.ts`). The widget (`apps/session/src/review/review-widget.main.ts`, served as
+the owning component's class and host tag where Angular's dev-mode `ng` global tells it, and the comment; `libs/domain/src/review/browser-annotation.utils.ts`). The widget (`apps/session/src/review/review-widget.main.ts`, served as
 `/__hunt/review.js`) lives in a closed shadow root. The preview proxy sends the page loads (GET with `text/html` in
 Accept) and `/__hunt/*` of the port hosts to the review server `hunt-review.service` on 127.0.0.1:9232
 (`apps/session/src/review/review-server.service.ts`), which fetches the page from the service's port as the proxy would and adds the
@@ -956,7 +960,9 @@ annotation as a file in `/run/hunt-review/annotations`; the status helper (below
 to Hunt, which emits `review:annotation` and shows it as a chip above the session's composer
 (`apps/client/src/chat/prompt/PromptInput.tsx`). Nothing is sent by itself: the next prompt the user sends carries every chip,
 formatted by `apps/client/src/chat/prompt/annotation-prompt.utils.ts` into `apps/client/prompts/chat/browser-annotations.user-prompt.md`,
-also with an empty text, and clears them. Annotations that arrive while Hunt does not run wait on the VM until the
+also with an empty text, and clears them; an annotation's screenshot (local Chrome only, see "Review widget" above) goes
+along as an image after the attached ones. The chat shows such a prompt as the user's own text with one chip per
+annotation (`parseAnnotatedPrompt`, which reads the text alone, so it holds after a reload and a transcript replay). Annotations that arrive while Hunt does not run wait on the VM until the
 session's status channel opens; `hunt-ctl stop` drops them.
 
 The *Desktop* tab next to it (`apps/client/src/desktop/DesktopPanel.tsx`) shows the VM's desktop, where the agent drives

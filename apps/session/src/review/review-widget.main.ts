@@ -10,7 +10,7 @@
  */
 import { ANNOTATION_LIMITS, type BrowserAnnotation } from "../../../../libs/domain/src/review/browser-annotation.utils.ts";
 import { deliverAnnotation, mountTiming, type PostJson } from "./annotation-delivery.utils.ts";
-import { attributeSource, cssSelector, pickStyles, reactSource, shorten, shortenHtml, type ElementStep } from "./element-info.utils.ts";
+import { angularComponent, attributeSource, cssSelector, pickStyles, reactSource, shorten, shortenHtml, type ElementStep } from "./element-info.utils.ts";
 
 const GUARD = "__huntReviewWidget";
 const HOST_TAG = "hunt-review";
@@ -209,12 +209,17 @@ function placeBox(box: HTMLDivElement, rect: DOMRect): void {
   Object.assign(box.style, { left: `${Math.max(margin, left)}px`, top: `${top}px` });
 }
 
-/** A short name of the element for the label and the comment box: its source location, else tag, id and classes. */
+/** A short name of the element for the label and the comment box: tag, id and classes, then its source location or component. */
 function describe(element: Element): string {
   const source = sourceOf(element);
   const name = `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ""}${[...element.classList].slice(0, 2).map((className) => `.${className}`).join("")}`;
-  if (!source) return name;
-  return `${name} · ${source.file.split("/").pop()}:${source.line}`;
+  if (source) return `${name} · ${source.file.split("/").pop()}:${source.line}`;
+  const component = componentOf(element);
+  return component ? `${name} · ${component.name}` : name;
+}
+
+function componentOf(element: Element): BrowserAnnotation["component"] {
+  return angularComponent(element, (window as unknown as { ng?: unknown }).ng);
 }
 
 function sourceOf(element: Element): BrowserAnnotation["source"] {
@@ -268,6 +273,10 @@ function annotationOf(element: Element, comment: string): BrowserAnnotation {
   const source = sourceOf(element);
   if (source) {
     annotation.source = source;
+  }
+  const component = componentOf(element);
+  if (component) {
+    annotation.component = component;
   }
   return annotation;
 }

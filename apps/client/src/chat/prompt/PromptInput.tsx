@@ -9,9 +9,10 @@ import type { PromptDraft, QueuedPrompt } from "../chat.store-slice";
 import { PillSelect } from "../PillSelect";
 import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
 import { ScreenshotTrigger, screenshotUrl } from "../ScreenshotPicker";
+import { assetUrl } from "../../ipc/commands";
 import { CLEAR_BUTTON, SEND_BUTTON } from "../../ui/buttons.constants";
 import type { DropdownOption } from "../../ui/floating-menu.utils";
-import { CloseIcon, CommentIcon, EraserIcon, GitHubIcon, SendIcon } from "../../ui/Icons";
+import { CloseIcon, EraserIcon, GitHubIcon, SendIcon } from "../../ui/Icons";
 import { ResizeGrips } from "../../ui/ResizeGrips";
 import { useAutoGrow, useTextareaDrag } from "../../ui/auto-grow.hook";
 import { useDismiss } from "../../ui/dismiss.hook";
@@ -21,7 +22,8 @@ import { matchCommands, slashQueryOf } from "./slash-commands.utils";
 import { codePasteText, EDITOR_CLIPBOARD_TYPE, editorCopyLanguage } from "../code-paste.utils";
 import { fileReference, insertImageReference, insertReference, removeImageReference, shiftImageReferences } from "../image-references.utils";
 import { useFileDrop } from "../file-drop.hook";
-import { annotationElementLabel, annotationTooltip, promptWithAnnotations } from "./annotation-prompt.utils";
+import { annotationElementLabel, annotationScreenshots, annotationTooltip, promptWithAnnotations } from "./annotation-prompt.utils";
+import { AnnotationChip } from "./AnnotationChip";
 
 /** One agent config dropdown (model, effort, …) shown in the prompt toolbar. */
 export type ConfigSelect = { id: string; name: string; value: string; choices: DropdownOption[] };
@@ -215,11 +217,12 @@ export function PromptInput({
 
   function submit(sendsNow = false) {
     const trimmed = text.trim();
-    const images = attachments;
     // A slash command must start the prompt, so it leaves the annotations for the next prompt.
     const sentAnnotations = trimmed.startsWith("/") ? [] : annotations;
-    if ((!trimmed && !images.length && !sentAnnotations.length) || isBlocked) return;
-    const prompt = promptWithAnnotations(sentAnnotations, trimmed);
+    if ((!trimmed && !attachments.length && !sentAnnotations.length) || isBlocked) return;
+    // The screenshots of the annotations follow the attached images, as the prompt numbers them.
+    const images = [...attachments, ...annotationScreenshots(sentAnnotations)];
+    const prompt = promptWithAnnotations(sentAnnotations, trimmed, attachments.length + 1);
     if (sendsNow) {
       onSendNow(prompt, images);
     } else {
@@ -380,14 +383,13 @@ export function PromptInput({
           {annotations.length ? (
             <div className="flex flex-wrap gap-2 px-3 pt-3">
               {annotations.map((annotation) => (
-                <span
+                <AnnotationChip
                   key={annotation.id}
-                  className="group relative flex h-7 max-w-80 items-center gap-1.5 rounded-md border border-white/10 bg-black/30 px-2 text-[12px]"
+                  comment={annotation.comment}
+                  label={annotationElementLabel(annotation)}
                   title={annotationTooltip(annotation)}
+                  imageUrl={annotation.screenshotPath ? assetUrl(annotation.screenshotPath) : undefined}
                 >
-                  <CommentIcon className="size-3 shrink-0 text-neutral-400" />
-                  <span className="min-w-0 truncate text-neutral-200">{annotation.comment}</span>
-                  <span className="max-w-48 shrink-0 truncate text-neutral-500">{annotationElementLabel(annotation)}</span>
                   <button
                     type="button"
                     aria-label={`Remove the annotation "${annotation.comment}"`}
@@ -396,7 +398,7 @@ export function PromptInput({
                   >
                     <CloseIcon className="size-2.5" />
                   </button>
-                </span>
+                </AnnotationChip>
               ))}
             </div>
           ) : null}

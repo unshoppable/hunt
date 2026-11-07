@@ -13,6 +13,8 @@ import { FileReferenceList, FileReferenceRow } from "../FileReferenceList";
 import { resolveFileLink, resolveFileReference, type FileIndex } from "../file-links.utils";
 import { splitFencedCode } from "../code-paste.utils";
 import { huntPromptNotice } from "../hunt-prompt-notice.utils";
+import { parseAnnotatedPrompt } from "../prompt/annotation-prompt.utils";
+import { AnnotationChip } from "../prompt/AnnotationChip";
 import { formatMessageTime } from "./message-time.utils";
 import { locateExcerpt } from "./code-excerpt.utils";
 import { diffFenceOldText, diffFencePatch } from "./diff-fence.utils";
@@ -104,10 +106,25 @@ export function MessageList({
           </div>
         );
       }
+      const annotated = parseAnnotatedPrompt(item.text);
+      const text = annotated ? annotated.text : item.text;
       return (
         <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-(--row-active) px-4 py-2.5 whitespace-pre-wrap break-words text-neutral-100">
-          <ChatImages urls={item.images} className={item.text ? "mb-2" : ""} />
-          <UserText text={item.text} />
+          <ChatImages urls={item.images} className={text || annotated ? "mb-2" : ""} />
+          {annotated ? (
+            <div className={`flex flex-wrap gap-2 whitespace-normal ${text ? "mb-2" : ""}`}>
+              {annotated.annotations.map((annotation, index) => (
+                <AnnotationChip
+                  key={index}
+                  comment={annotation.comment}
+                  label={annotation.label}
+                  title={[annotation.comment, annotation.label, annotation.page].join("\n")}
+                  imageUrl={annotation.imageNumber ? item.images[annotation.imageNumber - 1] : undefined}
+                />
+              ))}
+            </div>
+          ) : null}
+          <UserText text={text} />
           {item.at ? <MessageTime at={item.at} className="-mb-1 mt-0.5 block text-right text-neutral-400" /> : null}
         </div>
       );

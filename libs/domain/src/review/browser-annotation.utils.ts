@@ -21,6 +21,14 @@ export interface AnnotationSource {
   column?: number;
 }
 
+/** The component whose template renders the picked element, as far as the page tells (Angular's dev-mode `ng` global). */
+export interface AnnotationComponent {
+  /** The component's class name. */
+  name: string;
+  /** The tag name of the component's host element, lowercase. */
+  tag: string;
+}
+
 export interface BrowserAnnotation {
   /** The page's URL. */
   url: string;
@@ -38,6 +46,7 @@ export interface BrowserAnnotation {
   /** A few computed styles of the element that tell its look, by CSS property. */
   styles: Record<string, string>;
   source?: AnnotationSource;
+  component?: AnnotationComponent;
   comment: string;
 }
 
@@ -47,6 +56,11 @@ export interface StoredBrowserAnnotation extends BrowserAnnotation {
   id: string;
   /** When the review server received it, in ms since the epoch. */
   createdAt: number;
+  /**
+   * A PNG of the element on this Mac, which the desktop client captured itself over CDP (a local session's Chrome only);
+   * never read from the page or a VM.
+   */
+  screenshotPath?: string;
 }
 
 /** The longest value of each text field; the widget shortens its values to these. */
@@ -58,6 +72,7 @@ export const ANNOTATION_LIMITS = {
   outerHtml: 4000,
   comment: 4000,
   sourceFile: 512,
+  componentName: 256,
   styleCount: 32,
   styleName: 64,
   styleValue: 256,
@@ -94,6 +109,14 @@ export function parseBrowserAnnotation(value: unknown): AnnotationResult {
       annotation.source = source;
     } else {
       problems.push("source must hold a file and a line, optionally a column");
+    }
+  }
+  if (value.component !== undefined) {
+    const component = parseComponent(value.component);
+    if (component) {
+      annotation.component = component;
+    } else {
+      problems.push(`component must hold a name and a tag of at most ${ANNOTATION_LIMITS.componentName} characters`);
     }
   }
   if (problems.length > 0) return { error: problems[0] };
@@ -146,6 +169,14 @@ function parseSource(value: unknown): AnnotationSource | undefined {
   if (column === undefined) return { file, line };
   if (!isLineNumber(column)) return undefined;
   return { file, line, column };
+}
+
+function parseComponent(value: unknown): AnnotationComponent | undefined {
+  if (!isRecord(value)) return undefined;
+  const { name, tag } = value;
+  const isName = (entry: unknown): entry is string => typeof entry === "string" && entry.trim() !== "" && entry.length <= ANNOTATION_LIMITS.componentName;
+  if (!isName(name) || !isName(tag)) return undefined;
+  return { name, tag };
 }
 
 function isLineNumber(value: unknown): value is number {

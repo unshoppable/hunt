@@ -5,17 +5,18 @@
 //! copy replaces the repository's profile, so the session closed last wins. Chrome starts on demand: when the agent calls
 //! its first browser tool (the wrapper asks through the control socket, `crate::platform::control`) or the user clicks
 //! "Browser", which also opens a tab for each running app of the session that shows a page (`crate::agent::app_pages`).
-//! Hunt attaches to every page over CDP, adds the binding `__huntReview` and the widget, and hands each annotation the
-//! widget reports to the caller's sink. Knows nothing about Tauri; `session/commands/browser.rs` owns the
-//! command and the sink.
+//! Hunt attaches to every page over CDP, adds the binding `__huntReview` and the widget, captures a PNG of the element
+//! each annotation the widget reports picked, and hands both to the caller's sink. Knows nothing about Tauri;
+//! `session/commands/browser.rs` owns the command and the sink.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -26,7 +27,7 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
-use crate::remote::status_channel::Annotation;
+use crate::remote::status_channel::{Annotation, AnnotationRect};
 
 /// The Chrome Hunt starts; its absence is an error of `open`.
 const CHROME: &str = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
@@ -49,8 +50,15 @@ const START_POLL: Duration = Duration::from_millis(100);
 /// The bytes of an answer of the DevTools endpoint that are read.
 const MAX_RESPONSE_BYTES: usize = 64 * 1024;
 
-/// What is called with every annotation the review widget of a session's Chrome reports.
-pub type AnnotationSink = Arc<dyn Fn(Annotation) + Send + Sync>;
+/// How long an annotation waits for the screenshot of its element before it is reported without one.
+const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// The CSS pixels around the picked element that its screenshot shows on each side.
+const SCREENSHOT_PADDING: f64 = 8.0;
+
+/// What is called with every annotation the review widget of a session's Chrome reports, together with the PNG of the
+/// picked element; `None` when it could not be captured.
+pub type AnnotationSink = Arc<dyn Fn(Annotation, Option<Vec<u8>>) + Send + Sync>;
 
 /// The Chrome of a session, behind a lock of its own, so that an open, a close and the end of the Chrome run one after
 /// the other for a session while other sessions' go on.
@@ -442,9 +450,10 @@ struct Watch {
     profiles: Arc<tokio::sync::Mutex<()>>,
 }
 
-/// Runs the CDP connection of a Chrome: attaches to its pages, hands the annotations of their widget to `on_annotation`
-/// and carries out `controls`. Once the connection drops (the Chrome closed or quit), the Chrome ends like a close, unless
-/// a close or a newer Chrome took its slot meanwhile.
+/// Runs the CDP connection of a Chrome: attaches to its pages, hands the annotations of their widget with the screenshots
+/// of their elements to `on_annotation` and carries out `controls`. An annotation whose screenshot does not arrive within
+/// `SCREENSHOT_TIMEOUT`, or is still on its way when the connection drops, goes without one. Once the connection drops
+/// (the Chrome closed or quit), the Chrome ends like a close, unless a close or a newer Chrome took its slot meanwhile.
 async fn run_cdp<Stream>(
     stream: tokio_tungstenite::WebSocketStream<Stream>,
     mut controls: UnboundedReceiver<Control>,
@@ -454,6 +463,7 @@ async fn run_cdp<Stream>(
     Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let (mut sink, mut source) = stream.split();
+    let report = |reported: Reported| on_annotation(reported.annotation, reported.screenshot);
     let mut cdp = Cdp::default();
     let mut outgoing = cdp.start();
     'connection: loop {
@@ -462,15 +472,17 @@ async fn run_cdp<Stream>(
                 break 'connection;
             }
         }
+        let deadline = cdp.next_deadline().map(tokio::time::Instant::from_std);
         tokio::select! {
             message = source.next() => match message {
                 Some(Ok(Message::Text(text))) => {
                     let handled = cdp.handle(text.as_str());
                     outgoing = handled.outgoing;
-                    match handled.annotation {
-                        Some(Ok(annotation)) => on_annotation(annotation),
-                        Some(Err(error)) => eprintln!("dropping an annotation of the browser: {error}"),
-                        None => {}
+                    for annotation in handled.annotations {
+                        match annotation {
+                            Ok(reported) => report(reported),
+                            Err(error) => eprintln!("dropping an annotation of the browser: {error}"),
+                        }
                     }
                 }
                 Some(Ok(_)) => {}
@@ -480,8 +492,12 @@ async fn run_cdp<Stream>(
                 Some(control) => outgoing = cdp.control(control),
                 None => break,
             },
+            _ = tokio::time::sleep_until(deadline.unwrap_or_else(tokio::time::Instant::now)), if deadline.is_some() => {
+                cdp.expire(Instant::now()).into_iter().for_each(report);
+            }
         }
     }
+    cdp.release(|_| true).into_iter().for_each(report);
     drop(controls);
     let mut running = watch.slot.lock().await;
     if let Some(browser) = running.take_if(|browser| browser.generation == watch.generation) {
@@ -489,13 +505,15 @@ async fn run_cdp<Stream>(
     }
 }
 
-/// The CDP state of a Chrome's connection: the message IDs and the attached pages. Turns what Chrome sends into what
-/// Hunt answers, without doing I/O.
+/// The CDP state of a Chrome's connection: the message IDs, the attached pages and the annotations whose screenshot is
+/// on its way. Turns what Chrome sends into what Hunt answers, without doing I/O.
 #[derive(Default)]
 struct Cdp {
     next_id: u64,
     /// The attached pages, in the order they were attached.
     pages: Vec<Page>,
+    /// The annotations whose screenshot is on its way, by the ID of the command whose answer each waits for.
+    pending: HashMap<u64, Pending>,
 }
 
 /// An attached page: its CDP session, its target and the URL it shows.
@@ -506,13 +524,45 @@ struct Page {
     url: String,
 }
 
+/// An annotation the review widget reported, with the PNG of the picked element; `None` when it could not be captured.
+#[derive(Debug)]
+struct Reported {
+    annotation: Annotation,
+    screenshot: Option<Vec<u8>>,
+}
+
+/// An annotation whose screenshot is on its way: the CDP session of the page it came from, the step of the capture whose
+/// answer it waits for and when it goes without a screenshot.
+#[derive(Debug)]
+struct Pending {
+    annotation: Annotation,
+    session_id: String,
+    step: Capture,
+    deadline: Instant,
+}
+
+/// The steps of capturing the screenshot of an annotation's element.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Capture {
+    /// `Page.getLayoutMetrics`, for where the viewport is in the page.
+    Metrics,
+    /// `Page.captureScreenshot` of the element.
+    Screenshot,
+}
+
+impl Pending {
+    fn without_screenshot(self) -> Reported {
+        Reported { annotation: self.annotation, screenshot: None }
+    }
+}
+
 /// What `Cdp::handle` makes of a message of Chrome.
 #[derive(Debug, Default)]
 struct Handled {
     /// The messages to send to Chrome, in order.
     outgoing: Vec<String>,
-    /// The annotation the review widget reported, or why it is dropped.
-    annotation: Option<Result<Annotation, String>>,
+    /// The annotations of the review widget that are complete, or why one is dropped.
+    annotations: Vec<Result<Reported, String>>,
 }
 
 impl Cdp {
@@ -524,6 +574,64 @@ impl Cdp {
             command["sessionId"] = json!(session_id);
         }
         command.to_string()
+    }
+
+    /// A command to `method` with `params` to the page of `pending`, whose answer takes `pending` further.
+    fn await_reply(&mut self, method: &str, params: Value, pending: Pending) -> String {
+        let command = self.command(method, params, Some(&pending.session_id));
+        self.pending.insert(self.next_id, pending);
+        command
+    }
+
+    /// When the next annotation goes without its screenshot.
+    fn next_deadline(&self) -> Option<Instant> {
+        self.pending.values().map(|pending| pending.deadline).min()
+    }
+
+    /// The annotations whose screenshot did not arrive by `now`, without one.
+    fn expire(&mut self, now: Instant) -> Vec<Reported> {
+        self.release(|pending| pending.deadline <= now)
+    }
+
+    /// The annotations `is_released` picks, without their screenshot, in the order they were reported.
+    fn release(&mut self, is_released: impl Fn(&Pending) -> bool) -> Vec<Reported> {
+        let mut ids: Vec<u64> = self.pending.iter().filter(|(_, pending)| is_released(pending)).map(|(id, _)| *id).collect();
+        ids.sort_unstable();
+        ids.into_iter().filter_map(|id| self.pending.remove(&id)).map(Pending::without_screenshot).collect()
+    }
+
+    /// Takes the screenshot of `pending` a step further with `reply`, Chrome's answer to the command it waited for: the
+    /// layout metrics give the clip, the screenshot the PNG. An error, an answer it cannot read or an element outside the
+    /// viewport reports the annotation without a screenshot.
+    fn advance(&mut self, pending: Pending, reply: &Value, handled: &mut Handled) {
+        if let Some(error) = reply.get("error") {
+            eprintln!("capturing the screenshot of an annotation failed: {error}");
+            handled.annotations.push(Ok(pending.without_screenshot()));
+            return;
+        }
+        let result = &reply["result"];
+        match pending.step {
+            Capture::Metrics => match screenshot_clip(&pending.annotation.rect, &result["cssVisualViewport"]) {
+                Some(clip) => {
+                    let params = json!({ "format": "png", "clip": clip, "captureBeyondViewport": false });
+                    let next = Pending { step: Capture::Screenshot, ..pending };
+                    handled.outgoing.push(self.await_reply("Page.captureScreenshot", params, next));
+                }
+                None => handled.annotations.push(Ok(pending.without_screenshot())),
+            },
+            Capture::Screenshot => {
+                let data = result["data"].as_str().map(|data| base64::engine::general_purpose::STANDARD.decode(data));
+                let screenshot = match data {
+                    Some(Ok(bytes)) => Some(bytes),
+                    Some(Err(error)) => {
+                        eprintln!("failed to read the screenshot of an annotation: {error}");
+                        None
+                    }
+                    None => None,
+                };
+                handled.annotations.push(Ok(Reported { annotation: pending.annotation, screenshot }));
+            }
+        }
     }
 
     /// The first commands: report the URL changes of every target, and attach to every page, holding a new one until it
@@ -569,10 +677,15 @@ impl Cdp {
     /// What follows from the message `text` of Chrome: a page that was attached gets the binding and the widget, also
     /// when it already shows a document, and goes on (Chrome runs the scripts for new documents and installs the binding
     /// only while the page's Page and Runtime domains are enabled); another target goes on and is detached; a binding call of the
-    /// widget is an annotation; a failed command is logged.
+    /// widget is an annotation, whose element is captured before it is reported, unless its page goes; a failed command
+    /// is logged.
     fn handle(&mut self, text: &str) -> Handled {
         let mut handled = Handled::default();
         let Ok(message) = serde_json::from_str::<Value>(text) else { return handled };
+        if let Some(pending) = message["id"].as_u64().and_then(|id| self.pending.remove(&id)) {
+            self.advance(pending, &message, &mut handled);
+            return handled;
+        }
         if let Some(error) = message.get("error") {
             eprintln!("a CDP command of the browser failed: {error}");
             return handled;
@@ -606,6 +719,7 @@ impl Cdp {
             Some("Target.detachedFromTarget") => {
                 if let Some(session_id) = params["sessionId"].as_str() {
                     self.pages.retain(|page| page.session_id != session_id);
+                    handled.annotations.extend(self.release(|pending| pending.session_id == session_id).into_iter().map(Ok));
                 }
             }
             Some("Target.targetInfoChanged") => {
@@ -618,12 +732,33 @@ impl Cdp {
             }
             Some("Runtime.bindingCalled") if params["name"].as_str() == Some(BINDING) => {
                 let payload = params["payload"].as_str().unwrap_or_default();
-                handled.annotation = Some(parse_annotation(payload, Uuid::new_v4(), chrono::Utc::now().timestamp_millis()));
+                match (parse_annotation(payload, Uuid::new_v4(), chrono::Utc::now().timestamp_millis()), message["sessionId"].as_str()) {
+                    (Ok(annotation), Some(session_id)) => {
+                        let deadline = Instant::now() + SCREENSHOT_TIMEOUT;
+                        let pending = Pending { annotation, session_id: session_id.to_string(), step: Capture::Metrics, deadline };
+                        handled.outgoing.push(self.await_reply("Page.getLayoutMetrics", json!({}), pending));
+                    }
+                    (Ok(annotation), None) => handled.annotations.push(Ok(Reported { annotation, screenshot: None })),
+                    (Err(error), _) => handled.annotations.push(Err(error)),
+                }
             }
             _ => {}
         }
         handled
     }
+}
+
+/// The clip of the screenshot of the element at `rect` (CSS pixels of the viewport) on a page whose visual viewport is
+/// `viewport` (`cssVisualViewport` of `Page.getLayoutMetrics`): the element in page coordinates with `SCREENSHOT_PADDING`
+/// on each side, cut to what the viewport shows; `None` when nothing of it shows or `viewport` cannot be read.
+fn screenshot_clip(rect: &AnnotationRect, viewport: &Value) -> Option<Value> {
+    let [page_x, page_y, width, height] = ["pageX", "pageY", "clientWidth", "clientHeight"].map(|field| viewport[field].as_f64());
+    let (page_x, page_y, width, height) = (page_x?, page_y?, width?, height?);
+    let left = (page_x + rect.x - SCREENSHOT_PADDING).max(page_x);
+    let top = (page_y + rect.y - SCREENSHOT_PADDING).max(page_y);
+    let right = (page_x + rect.x + rect.width + SCREENSHOT_PADDING).min(page_x + width);
+    let bottom = (page_y + rect.y + rect.height + SCREENSHOT_PADDING).min(page_y + height);
+    (right > left && bottom > top).then(|| json!({ "x": left, "y": top, "width": right - left, "height": bottom - top, "scale": 1 }))
 }
 
 /// The longest value of each text field of an annotation, in UTF-16 code units (mirror of `ANNOTATION_LIMITS` in
@@ -636,6 +771,7 @@ mod limits {
     pub const OUTER_HTML: usize = 4000;
     pub const COMMENT: usize = 4000;
     pub const SOURCE_FILE: usize = 512;
+    pub const COMPONENT_NAME: usize = 256;
     pub const STYLE_COUNT: usize = 32;
     pub const STYLE_NAME: usize = 64;
     pub const STYLE_VALUE: usize = 256;
@@ -681,6 +817,12 @@ fn check_annotation(annotation: &Annotation) -> Result<(), String> {
             return Err("source must hold a file and a line, optionally a column".into());
         }
     }
+    if let Some(component) = &annotation.component {
+        let is_name = |value: &str| !value.trim().is_empty() && utf16_length(value) <= limits::COMPONENT_NAME;
+        if !is_name(&component.name) || !is_name(&component.tag) {
+            return Err(format!("component must hold a name and a tag of at most {} characters", limits::COMPONENT_NAME));
+        }
+    }
     Ok(())
 }
 
@@ -705,7 +847,8 @@ mod tests {
         r#"{"url":"https://app.example/cart","title":"Cart","selector":"main > button.buy","text":"Buy","#,
         r#""outerHtml":"<button class=\"buy\">Buy</button>","rect":{"x":10,"y":20.5,"width":80,"height":32},"#,
         r#""viewport":{"width":1280,"height":800},"styles":{"color":"rgb(0, 0, 0)","-webkit-appearance":"none"},"#,
-        r#""source":{"file":"src/Cart.tsx","line":12,"column":5},"comment":"Make it blue"}"#,
+        r#""source":{"file":"src/Cart.tsx","line":12,"column":5},"component":{"name":"CartComponent","tag":"app-cart"},"#,
+        r#""comment":"Make it blue"}"#,
     );
 
     #[test]
@@ -959,21 +1102,148 @@ mod tests {
         assert_eq!(parsed(&commands[0])["method"], "Page.bringToFront");
     }
 
-    #[test]
-    fn a_binding_call_of_the_widget_is_an_annotation() {
-        let mut cdp = Cdp::default();
-        let called = json!({ "method": "Runtime.bindingCalled", "sessionId": "S1", "params": { "name": BINDING, "payload": PAYLOAD, "executionContextId": 3 } });
-        let handled = cdp.handle(&called.to_string());
-        assert!(handled.outgoing.is_empty());
-        let annotation = handled.annotation.unwrap().unwrap();
-        assert_eq!(annotation.comment, "Make it blue");
-        assert!(Uuid::parse_str(&annotation.id).is_ok());
-        assert!(annotation.created_at > 0);
+    /// The binding call of the widget with `PAYLOAD` on the page of `session_id`; without one, a call Chrome sends unflattened.
+    fn binding_call(session_id: Option<&str>) -> String {
+        let params = json!({ "name": BINDING, "payload": PAYLOAD, "executionContextId": 3 });
+        let mut called = json!({ "method": "Runtime.bindingCalled", "params": params });
+        if let Some(session_id) = session_id {
+            called["sessionId"] = json!(session_id);
+        }
+        called.to_string()
+    }
 
-        let other = json!({ "method": "Runtime.bindingCalled", "params": { "name": "somethingElse", "payload": PAYLOAD } });
-        assert!(cdp.handle(&other.to_string()).annotation.is_none());
-        assert!(cdp.handle("not json").annotation.is_none());
-        assert!(cdp.handle(r#"{"id":4,"error":{"code":-32000,"message":"No target"}}"#).outgoing.is_empty());
+    /// The answer of Chrome to the single command `outgoing` holds, with `result`.
+    fn reply(outgoing: &[String], result: Value) -> String {
+        assert_eq!(outgoing.len(), 1);
+        let command = parsed(&outgoing[0]);
+        json!({ "id": command["id"], "sessionId": command["sessionId"], "result": result }).to_string()
+    }
+
+    /// The layout metrics of a page scrolled down by 1200 px, with a viewport of 1280×800.
+    fn layout_metrics() -> Value {
+        let viewport = json!({ "offsetX": 0, "offsetY": 0, "pageX": 0, "pageY": 1200, "clientWidth": 1280, "clientHeight": 800 });
+        json!({ "cssVisualViewport": viewport, "cssContentSize": { "x": 0, "y": 0, "width": 1280, "height": 3000 } })
+    }
+
+    #[test]
+    fn a_binding_call_of_the_widget_is_an_annotation_with_the_screenshot_of_its_element() {
+        let mut cdp = Cdp::default();
+        let called = cdp.handle(&binding_call(Some("S1")));
+        assert!(called.annotations.is_empty());
+        let metrics = parsed(&called.outgoing[0]);
+        assert_eq!(metrics["method"], "Page.getLayoutMetrics");
+        assert_eq!(metrics["sessionId"], "S1");
+
+        let measured = cdp.handle(&reply(&called.outgoing, layout_metrics()));
+        assert!(measured.annotations.is_empty());
+        let capture = parsed(&measured.outgoing[0]);
+        assert_eq!(capture["method"], "Page.captureScreenshot");
+        assert_eq!(capture["sessionId"], "S1");
+        let clip = json!({ "x": 2.0, "y": 1212.5, "width": 96.0, "height": 48.0, "scale": 1 });
+        assert_eq!(capture["params"], json!({ "format": "png", "clip": clip, "captureBeyondViewport": false }));
+
+        let png = b"\x89PNG\r\n\x1a\nimage".to_vec();
+        let data = base64::engine::general_purpose::STANDARD.encode(&png);
+        let mut captured = cdp.handle(&reply(&measured.outgoing, json!({ "data": data })));
+        assert!(captured.outgoing.is_empty());
+        let reported = captured.annotations.pop().unwrap().unwrap();
+        assert!(captured.annotations.is_empty());
+        assert_eq!(reported.screenshot, Some(png));
+        assert_eq!(reported.annotation.comment, "Make it blue");
+        assert!(Uuid::parse_str(&reported.annotation.id).is_ok());
+        assert!(reported.annotation.created_at > 0);
+        assert!(cdp.pending.is_empty());
+        assert_eq!(cdp.next_deadline(), None);
+    }
+
+    #[test]
+    fn a_failed_capture_reports_the_annotation_without_a_screenshot() {
+        let mut cdp = Cdp::default();
+        let called = cdp.handle(&binding_call(Some("S1")));
+        assert!(cdp.handle(r#"{"id":999,"error":{"code":-32000,"message":"No target"}}"#).annotations.is_empty());
+        let id = parsed(&called.outgoing[0])["id"].clone();
+        let failed = cdp.handle(&json!({ "id": id, "sessionId": "S1", "error": { "code": -32000, "message": "No target" } }).to_string());
+        assert!(failed.outgoing.is_empty());
+        let reported = failed.annotations.into_iter().next().unwrap().unwrap();
+        assert_eq!(reported.screenshot, None);
+        assert_eq!(reported.annotation.comment, "Make it blue");
+
+        let called = cdp.handle(&binding_call(Some("S1")));
+        let measured = cdp.handle(&reply(&called.outgoing, layout_metrics()));
+        let unreadable = cdp.handle(&reply(&measured.outgoing, json!({ "data": "not base64!" })));
+        assert_eq!(unreadable.annotations.into_iter().next().unwrap().unwrap().screenshot, None);
+        assert!(cdp.pending.is_empty());
+    }
+
+    #[test]
+    fn an_element_outside_the_viewport_goes_without_a_screenshot() {
+        let mut cdp = Cdp::default();
+        let called = cdp.handle(&binding_call(Some("S1")));
+        let mut metrics = layout_metrics();
+        metrics["cssVisualViewport"]["clientWidth"] = json!(0);
+        let measured = cdp.handle(&reply(&called.outgoing, metrics));
+        assert!(measured.outgoing.is_empty());
+        assert_eq!(measured.annotations.into_iter().next().unwrap().unwrap().screenshot, None);
+
+        let called = cdp.handle(&binding_call(Some("S1")));
+        let measured = cdp.handle(&reply(&called.outgoing, json!({})));
+        assert!(measured.outgoing.is_empty());
+        assert_eq!(measured.annotations.into_iter().next().unwrap().unwrap().screenshot, None);
+    }
+
+    #[test]
+    fn the_clip_is_the_padded_element_cut_to_the_viewport() {
+        let viewport = json!({ "pageX": 50, "pageY": 1200, "clientWidth": 1280, "clientHeight": 800 });
+        let rect = |x: f64, y: f64, width: f64, height: f64| AnnotationRect { x, y, width, height };
+        let clip = |rect: AnnotationRect| screenshot_clip(&rect, &viewport);
+        let expected = |x: f64, y: f64, width: f64, height: f64| {
+            Some(json!({ "x": x, "y": y, "width": width, "height": height, "scale": 1 }))
+        };
+        assert_eq!(clip(rect(100.0, 300.0, 80.0, 40.0)), expected(142.0, 1492.0, 96.0, 56.0));
+        assert_eq!(clip(rect(-20.0, 2.0, 40.0, 30.0)), expected(50.0, 1200.0, 28.0, 40.0));
+        assert_eq!(clip(rect(1250.0, 780.0, 100.0, 100.0)), expected(1292.0, 1972.0, 38.0, 28.0));
+        assert_eq!(clip(rect(0.0, -100.0, 50.0, 50.0)), None);
+        assert_eq!(clip(rect(1300.0, 10.0, 50.0, 50.0)), None);
+        assert_eq!(screenshot_clip(&rect(0.0, 0.0, 10.0, 10.0), &json!({ "pageX": 0 })), None);
+    }
+
+    #[test]
+    fn an_annotation_whose_page_goes_or_whose_screenshot_is_late_goes_without_one() {
+        let mut cdp = Cdp::default();
+        cdp.handle(&binding_call(Some("S1")));
+        let called = cdp.handle(&binding_call(Some("S2")));
+        let detached = cdp.handle(r#"{"method":"Target.detachedFromTarget","params":{"sessionId":"S1"}}"#);
+        assert_eq!(detached.annotations.into_iter().map(|reported| reported.unwrap().screenshot).collect::<Vec<_>>(), [None]);
+        assert_eq!(cdp.pending.len(), 1);
+
+        let deadline = cdp.next_deadline().unwrap();
+        assert!(deadline <= Instant::now() + SCREENSHOT_TIMEOUT);
+        assert!(cdp.expire(deadline - Duration::from_millis(1)).is_empty());
+        let late = cdp.expire(deadline);
+        assert_eq!(late.len(), 1);
+        assert_eq!(late[0].screenshot, None);
+        assert_eq!(cdp.next_deadline(), None);
+        let answered_late = cdp.handle(&reply(&called.outgoing, layout_metrics()));
+        assert!(answered_late.outgoing.is_empty() && answered_late.annotations.is_empty());
+    }
+
+    #[test]
+    fn a_binding_call_without_a_page_session_or_another_binding_is_no_capture() {
+        let mut cdp = Cdp::default();
+        let handled = cdp.handle(&binding_call(None));
+        assert!(handled.outgoing.is_empty());
+        assert_eq!(handled.annotations.into_iter().next().unwrap().unwrap().screenshot, None);
+
+        let params = json!({ "name": "somethingElse", "payload": PAYLOAD });
+        let other = json!({ "method": "Runtime.bindingCalled", "sessionId": "S1", "params": params });
+        let handled = cdp.handle(&other.to_string());
+        assert!(handled.annotations.is_empty() && handled.outgoing.is_empty());
+        let malformed = json!({ "method": "Runtime.bindingCalled", "sessionId": "S1", "params": { "name": BINDING, "payload": "[]" } });
+        let handled = cdp.handle(&malformed.to_string());
+        assert!(handled.outgoing.is_empty());
+        assert!(handled.annotations.into_iter().next().unwrap().is_err());
+        assert!(cdp.handle("not json").annotations.is_empty());
+        assert!(cdp.pending.is_empty());
     }
 
     #[test]
@@ -987,6 +1257,16 @@ mod tests {
         let payload = serde_json::to_value(&annotation).unwrap();
         assert_eq!(payload["createdAt"], 1_760_000_000_000_i64);
         assert_eq!(payload["source"], json!({ "file": "src/Cart.tsx", "line": 12, "column": 5 }));
+        assert_eq!(payload["component"], json!({ "name": "CartComponent", "tag": "app-cart" }));
+        assert!(payload.get("screenshotPath").is_none());
+    }
+
+    #[test]
+    fn the_page_cannot_set_the_screenshot_path() {
+        let mut payload: Value = serde_json::from_str(PAYLOAD).unwrap();
+        payload["screenshotPath"] = json!("/Users/someone/.ssh/id_ed25519");
+        let annotation = parse_annotation(&payload.to_string(), Uuid::new_v4(), 0).unwrap();
+        assert_eq!(annotation.screenshot_path, None);
     }
 
     #[test]
@@ -1009,6 +1289,18 @@ mod tests {
         assert!(with("source", json!({ "file": "", "line": 1 })).unwrap_err().contains("source"));
         assert!(with("source", json!({ "file": "a.ts", "line": 10_000_001 })).is_err());
         assert!(with("rect", json!({ "x": 1 })).is_err());
+        let component = |name: &str, tag: &str| with("component", json!({ "name": name, "tag": tag }));
+        assert!(component("CartComponent", "app-cart").is_ok());
+        assert!(component(&"x".repeat(256), &"é".repeat(256)).is_ok());
+        let problem = "component must hold a name and a tag of at most 256 characters";
+        assert!(component("", "app-cart").unwrap_err().contains(problem));
+        assert!(component("CartComponent", "  ").unwrap_err().contains(problem));
+        assert!(component(&"x".repeat(257), "app-cart").unwrap_err().contains(problem));
+        assert!(component("CartComponent", &"😀".repeat(129)).unwrap_err().contains(problem));
+        assert!(with("component", json!({ "name": "CartComponent" })).is_err());
+        let mut without_component: Value = serde_json::from_str(PAYLOAD).unwrap();
+        without_component.as_object_mut().unwrap().remove("component");
+        assert_eq!(parse_annotation(&without_component.to_string(), Uuid::new_v4(), 0).unwrap().component, None);
         assert!(parse_annotation("[]", Uuid::new_v4(), 0).is_err());
         assert!(parse_annotation("not json", Uuid::new_v4(), 0).is_err());
     }
@@ -1024,8 +1316,8 @@ mod tests {
         assert!(!is_style_name("-"));
     }
 
-    /// Starts the real Google Chrome with a fresh repository profile, lets a page call the binding and closes it again:
-    /// `cargo test browser::tests::real_chrome -- --ignored`.
+    /// Starts the real Google Chrome with a fresh repository profile, lets a page call the binding, checks the screenshot of
+    /// an element of a scrolled page and closes it again: `cargo test browser::tests::real_chrome -- --ignored`.
     #[tokio::test]
     #[ignore = "starts Google Chrome"]
     async fn real_chrome_reports_annotations_and_keeps_its_profile() {
@@ -1035,8 +1327,8 @@ mod tests {
         let registry = BrowserRegistry::default();
         let id = Uuid::new_v4();
         let (annotations, mut received) = unbounded_channel();
-        let sink: AnnotationSink = Arc::new(move |annotation| {
-            let _ = annotations.send(annotation);
+        let sink: AnnotationSink = Arc::new(move |annotation, screenshot| {
+            let _ = annotations.send((annotation, screenshot));
         });
         registry.open(id, &repo_path, &browser_dir, sink.clone(), false, &[]).await.unwrap();
         registry.open(id, &repo_path, &browser_dir, sink, true, &[]).await.unwrap();
@@ -1092,10 +1384,61 @@ mod tests {
         assert!(has_widget_after_navigation, "the next document shows no review widget");
         let expression = format!("window.{BINDING}(JSON.stringify({PAYLOAD}))");
         call("Runtime.evaluate", json!({ "expression": expression }), Some(&page_session)).await;
-        let annotation = tokio::time::timeout(Duration::from_secs(5), received.recv()).await.unwrap().unwrap();
+        let (annotation, screenshot) = tokio::time::timeout(Duration::from_secs(5), received.recv()).await.unwrap().unwrap();
         assert_eq!(annotation.comment, "Make it blue");
         assert_eq!(annotation.url, "https://app.example/cart");
+        assert!(screenshot.is_some(), "the annotation came without a screenshot");
         println!("annotation from the real Chrome: {}", serde_json::to_string(&annotation).unwrap());
+
+        let body = "margin:0;background:rgb(255,255,255)";
+        let target = "position:absolute;left:100px;top:1500px;width:80px;height:40px;background:rgb(255,0,0)";
+        let tall = format!("data:text/html,<body style='{body}'><div style='height:3000px'></div><div id=target style='{target}'></div>");
+        call("Page.navigate", json!({ "url": tall }), Some(&page_session)).await;
+        let has_target_and_binding = format!("!!document.getElementById('target') && typeof window.{BINDING} === 'function'");
+        let is_ready = json!({ "expression": has_target_and_binding, "returnByValue": true });
+        let mut has_target = false;
+        for _ in 0..50 {
+            if call("Runtime.evaluate", is_ready.clone(), Some(&page_session)).await["result"]["result"]["value"] == true {
+                has_target = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        assert!(has_target, "the tall page never showed its target");
+        let scroll = json!({
+            "expression": "window.scrollTo(0, 1200); JSON.stringify(document.getElementById('target').getBoundingClientRect())",
+            "returnByValue": true,
+        });
+        let scrolled = call("Runtime.evaluate", scroll, Some(&page_session)).await;
+        let rect: Value = serde_json::from_str(scrolled["result"]["result"]["value"].as_str().unwrap()).unwrap();
+        assert_eq!((&rect["x"], &rect["y"]), (&json!(100), &json!(300)), "the page did not scroll as expected");
+        let mut payload: Value = serde_json::from_str(PAYLOAD).unwrap();
+        payload["rect"] = json!({ "x": rect["x"], "y": rect["y"], "width": rect["width"], "height": rect["height"] });
+        let expression = format!("window.{BINDING}({})", serde_json::to_string(&payload.to_string()).unwrap());
+        call("Runtime.evaluate", json!({ "expression": expression }), Some(&page_session)).await;
+        let (_, screenshot) = tokio::time::timeout(Duration::from_secs(5), received.recv()).await.unwrap().unwrap();
+        let png = screenshot.expect("the annotation of the scrolled page came without a screenshot");
+        // Chrome decodes the PNG on the page itself; `pixel` reads the colour at CSS pixels of the clip.
+        let data_url = format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(&png));
+        let decode = format!(
+            "new Promise((resolve, reject) => {{ const image = new Image(); image.onload = () => {{ \
+             const canvas = document.createElement('canvas'); canvas.width = image.width; canvas.height = image.height; \
+             const context = canvas.getContext('2d'); context.drawImage(image, 0, 0); const ratio = devicePixelRatio; \
+             const pixel = (x, y) => \
+             context.getImageData(Math.floor(x * ratio), Math.floor(y * ratio), 1, 1).data[1] < 128 ? 'red' : 'white'; \
+             resolve(JSON.stringify({{ width: image.width / ratio, height: image.height / ratio, \
+             outside: [pixel(6.5, 28), pixel(89.5, 28), pixel(48, 6.5), pixel(48, 49.5)], \
+             inside: [pixel(9.5, 28), pixel(86.5, 28), pixel(48, 9.5), pixel(48, 46.5)] }})); }}; \
+             image.onerror = reject; image.src = {data_url:?}; }})"
+        );
+        let decode = json!({ "expression": decode, "awaitPromise": true, "returnByValue": true });
+        let decoded = call("Runtime.evaluate", decode, Some(&page_session)).await;
+        let clip: Value = serde_json::from_str(decoded["result"]["result"]["value"].as_str().unwrap()).unwrap();
+        println!("screenshot of the scrolled page: {clip}");
+        assert_eq!(clip["width"], 96);
+        assert_eq!(clip["height"], 56);
+        assert_eq!(clip["outside"], json!(["white", "white", "white", "white"]), "the padding shows the element");
+        assert_eq!(clip["inside"], json!(["red", "red", "red", "red"]), "the clip misses the element");
 
         registry.close(id).await;
         let profile = Profile::of(&browser_dir, &repo_path, id);

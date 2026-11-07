@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attributeSource, cssSelector, pathOfUrl, pickStyles, reactSource, shorten, shortenHtml, type ElementStep } from "./element-info.utils.ts";
+import { angularComponent, attributeSource, cssSelector, pathOfUrl, pickStyles, reactSource, shorten, shortenHtml, type ElementStep } from "./element-info.utils.ts";
 
 function step(tagName: string, fields: Partial<ElementStep> = {}): ElementStep {
   return { tagName, id: "", classNames: [], indexOfType: 1, countOfType: 1, ...fields };
@@ -97,5 +97,28 @@ describe("attributeSource", () => {
     expect(attributeSource(attributes({ "data-source": "src/B.vue:10:2" }))).toEqual({ file: "src/B.vue", line: 10, column: 2 });
     expect(attributeSource(attributes({ "data-source-location": "src/C.tsx:7" }))).toEqual({ file: "src/C.tsx", line: 7 });
     expect(attributeSource(attributes({ "data-source": "nothing" }))).toBeUndefined();
+  });
+});
+
+describe("angularComponent", () => {
+  class _JeStationPage {}
+  const host = { tagName: "APP-JE-STATION-PAGE" };
+  const ng = { getOwningComponent: () => new _JeStationPage(), getHostElement: () => host };
+
+  it("names the owning component without esbuild's prefix and the tag of its host", () => {
+    expect(angularComponent({}, ng)).toEqual({ name: "JeStationPage", tag: "app-je-station-page" });
+  });
+
+  it("finds nothing without Angular's dev-mode global or an owning component", () => {
+    expect(angularComponent({}, undefined)).toBeUndefined();
+    expect(angularComponent({}, { getOwningComponent: () => null, getHostElement: () => host })).toBeUndefined();
+    expect(
+      angularComponent({}, {
+        getOwningComponent: () => {
+          throw new Error("not in a view");
+        },
+        getHostElement: () => host,
+      }),
+    ).toBeUndefined();
   });
 });

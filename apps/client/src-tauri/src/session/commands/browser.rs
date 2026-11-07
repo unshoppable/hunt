@@ -1,6 +1,8 @@
 //! The commands of what shows a session's app: the Chrome of a local session (`crate::agent::browser`) and the remote
 //! desktop of a session VM (`crate::remote::desktop`), both closed in the background when the session's agent ends.
 
+use std::path::PathBuf;
+
 use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
@@ -52,8 +54,9 @@ pub async fn browser_open(app: AppHandle, id: Uuid) -> Result<(), String> {
 
 /// Opens the Chrome of the local session `id` with a copy of its repository's profile unless it runs; with `raises`, its
 /// window comes to the front with a tab for each app of the session that shows a page and has none yet. The annotations
-/// of its review widget go to the windows as `review:annotation`. The command and the control socket (`super::control`)
-/// use it; a remote session has its Chromium on its VM.
+/// of its review widget go to the windows as `review:annotation`, each with the screenshot of its element (see
+/// `save_screenshot`) when Hunt could capture it. The command and the control socket (`super::control`) use it; a remote
+/// session has its Chromium on its VM.
 pub async fn open_browser(app: &AppHandle, id: Uuid, raises: bool) -> Result<(), String> {
     let record = store::find_session(app, id).map_err(|error| format!("failed to open the browser: {error}"))?;
     if record.remote.is_some() {
@@ -61,10 +64,45 @@ pub async fn open_browser(app: &AppHandle, id: Uuid, raises: bool) -> Result<(),
     }
     let browser_dir = store::browser_dir(app)?;
     let emitter = app.clone();
-    let on_annotation: AnnotationSink = std::sync::Arc::new(move |annotation| relay_watch::emit_annotation(&emitter, id, annotation));
+    let on_annotation: AnnotationSink = std::sync::Arc::new(move |annotation, screenshot| match screenshot {
+        Some(png) => {
+            let emitter = emitter.clone();
+            tauri::async_runtime::spawn(async move {
+                let mut annotation = annotation;
+                match save_screenshot(&emitter, id, &annotation.id, &png).await {
+                    Ok(path) => annotation.screenshot_path = Some(path.to_string_lossy().into_owned()),
+                    Err(error) => eprintln!("{error}"),
+                }
+                relay_watch::emit_annotation(&emitter, id, annotation);
+            });
+        }
+        None => relay_watch::emit_annotation(&emitter, id, annotation),
+    });
     let urls: Vec<String> =
         if raises { app_pages::running_pages(&record.worktree_path).await.into_iter().map(|page| page.url).collect() } else { Vec::new() };
     app.state::<BrowserRegistry>().open(id, &record.repo_path, &browser_dir, on_annotation, raises, &urls).await
+}
+
+/// Writes `png`, the screenshot of the element of the annotation `annotation_id` of the session `id`, to
+/// `<app data>/annotations/<session id>/<annotation id>.png` and returns its path.
+async fn save_screenshot(app: &AppHandle, id: Uuid, annotation_id: &str, png: &[u8]) -> Result<PathBuf, String> {
+    let failed = |error: String| format!("failed to save the screenshot of annotation {annotation_id}: {error}");
+    let dir = store::annotations_dir(app, id).map_err(failed)?;
+    tokio::fs::create_dir_all(&dir).await.map_err(|error| failed(error.to_string()))?;
+    let path = dir.join(format!("{annotation_id}.png"));
+    tokio::fs::write(&path, png).await.map_err(|error| failed(error.to_string()))?;
+    Ok(path)
+}
+
+/// Deletes the screenshots of the annotations of the session `id`; a failure is only logged.
+pub fn delete_screenshots(app: &AppHandle, id: Uuid) {
+    let removed = store::annotations_dir(app, id).and_then(|dir| match std::fs::remove_dir_all(&dir) {
+        Err(error) if error.kind() != std::io::ErrorKind::NotFound => Err(error.to_string()),
+        _ => Ok(()),
+    });
+    if let Err(error) = removed {
+        eprintln!("deleting the annotation screenshots of session {id} failed: {error}");
+    }
 }
 
 /// Closes the Chrome of the session `id` in the background, once its agent or the session ends; its profile replaces

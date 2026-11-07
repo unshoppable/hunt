@@ -296,6 +296,12 @@ pub fn browser_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join("browser"))
 }
 
+/// The folder of the screenshots of the annotations the review widget in the Chrome of the local session `id` reported
+/// (see `session/commands/browser.rs`).
+pub fn annotations_dir(app: &AppHandle, id: Uuid) -> Result<PathBuf, String> {
+    Ok(app_data_dir(app)?.join("annotations").join(id.to_string()))
+}
+
 /// The folder of the Hunt processes' control sockets (see `crate::platform::control`).
 pub fn control_dir(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(app_data_dir(app)?.join("control"))

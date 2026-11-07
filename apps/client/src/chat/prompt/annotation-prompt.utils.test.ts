@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { StoredBrowserAnnotation } from "../../../../../libs/domain/src/review/browser-annotation.utils.ts";
-import { annotationElementLabel, annotationTooltip, formatAnnotation, formatAnnotations, promptWithAnnotations, sourceLocation } from "./annotation-prompt.utils";
+import {
+  annotationElementLabel,
+  annotationScreenshots,
+  annotationTooltip,
+  formatAnnotation,
+  formatAnnotations,
+  parseAnnotatedPrompt,
+  promptSummary,
+  promptWithAnnotations,
+  sourceLocation,
+} from "./annotation-prompt.utils";
 
 function annotation(overrides: Partial<StoredBrowserAnnotation> = {}): StoredBrowserAnnotation {
   return {
@@ -96,6 +106,50 @@ describe("promptWithAnnotations", () => {
   });
 });
 
+describe("component and screenshot", () => {
+  it("names the component and the prompt image of the screenshot", () => {
+    const formatted = formatAnnotation(annotation({ source: undefined, component: { name: "JeStationPage", tag: "app-je-station-page" } }), 1, 3);
+    expect(formatted).toContain("- Element: `main > button.buy`\n- Component: `JeStationPage` (`<app-je-station-page>`)\n- Screenshot: [Image #3]\n- Text: Buy now");
+  });
+
+  it("numbers only the annotations with a screenshot, after the user's own images", () => {
+    const annotations = [annotation({ screenshotPath: "/a/1.png" }), annotation({ id: "2" }), annotation({ id: "3", screenshotPath: "/a/3.png" })];
+    const formatted = formatAnnotations(annotations, 2);
+    expect(formatted.match(/\[Image #\d+\]/g)).toEqual(["[Image #2]", "[Image #3]"]);
+    expect(annotationScreenshots(annotations).map((screenshot) => screenshot.path)).toEqual(["/a/1.png", "/a/3.png"]);
+  });
+});
+
+describe("parseAnnotatedPrompt", () => {
+  it("reads the annotations and the user's text back from a prompt", () => {
+    const annotations = [
+      annotation({ screenshotPath: "/a/1.png" }),
+      annotation({ id: "2", source: undefined, component: { name: "JeStationPage", tag: "app-je-station-page" }, comment: "Too tight.\n\nAdd space." }),
+      annotation({ id: "3", source: undefined, outerHtml: "", selector: "[data-x=`a`]", comment: "Hide it" }),
+    ];
+    expect(parseAnnotatedPrompt(promptWithAnnotations(annotations, "Fix the cart\n\n- first\n- second", 2))).toEqual({
+      annotations: [
+        { comment: "Make it blue", label: "Cart.tsx:12", page: "Cart – https://app.example/cart", imageNumber: 2 },
+        { comment: "Too tight.\n\nAdd space.", label: "JeStationPage", page: "Cart – https://app.example/cart" },
+        { comment: "Hide it", label: "[data-x=`a`]", page: "Cart – https://app.example/cart" },
+      ],
+      text: "Fix the cart\n\n- first\n- second",
+    });
+    expect(parseAnnotatedPrompt(promptWithAnnotations([annotation({ outerHtml: "<pre>```js```</pre>" })], ""))?.text).toBe("");
+  });
+
+  it("is undefined for any other prompt", () => {
+    expect(parseAnnotatedPrompt("Fix the cart")).toBeUndefined();
+    expect(parseAnnotatedPrompt(promptWithAnnotations([annotation()], "").split("### Annotation")[0])).toBeUndefined();
+  });
+
+  it("summarises a prompt by the user's text, else the first comment", () => {
+    expect(promptSummary(promptWithAnnotations([annotation()], "Fix the cart"))).toBe("Fix the cart");
+    expect(promptSummary(promptWithAnnotations([annotation()], ""))).toBe("Make it blue");
+    expect(promptSummary("Plain")).toBe("Plain");
+  });
+});
+
 describe("annotation labels", () => {
   it("names the source location with and without a column", () => {
     expect(sourceLocation(annotation())).toBe("src/cart/Cart.tsx:12:5");
@@ -108,6 +162,7 @@ describe("annotation labels", () => {
     expect(annotationElementLabel(annotation({ source: undefined }))).toBe("button.buy");
     expect(annotationElementLabel(annotation({ source: undefined, selector: "#main .price" }))).toBe("button .price");
     expect(annotationElementLabel(annotation({ source: undefined, outerHtml: "" }))).toBe("button.buy");
+    expect(annotationElementLabel(annotation({ source: undefined, component: { name: "CartPage", tag: "app-cart" } }))).toBe("CartPage");
   });
 
   it("tells the comment, the element and the page in the tooltip", () => {

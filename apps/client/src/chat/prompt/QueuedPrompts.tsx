@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import type { QueuedPrompt } from "../chat.store-slice";
 import { CloseIcon, SendIcon } from "../../ui/Icons";
 import { screenshotUrl } from "../ScreenshotPicker";
+import { promptSummary } from "./annotation-prompt.utils";
 
 /** The row's button that sends its prompt at once; always shown. */
 const SEND_NOW_BUTTON =
@@ -36,8 +37,8 @@ export function QueuedPrompts({
           <span aria-hidden="true" className="shrink-0 select-none">
             ↳
           </span>
-          <span className="min-w-0 flex-1 truncate whitespace-pre" title={prompt.text}>
-            {prompt.text || `${prompt.images.length} image${prompt.images.length === 1 ? "" : "s"}`}
+          <span className="min-w-0 flex-1 truncate whitespace-pre" title={promptSummary(prompt.text)}>
+            {promptSummary(prompt.text) || `${prompt.images.length} image${prompt.images.length === 1 ? "" : "s"}`}
           </span>
           {prompt.images.map((image) => (
             <img key={image.path} src={screenshotUrl(image)} alt="" title={image.name} className="size-5 shrink-0 rounded border border-white/10 object-cover" />

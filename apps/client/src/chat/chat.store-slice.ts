@@ -19,6 +19,7 @@ import { createSessionNaming } from "../sessions/session.store-slice";
 import { useAgentDefaultsStore } from "./agent-defaults.store";
 import { usePlanUsageStore } from "../accounts/plan-usage.store";
 import { useSettingsStore } from "../settings/settings.store";
+import { promptSummary } from "./prompt/annotation-prompt.utils";
 
 export type SessionMode = { id: string; name: string; description?: string | null };
 
@@ -382,7 +383,7 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
       return;
     }
     if (get().untitledIds.includes(id)) {
-      void nameAfterPrompt(id, prompt.text);
+      void nameAfterPrompt(id, promptSummary(prompt.text));
     }
     await runPromptTurn(id, prompt);
   }

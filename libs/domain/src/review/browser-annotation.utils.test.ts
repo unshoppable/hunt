@@ -11,13 +11,14 @@ const ANNOTATION: BrowserAnnotation = {
   viewport: { width: 1280, height: 800 },
   styles: { color: "rgb(0, 0, 0)", "font-size": "14px" },
   source: { file: "src/app/orders.tsx", line: 42, column: 7 },
+  component: { name: "OrdersPage", tag: "app-orders-page" },
   comment: "Make this the primary button",
 };
 
 describe("parseBrowserAnnotation", () => {
   it("reads a complete annotation, one without a source or column, and drops unknown fields", () => {
     expect(parseBrowserAnnotation({ ...ANNOTATION, extra: 1 })).toEqual({ annotation: ANNOTATION });
-    const { source: _source, ...withoutSource } = ANNOTATION;
+    const { source: _source, component: _component, ...withoutSource } = ANNOTATION;
     expect(parseBrowserAnnotation(withoutSource)).toEqual({ annotation: withoutSource });
     const withoutColumn = { ...ANNOTATION, source: { file: "a.tsx", line: 1 } };
     expect(parseBrowserAnnotation(withoutColumn)).toEqual({ annotation: withoutColumn });
@@ -35,6 +36,8 @@ describe("parseBrowserAnnotation", () => {
       [{ ...ANNOTATION, styles: { color: 1 } }, "styles must map at most 32 CSS properties to strings"],
       [{ ...ANNOTATION, source: { file: "a.tsx", line: -1 } }, "source must hold a file and a line, optionally a column"],
       [{ ...ANNOTATION, source: { line: 1 } }, "source must hold a file and a line, optionally a column"],
+      [{ ...ANNOTATION, component: { name: "OrdersPage" } }, "component must hold a name and a tag of at most 256 characters"],
+      [{ ...ANNOTATION, component: { name: "x".repeat(257), tag: "app-x" } }, "component must hold a name and a tag of at most 256 characters"],
     ];
     for (const [value, error] of cases) {
       expect(parseBrowserAnnotation(value), error).toEqual({ error });

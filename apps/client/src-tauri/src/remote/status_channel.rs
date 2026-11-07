@@ -74,7 +74,14 @@ pub struct Annotation {
     /// Where the element is rendered in the app's sources, when the page tells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<AnnotationSource>,
+    /// The Angular component whose template renders the element, when the page tells.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub component: Option<AnnotationComponent>,
     pub comment: String,
+    /// The PNG of the element Hunt captured in the local Chrome, as an absolute path on this Mac; never read from the page
+    /// or a VM, so neither can point Hunt at a local file.
+    #[serde(default, skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub screenshot_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize, Serialize)]
@@ -97,6 +104,14 @@ pub struct AnnotationSource {
     pub line: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub column: Option<u32>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct AnnotationComponent {
+    /// The component's class name.
+    pub name: String,
+    /// The tag name of the component's host element, lowercase.
+    pub tag: String,
 }
 
 /// What the helper reports once it is ready.
@@ -217,7 +232,8 @@ mod tests {
         r#"{"t":"annotation","annotation":{"id":"5b0c","createdAt":1760000000000,"url":"https://app.example/cart","title":"Cart","#,
         r#""selector":"main > button.buy","text":"Buy","outerHtml":"<button class=\"buy\">Buy</button>","#,
         r#""rect":{"x":10,"y":20.5,"width":80,"height":32},"viewport":{"width":1280,"height":800},"styles":{"color":"rgb(0, 0, 0)"},"#,
-        r#""source":{"file":"src/Cart.tsx","line":12,"column":5},"comment":"Make it blue","extra":true}}"#,
+        r#""source":{"file":"src/Cart.tsx","line":12,"column":5},"component":{"name":"CartComponent","tag":"app-cart"},"#,
+        r#""comment":"Make it blue","extra":true}}"#,
     );
 
     #[test]
@@ -230,7 +246,17 @@ mod tests {
         assert_eq!(annotation.viewport, AnnotationViewport { width: 1280.0, height: 800.0 });
         assert_eq!(annotation.styles, BTreeMap::from([("color".to_string(), "rgb(0, 0, 0)".to_string())]));
         assert_eq!(annotation.source, Some(AnnotationSource { file: "src/Cart.tsx".into(), line: 12, column: Some(5) }));
+        assert_eq!(annotation.component, Some(AnnotationComponent { name: "CartComponent".into(), tag: "app-cart".into() }));
         assert_eq!(annotation.comment, "Make it blue");
+        assert_eq!(annotation.screenshot_path, None);
+    }
+
+    #[test]
+    fn a_vm_cannot_set_the_screenshot_path() {
+        let with_path = ANNOTATION.replace(r#""extra":true"#, r#""screenshotPath":"/Users/someone/.ssh/id_ed25519""#);
+        let Some(Message::Annotation(annotation)) = parse_message(&with_path) else { panic!("no annotation read") };
+        assert_eq!(annotation.screenshot_path, None);
+        assert!(serde_json::to_value(&annotation).unwrap().get("screenshotPath").is_none());
     }
 
     #[test]
@@ -240,6 +266,7 @@ mod tests {
         assert_eq!(annotation.source, None);
         let payload = serde_json::to_value(&annotation).unwrap();
         assert!(payload.get("source").is_none());
+        assert_eq!(payload["component"], serde_json::json!({ "name": "CartComponent", "tag": "app-cart" }));
         assert_eq!(payload["outerHtml"], r#"<button class="buy">Buy</button>"#);
         assert_eq!(payload["createdAt"], 1_760_000_000_000_i64);
 

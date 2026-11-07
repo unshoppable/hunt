@@ -8,8 +8,8 @@ use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use super::{
-    activate, activate_remote, drop_pending_permissions, finish_progress, forget_remote, local_start, open_remote_relay, progress_reporter,
-    remote_claude_token, remote_host, start_remote_relay, stop_agent, worktree_session, SessionView,
+    activate, activate_remote, browser, drop_pending_permissions, finish_progress, forget_remote, local_start, open_remote_relay,
+    progress_reporter, remote_claude_token, remote_host, start_remote_relay, stop_agent, worktree_session, SessionView,
 };
 use crate::agent::accounts;
 use crate::agent::acp::{AgentTransport, PermissionRegistry, SessionRegistry, SessionStart};
@@ -331,7 +331,7 @@ pub async fn close_session(
 }
 
 /// Stops the agent of `id` and, unless `ending` is `Stop`, deletes the session record together with its sub chats,
-/// worktree and branch; a session in the repository's own checkout only loses its records. A remote session's VM
+/// annotation screenshots, worktree and branch; a session in the repository's own checkout only loses its records. A remote session's VM
 /// goes only with `Delete`.
 async fn end_session(
     app: &AppHandle,
@@ -347,6 +347,7 @@ async fn end_session(
         return Ok(());
     }
     app.state::<CheckRegistry>().forget(id);
+    browser::delete_screenshots(app, id);
 
     let record = store::find_session(app, id)?;
     // A sub chat only owns its record; the worktree belongs to its parent.
@@ -356,6 +357,7 @@ async fn end_session(
 
     for child in store::load_sessions(app)?.into_iter().filter(|session| session.parent_id == Some(id)) {
         stop_agent(app, registry, watchers, permissions, child.id).await;
+        browser::delete_screenshots(app, child.id);
         store::remove_session(app, child.id)?;
     }
     // The family's terminals end with it, together with the processes its agents left running.

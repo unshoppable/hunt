@@ -3,7 +3,7 @@
  * describes the element and its ancestors as plain values and passes lookups as functions, so this runs and is tested
  * in Node.
  */
-import { ANNOTATION_LIMITS, type AnnotationSource } from "../../../../libs/domain/src/review/browser-annotation.utils.ts";
+import { ANNOTATION_LIMITS, type AnnotationComponent, type AnnotationSource } from "../../../../libs/domain/src/review/browser-annotation.utils.ts";
 
 /** One element of the chain from the picked element up to the document's root element, as `cssSelector` needs it. */
 export interface ElementStep {
@@ -159,6 +159,29 @@ export function pathOfUrl(url: string): string {
     // A malformed escape stays as it is.
   }
   return path.startsWith("/@fs/") ? path.slice("/@fs".length) : path.replace(/^\//, "");
+}
+
+/**
+ * The component whose template renders `element`, by Angular's dev-mode global `ng` (`window.ng`): the owning
+ * component's class name, without the `_` esbuild prefixes to decorated classes, and the tag of its host element.
+ * Undefined in production builds and for pages without Angular.
+ */
+export function angularComponent(element: object, ng: unknown): AnnotationComponent | undefined {
+  if (!isObject(ng) || typeof ng.getOwningComponent !== "function" || typeof ng.getHostElement !== "function") return undefined;
+  try {
+    const component: unknown = ng.getOwningComponent(element);
+    if (!isObject(component)) return undefined;
+    const host: unknown = ng.getHostElement(component);
+    const constructorName: unknown = (component.constructor as { name?: unknown } | undefined)?.name;
+    const tagName = isObject(host) ? host.tagName : undefined;
+    if (typeof constructorName !== "string" || typeof tagName !== "string") return undefined;
+    const name = constructorName.replace(/^_(?=[A-Z])/, "");
+    if (!name || !tagName) return undefined;
+    return { name: shorten(name, ANNOTATION_LIMITS.componentName), tag: shorten(tagName.toLowerCase(), ANNOTATION_LIMITS.componentName) };
+  } catch {
+    // `ng` throws for an element outside every component's view.
+    return undefined;
+  }
 }
 
 /**

@@ -35,12 +35,14 @@ issue as waiting, so that GitHub's notification mail carries it in its subject: 
 and a colon in front of the issue's title (`{{questionPrefix}}: <title>`; `swf.questionPrefix` of its hunt.json) and
 replace the step's label with `{{question}}` in one command (the step's prompt names it as
 `gh issue edit … --remove-label <step label> --add-label {{question}} --title "{{questionPrefix}}: <title>"`).
-Then gather every open question into one comment on the issue with the options you see and your recommendation. The
-comment starts with the question prefix in bold on a line of its own (`**{{questionPrefix}}**`), followed by a
-mention of everyone who is to answer, so that GitHub notifies them: every current assignee of the issue
+Then gather every open question into one short comment on the issue: a numbered list with one item per question, each
+saying in a sentence or two what is to be decided, the options you see and your recommendation; leave out findings,
+background and notes that ask nothing. The comment starts with the question prefix in bold on a line of its own
+(`**{{questionPrefix}}**`), followed by a mention of everyone who is to answer, so that GitHub notifies them: every
+current assignee of the issue
 (`gh issue view {{number}} --repo {{repo}} --json assignees -q '.assignees[].login'`) as `@login`, or the issue's author
-when it has no assignee. Say that they can answer with a comment on the issue or in Hunt. End your turn with the
-questions as your last words and the marker `<!-- hunt:question -->`. The answer reaches you as your next prompt in this
+when it has no assignee. Say that they can answer with a comment on the issue or in Hunt. End your turn with the same
+list as your last words and the marker `<!-- hunt:question -->`. The answer reaches you as your next prompt in this
 conversation, whichever way it was given; then put the step's label back and take the mark off the title (the prompt
 names the command) and finish the step. Never repeat, summarize or confirm the answer on the issue, also not when it
 was given in Hunt.

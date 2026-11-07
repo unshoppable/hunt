@@ -140,7 +140,11 @@ describe("session files", () => {
     expect(unwrapped).not.toContain("German");
     expect(swfSystemPrompt(prompts.swfSystem, REPO, 12, WorkflowLabels.of("swf"), "❓ QUESTION")).toContain("--title \"❓ QUESTION: <title>\"");
     expect(unwrapped).toContain("(`gh issue view 12 --repo acme/app --json assignees -q '.assignees[].login'`) as `@login`");
-    expect(unwrapped).toContain("End your turn with the questions as your last words and the marker `<!-- hunt:question -->`.");
+    expect(unwrapped).toContain(
+      "gather every open question into one short comment on the issue: a numbered list with one item per question, each saying in a sentence or two " +
+        "what is to be decided, the options you see and your recommendation; leave out findings, background and notes that ask nothing.",
+    );
+    expect(unwrapped).toContain("End your turn with the same list as your last words and the marker `<!-- hunt:question -->`.");
     expect(prompt).toContain("### Giving up\n");
     expect(unwrapped).toContain("replace the step's label with `swf:failed` (the prompt names the command) and comment on the issue why.");
     expect(prompt).toContain("### Step skills\n");

@@ -8,6 +8,7 @@ import { describeService, hasRespondingService, isServiceRunning, offersStart, t
 import { sessionMarks } from "../sessions/session-labels.utils";
 import { usePreviewStore } from "../preview/preview.store";
 import { useHuntStore } from "../sessions/hunt.store";
+import { useSessionViewStore } from "../sessions/inspector.store";
 import { NO_SESSION_WINDOWS, useTerminalStore } from "./terminals.store";
 import { useServicesStore } from "./services.store";
 import { GHOST_BUTTON_XS, ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
@@ -75,7 +76,9 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
   const refreshWindows = useTerminalStore((state) => state.refreshWindows);
   const pendingRun = useTerminalStore((state) => state.pendingRuns[sessionId]);
   const [error, setError] = useState<string | null>(null);
-  const [activeKey, setActiveKey] = useState<string | null>(null);
+  /** The tab shown, stored per session so that `hunt-client terminal` reads and sets it. */
+  const activeKey = useSessionViewStore((state) => state.views[sessionId]?.terminalTab ?? null);
+  const updateView = useSessionViewStore((state) => state.updateView);
   /** The tabs shown at least once; each keeps its terminal while its process exists. */
   const [openedKeys, setOpenedKeys] = useState<string[]>([]);
   const [focusRequest, setFocusRequest] = useState<FocusRequest>({ key: null, count: 0 });
@@ -93,6 +96,16 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
   const previousTabsRef = useRef<TerminalTab[]>([]);
   const wasVisibleRef = useRef(isVisible);
   const hasOfferedShellRef = useRef(false);
+  /** The key the panel stored last; a key stored by `hunt-client terminal` shows its tab like a click on it. */
+  const ownKeyRef = useRef(activeKey);
+
+  const setActiveKey = useCallback(
+    (key: string | null) => {
+      ownKeyRef.current = key;
+      updateView(sessionId, { terminalTab: key });
+    },
+    [sessionId, updateView],
+  );
 
   const loadWindows = useCallback(
     async (machines: readonly Machine[]) => {
@@ -126,16 +139,24 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
     return () => window.clearInterval(timer);
   }, [sessionId, isVisible, isLive, isRemote, hasPreviewDomain, loadWindows, refreshServices, refreshLocalServices]);
 
+  // Without tabs (none read yet, or all gone) the stored key stays, so a tab picked before still shows once they arrive.
   useEffect(() => {
-    // The updater runs at the next render, after the ref moved on, so it gets the previous tabs as a value.
     const previous = previousTabsRef.current;
     previousTabsRef.current = tabs;
-    setActiveKey((current) => nextActiveKey(previous, tabs, current));
+    if (tabs.length) {
+      setActiveKey(nextActiveKey(previous, tabs, useSessionViewStore.getState().views[sessionId]?.terminalTab ?? null));
+    }
     setOpenedKeys((keys) => {
       const kept = keys.filter((key) => tabs.some((tab) => tab.key === key));
       return kept.length === keys.length ? keys : kept;
     });
-  }, [tabs]);
+  }, [sessionId, tabs, setActiveKey]);
+
+  useEffect(() => {
+    if (!activeKey || activeKey === ownKeyRef.current) return;
+    ownKeyRef.current = activeKey;
+    setFocusRequest((current) => ({ key: activeKey, count: current.count + 1 }));
+  }, [activeKey]);
 
   useEffect(() => {
     if (!isVisible || !activeKey) return;
@@ -157,10 +178,13 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
     setFocusRequest({ key: activeKey, count: focusRequest.count });
   }, [activeKey, focusRequest]);
 
-  const activate = useCallback((key: string) => {
-    setActiveKey(key);
-    setFocusRequest((current) => ({ key, count: current.count + 1 }));
-  }, []);
+  const activate = useCallback(
+    (key: string) => {
+      setActiveKey(key);
+      setFocusRequest((current) => ({ key, count: current.count + 1 }));
+    },
+    [setActiveKey],
+  );
 
   /** Opens a shell in a new tmux window and shows it; with `run`, the window runs that package.json script. */
   const openShell = useCallback(

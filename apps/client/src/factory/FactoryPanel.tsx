@@ -6,6 +6,7 @@ import { RETURNING_STEPS } from "../../../../libs/domain/src/swf/step-settings.v
 import { MarkdownText, MessageList } from "../chat/messages/MessageList";
 import { commands } from "../ipc/commands";
 import { useHuntStore } from "../sessions/hunt.store";
+import { useSessionViewStore } from "../sessions/inspector.store";
 import { EMPTY_PIPELINE, useFactoryStore } from "../sessions/swf-pipeline.store";
 import type { SwfStepFile } from "../sessions/swf-pipeline.types";
 import { HEADER_BAR } from "../ui/bars.constants";
@@ -14,6 +15,7 @@ import { AGENT_CHIP, Chip } from "../ui/Chip";
 import { errorText } from "../ui/error-text.utils";
 import { ExternalIcon, GitHubIcon, Spinner } from "../ui/Icons";
 import { useLoad } from "../ui/load.hook";
+import { openableRuns, shownRun } from "./factory-runs.utils";
 import { FACTORY_EDGE_TYPES, FACTORY_NODE_TYPES } from "./FactoryNodes";
 import { formatRunDuration, OUTCOME_LABELS, pipelineGraph, pipelineLinks, runDuration, STEP_LABELS, transitionText, type Transition } from "./pipeline-graph.utils";
 import { layoutPipeline, type PipelineFlowEdge, type StepFlowNode } from "./pipeline-layout.utils";
@@ -40,7 +42,7 @@ const OUTCOME_CHIP: Record<Run["outcome"], string> = {
  * implement → verify → review → pr → checks → human-review → merge as a graph, each with its run count, the current step
  * marked and every return to implement as an amber edge labelled with its findings; below the runs in order with their
  * outcome and duration, and under them the step result and the conversation of the selected run (by default the latest
- * one that has either).
+ * one that has either; the selection is stored per session, where `hunt-client factory` reads and sets it).
  * Reads the record again after every pull of `.hunt/swf/` (`swf:pulled`, wired in app/window-bootstrap.hook.ts), when the
  * session's turn ends or its files synced, when the window gets the focus and on Refresh.
  */
@@ -55,7 +57,8 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
   const isTurnRunning = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.remote?.relayActivity?.isTurnRunning ?? false);
   const lastActiveAt = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.remote?.lastActiveAt ?? null);
   const { pipeline, steps, transcripts } = record;
-  const [selectedN, setSelectedN] = useState<number | null>(null);
+  const selectedN = useSessionViewStore((state) => state.views[sessionId]?.factoryRun ?? null);
+  const updateView = useSessionViewStore((state) => state.updateView);
   const [flow, setFlow] = useState<{ nodes: StepFlowNode[]; edges: PipelineFlowEdge[] } | null>(null);
   const [layoutError, setLayoutError] = useState<string | null>(null);
   /** Bumped when a layout lands so React Flow remounts and fits the graph into view. */
@@ -87,9 +90,8 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
   );
 
   const runs = pipeline?.runs ?? [];
-  const openableNs = useMemo(() => new Set([...steps, ...transcripts].map((file) => file.n)), [steps, transcripts]);
-  /** The run that shows below: the selected one, else the latest run that has a step result or a transcript. */
-  const shownN = selectedN !== null && openableNs.has(selectedN) ? selectedN : openableNs.size > 0 ? Math.max(...openableNs) : null;
+  const openableNs = useMemo(() => openableRuns(steps, transcripts), [steps, transcripts]);
+  const shownN = shownRun(selectedN, openableNs);
   const links = pipelineLinks(repo, issue, pipeline?.pullRequest ?? null);
 
   return (
@@ -150,7 +152,14 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
           <div className="flex max-h-[40%] shrink-0 flex-col overflow-y-auto py-1.5 text-[13px]">
             {runs.length ? (
               runs.map((run) => (
-                <RunRow key={run.n} run={run} now={now} isOpenable={openableNs.has(run.n)} isSelected={run.n === shownN} onSelect={() => setSelectedN(run.n)} />
+                <RunRow
+                  key={run.n}
+                  run={run}
+                  now={now}
+                  isOpenable={openableNs.has(run.n)}
+                  isSelected={run.n === shownN}
+                  onSelect={() => updateView(sessionId, { factoryRun: run.n })}
+                />
               ))
             ) : (
               <p className={HINT}>The record lists no runs yet.</p>

@@ -2,17 +2,17 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent } fr
 import { commands } from "../ipc/commands";
 import type { ChangedFile } from "../common/changes/changed-file.types";
 import type { GraphNode } from "../graph/graph.types";
-import type { ChangedFileView, Comparison, FileDiff, FileVersion } from "./diff.types";
+import type { ChangedFileView, FileDiff, FileVersion } from "./diff.types";
 import { useHuntStore } from "../sessions/hunt.store";
 import { PaneSeparator, Panel, PersistentGroup } from "../ui/ResizablePanes";
-import { useSessionViewStore, type ChangeListTab } from "../sessions/inspector.store";
+import { useSessionViewStore, type ChangeListTab, type DiffMode } from "../sessions/inspector.store";
 import { useSettingsStore, type ChangelistScope } from "../settings/settings.store";
-import { countByScope, isInScope, otherTouchers, ownerLabel, scopeOwnerIds } from "./attribution.utils";
+import { countByScope, otherTouchers, ownerLabel, scopeOwnerIds } from "./attribution.utils";
+import { changeListComparison, scopedChangedFiles, sharesWorktree, shownChangeListTab, withoutHiddenFiles } from "./changelist-view.utils";
 import { ownView } from "./own-changes.utils";
 import type { OverwriteMark } from "./overwrite-markers.monaco";
 import { sessionMarks } from "../sessions/session-labels.utils";
 import { ChangeList, type ChangeListTarget } from "./ChangeList";
-import { matchesGlob, splitGlobs } from "../common/glob/glob.utils";
 import { parseGraph } from "../graph/schema.utils";
 import { SubChatPopover } from "../chat/sub-chat/SubChatPopover";
 import { useSubChatPopover } from "../chat/sub-chat/sub-chat-popover.hook";
@@ -43,8 +43,6 @@ export const CHANGE_LIST_MIN_WIDTH = 240;
 const VIEWER_MIN_WIDTH = 240;
 
 type ContextMenuState = { x: number; y: number; target: ChangeListTarget };
-
-type DiffMode = "split" | "unified";
 
 /** Task of a sub chat opened from a changelist row: the chat is about the whole file, not a selection in it. */
 function wholeFileTask(file: ChangedFile): string {
@@ -88,15 +86,8 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const worktreePath = session?.worktreePath;
   /** Files with unsaved edits; they keep them when another file is shown. */
   const unsavedPaths = useDirtyPaths(useMemo(() => (worktreePath ? workspaceFor(sessionId, worktreePath) : null), [sessionId, worktreePath]));
-  /**
-   * The changelist can be scoped to the session's own changes: another session (parent or sub session) works in the
-   * same worktree, or the session works in the repository's own checkout, which also holds the user's other work.
-   */
-  const isSharedWorktree = useHuntStore(
-    (state) =>
-      session?.workspace === "checkout" ||
-      state.sessions.some((candidate) => candidate.id !== sessionId && candidate.worktreePath === session?.worktreePath),
-  );
+  /** The changelist can be scoped to the session's own changes when it shares its worktree (see `sharesWorktree`). */
+  const isSharedWorktree = useHuntStore((state) => sharesWorktree(state.sessions, session));
   const [files, setFiles] = useState<ChangedFileView[]>([]);
   const parentId = session?.parentId ?? null;
   const workspace = session?.workspace ?? "worktree";
@@ -105,15 +96,9 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const storedTab = useSessionViewStore((state) => state.views[familyId]?.changeListTab);
   const setChangeListTab = useSessionViewStore((state) => state.setChangeListTab);
   const setTab = useCallback((next: ChangeListTab) => setChangeListTab(familyId, next), [setChangeListTab, familyId]);
-  /** A pull request review opens on the review tab; the review tab exists only while a pull request is under review. */
-  const defaultTab: ChangeListTab = pullRequest ? "review" : "changelist";
-  const tab = !storedTab || (storedTab === "review" && !pullRequest) ? defaultTab : storedTab;
-  /**
-   * The review tab compares against the pull request's merge base; the changelist and shelf tabs show only the
-   * uncommitted changes, so committed files never appear there.
-   */
-  const comparison: Comparison = tab === "review" ? "diffBase" : "head";
-  const scope =useSettingsStore((state) => state.changelistScopes[sessionId] ?? "own");
+  const tab = shownChangeListTab(storedTab, !!pullRequest);
+  const comparison = changeListComparison(tab);
+  const scope = useSettingsStore((state) => state.changelistScopes[sessionId] ?? "own");
   const setChangelistScope = useSettingsStore((state) => state.setChangelistScope);
   const setScope = useCallback((next: ChangelistScope) => setChangelistScope(sessionId, next), [setChangelistScope, sessionId]);
   const ownerIds = useMemo(() => scopeOwnerIds(scope, sessionId, parentId), [scope, sessionId, parentId]);
@@ -121,23 +106,20 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const includesParent = ownerIds.length > 1;
   /** The review tab lists every change of the pull request, whichever session made it. */
   const isScoped = isSharedWorktree && tab !== "review";
-  const scopedFiles = useMemo(() => {
-    if (!isScoped) return files;
-    return files.filter((file) => isInScope(file, scope, sessionId, parentId, workspace));
-  }, [files, scope, isScoped, sessionId, parentId, workspace]);
+  const scopedFiles = useMemo(
+    () => scopedChangedFiles(files, { sessionId, parentId, workspace, scope: isScoped ? scope : null }),
+    [files, scope, isScoped, sessionId, parentId, workspace],
+  );
   const scopeCounts = useMemo(() => countByScope(files, sessionId, parentId, workspace), [files, sessionId, parentId, workspace]);
   /** The files in scope minus those matching one of the changelist's hidden globs. */
   const hiddenGlobsText = useSettingsStore((state) => state.changelistHiddenGlobs);
-  const visibleFiles = useMemo(() => {
-    const hiddenGlobs = splitGlobs(hiddenGlobsText);
-    if (!hiddenGlobs.length) return scopedFiles;
-    return scopedFiles.filter((file) => !hiddenGlobs.some((glob) => matchesGlob(glob, file.path)));
-  }, [scopedFiles, hiddenGlobsText]);
+  const visibleFiles = useMemo(() => withoutHiddenFiles(scopedFiles, hiddenGlobsText), [scopedFiles, hiddenGlobsText]);
   /** The agent's review ratings from `.hunt/diagrams/dependencies.react-flow.json`, keyed by path; empty while there is no diagram. */
   const [reviewRatings, setReviewRatings] = useState<Map<string, GraphNode>>(() => new Map());
-  /** The selected file; the one selected when the session was left until the changelist arrives. */
-  const [selectedPath, setSelectedPath] = useState<string | null>(() => useSessionViewStore.getState().views[sessionId]?.diffPath ?? null);
+  /** The selected file, kept in the session's inspector view so `hunt-client` reads and sets it also while the tab is not mounted. */
+  const selectedPath = useSessionViewStore((state) => state.views[sessionId]?.diffPath ?? null);
   const setDiffPath = useSessionViewStore((state) => state.setDiffPath);
+  const updateView = useSessionViewStore((state) => state.updateView);
   const [isListLoaded, setIsListLoaded] = useState(false);
   /** Whether a load of the changelist is in flight; the changelist header shows a spinner meanwhile. */
   const [isListLoading, setIsListLoading] = useState(false);
@@ -154,8 +136,8 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
     const header = headerRef.current;
     setLineNumbersLeft(clientX === null || !header ? null : clientX - header.getBoundingClientRect().left);
   }, []);
-  const [mode, setMode] = useState<DiffMode>("split");
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const mode = useSessionViewStore((state): DiffMode => state.views[sessionId]?.diffMode ?? "split");
+  const isCollapsed = useSessionViewStore((state) => state.views[sessionId]?.diffCollapsed ?? false);
   /** Whether the diff of a file other sessions changed too shows every change or only the lines of this session and its parent. */
   const lineScope = useSettingsStore((state) => state.diffLineScope);
   const setLineScope = useSettingsStore((state) => state.setDiffLineScope);
@@ -269,20 +251,18 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   // The selection follows the visible list: a file that left it (reverted, shelved, or hidden by the scope or a glob) gives way to the first one.
   useEffect(() => {
     if (!isListLoaded) return;
-    setSelectedPath((current) => (current && visibleFiles.some((file) => file.path === current) ? current : (visibleFiles[0]?.path ?? null)));
-  }, [visibleFiles, isListLoaded]);
+    const current = useSessionViewStore.getState().views[sessionId]?.diffPath ?? null;
+    setDiffPath(sessionId, current && visibleFiles.some((file) => file.path === current) ? current : (visibleFiles[0]?.path ?? null));
+  }, [sessionId, visibleFiles, isListLoaded, setDiffPath]);
 
+  // Another file, picked here or through `hunt-client`, starts without edits and without a pending version from disk.
   useEffect(() => {
-    if (isListLoaded) {
-      setDiffPath(sessionId, selectedPath);
-    }
-  }, [sessionId, selectedPath, isListLoaded, setDiffPath]);
-
-  useEffect(() => {
-    if (selectedPath) return;
-    setDiff(null);
+    markDirty(false);
     setExternalDiff(null);
-  }, [selectedPath]);
+    if (!selectedPath) {
+      setDiff(null);
+    }
+  }, [selectedPath, markDirty]);
 
   // `diff` is intentionally not a dependency: it is only compared, never a trigger.
   useLoad(
@@ -349,12 +329,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const canCommentOnFile = !!pullRequest && !!shownDiff && !isOwnView;
   const commentButtonLeft = canCommentOnFile ? lineNumbersLeft : null;
 
-  const selectFile = (path: string) => {
-    if (path === selectedPath) return;
-    markDirty(false);
-    setExternalDiff(null);
-    setSelectedPath(path);
-  };
+  const selectFile = (path: string) => setDiffPath(sessionId, path);
 
   const saveFile = useCallback(
     (content: string) => {
@@ -485,10 +460,10 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
               </button>
             ) : null}
             {commentButtonLeft === null ? null : <span className="flex-1" />}
-            <button type="button" onClick={() => setMode(mode === "split" ? "unified" : "split")} className={SECONDARY_BUTTON_XS}>
+            <button type="button" onClick={() => updateView(sessionId, { diffMode: mode === "split" ? "unified" : "split" })} className={SECONDARY_BUTTON_XS}>
               {mode === "split" ? "Split" : "Unified"}
             </button>
-            <button type="button" onClick={() => setIsCollapsed(!isCollapsed)} className={SECONDARY_BUTTON_XS} title={isCollapsed ? "Show every unchanged line" : "Collapse every unchanged stretch"}>
+            <button type="button" onClick={() => updateView(sessionId, { diffCollapsed: !isCollapsed })} className={SECONDARY_BUTTON_XS} title={isCollapsed ? "Show every unchanged line" : "Collapse every unchanged stretch"}>
               {isCollapsed ? "Expand all" : "Collapse unchanged"}
             </button>
             <button

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { WaymoteSession, type VideoState } from "@rockorager/waymote";
 import { commands } from "../ipc/commands";
 import type { DesktopEndpoint } from "./desktop.types";
@@ -9,6 +9,7 @@ import { REMOTE_INPUT_ATTRIBUTE } from "../ui/shortcuts.utils";
 import { useLoad } from "../ui/load.hook";
 import { errorText } from "../ui/error-text.utils";
 import { describeDesktop, hasLostConnection, type Tone } from "./desktop-status.utils";
+import { useDesktopStore } from "./desktop.store";
 import { KeyTranslator } from "./key-translator.domain";
 
 const TONE_COLOR: Record<Tone, string> = {
@@ -26,7 +27,8 @@ const TONE_COLOR: Record<Tone, string> = {
  * no further than the stage, past the window's Escape listeners. Ahead of the SDK, the stage turns the Mac's keys into the
  * VM's in the capture phase (`key-translator.domain.ts`: ⌘ as Ctrl, ⌥ characters as text, letter shortcuts on their US key).
  * Clicking outside gives the keys back to Hunt. The panel connects the first time it shows and stays mounted while
- * another tab shows, so the stream survives tab switches; another session unmounts it.
+ * another tab shows, so the stream survives tab switches; another session unmounts it. While mounted it reports its
+ * status to the desktop store and reconnects on each request there (`hunt-client desktop`).
  */
 export function DesktopPanel({ sessionId, isVisible }: { sessionId: string; isVisible: boolean }) {
   const [hasShown, setHasShown] = useState(isVisible);
@@ -40,6 +42,10 @@ export function DesktopPanel({ sessionId, isVisible }: { sessionId: string; isVi
   const stageRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textInputRef = useRef<HTMLInputElement>(null);
+  const reconnectRequest = useDesktopStore((state) => state.reconnectRequests[sessionId] ?? 0);
+  const reportDesktop = useDesktopStore((state) => state.report);
+  /** The request the panel answered last; those made before it mounted are answered by its first connect. */
+  const answeredRequestRef = useRef(reconnectRequest);
   if (isVisible && !hasShown) {
     setHasShown(true);
   }
@@ -115,17 +121,29 @@ export function DesktopPanel({ sessionId, isVisible }: { sessionId: string; isVi
     };
   }, [endpoint]);
 
-  const reconnect = () => {
+  const reconnect = useCallback(() => {
     setEndpoint(null);
     setVideo(null);
     setOpenError(null);
     setStreamError(null);
     setReopenCount((count) => count + 1);
-  };
+  }, []);
+
+  useEffect(() => {
+    if (reconnectRequest === answeredRequestRef.current) return;
+    answeredRequestRef.current = reconnectRequest;
+    reconnect();
+  }, [reconnectRequest, reconnect]);
 
   const isOpening = hasShown && !endpoint && !openError;
-  const status = describeDesktop({ openError, isOpening, video: endpoint ? video : null });
+  const status = useMemo(() => describeDesktop({ openError, isOpening, video: endpoint ? video : null }), [openError, isOpening, endpoint, video]);
   const error = openError ?? streamError;
+
+  useEffect(() => {
+    reportDesktop(sessionId, { status, error });
+  }, [sessionId, status, error, reportDesktop]);
+
+  useEffect(() => () => reportDesktop(sessionId, null), [sessionId, reportDesktop]);
 
   return (
     <div className={`h-full min-h-0 flex-col ${isVisible ? "flex" : "hidden"}`}>

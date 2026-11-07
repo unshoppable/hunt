@@ -153,6 +153,8 @@ type IdeState = {
   revealActiveFile: (sessionId: string) => void;
   /** Expands the project tree to the folder `path`, expands the folder and selects it. */
   revealFolder: (sessionId: string, path: string) => void;
+  /** Expands the project tree to the file `path` and selects it, whether or not a pane has it open. */
+  revealFile: (sessionId: string, path: string) => void;
   /** Brings back a stored editor under fresh pane ids; a session the store holds already keeps what it shows. */
   restoreSession: (sessionId: string, snapshot: IdeSnapshot) => void;
 };
@@ -241,6 +243,11 @@ export const useIdeStore = create<IdeState>((set, get) => {
     revealFolder: (sessionId, path) => {
       nonceCounter += 1;
       update(sessionId, (session) => ({ ...session, revealRequest: { path, nonce: nonceCounter, isFolder: true } }));
+    },
+
+    revealFile: (sessionId, path) => {
+      nonceCounter += 1;
+      update(sessionId, (session) => ({ ...session, revealRequest: { path, nonce: nonceCounter } }));
     },
 
     restoreSession: (sessionId, snapshot) => {

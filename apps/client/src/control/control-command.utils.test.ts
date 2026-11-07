@@ -53,6 +53,61 @@ describe("parseControlCommand", () => {
     }
   });
 
+  it("reads the state commands and every action of the tabs", () => {
+    const path = `${WORKTREE}/src/a.ts`;
+    const actions: Record<string, object[]> = {
+      graph: [
+        { name: "type", type: "erd" },
+        { name: "file", path },
+        { name: "file", path: null },
+        { name: "tables", hide: ["users"] },
+        { name: "tables", hide: [] },
+        { name: "changedTables" },
+        { name: "files", exclude: [path] },
+        { name: "filter", minReview: 4, hiddenGlobs: "*.md" },
+        { name: "filter" },
+        { name: "generate", instructions: "only orders" },
+      ],
+      diff: [
+        { name: "select", path: null },
+        { name: "subtab", tab: "review" },
+        { name: "scope", scope: "downstream" },
+        { name: "globs", globs: "" },
+        { name: "view", view: "tree" },
+        { name: "lines", scope: "own" },
+        { name: "mode", mode: "unified" },
+        { name: "collapse", collapsed: true },
+        { name: "check", paths: [path] },
+      ],
+      git: [{ name: "filter", reference: "master", text: "" }, { name: "select", commit: "b3c3dcf6" }, { name: "selectFile", path: "src/a.ts" }],
+      editor: [{ name: "close", path }, { name: "closeAll" }, { name: "activate", path }, { name: "back" }, { name: "forward" }, { name: "reveal" }],
+      desktop: [{ name: "reconnect" }],
+      checks: [{ name: "stop" }, { name: "stop", check: "lint" }, { name: "select", check: null }],
+      terminal: [{ name: "select", key: "service:web" }, { name: "new", directory: WORKTREE, script: "dev" }, { name: "rerun", key: "window:local:3" }],
+      factory: [{ name: "select", run: 2 }, { name: "select", run: null }, { name: "refresh" }],
+    };
+    for (const name of ["state", "pullRequest", ...Object.keys(actions)]) {
+      expect(parseControlCommand({ name })).toEqual({ name });
+    }
+    for (const [name, list] of Object.entries(actions)) {
+      for (const action of list) {
+        expect(parseControlCommand({ name, action })).toEqual({ name, action });
+      }
+    }
+  });
+
+  it("names the field of a tab action and what it must be", () => {
+    expect(() => parseControlCommand({ name: "graph", action: { name: "type", type: "uml" } })).toThrow("invalid command: action.type must be one of dependencies");
+    expect(() => parseControlCommand({ name: "graph", action: { name: "filter", minReview: 5 } })).toThrow("action.minReview must be an integer from 1 to 4");
+    expect(() => parseControlCommand({ name: "graph", action: { name: "files", exclude: ["src/a.ts"] } })).toThrow("action.exclude.0 must be an absolute path");
+    expect(() => parseControlCommand({ name: "diff", action: { name: "collapse", collapsed: "yes" } })).toThrow("action.collapsed must be true or false");
+    expect(() => parseControlCommand({ name: "git", action: { name: "select", commit: "" } })).toThrow("action.commit must be a non-empty string");
+    expect(() => parseControlCommand({ name: "factory", action: { name: "select", run: 0 } })).toThrow("action.run must be a positive integer");
+    expect(() => parseControlCommand({ name: "editor", action: { name: "open" } })).toThrow("action.name must be one of close, closeAll, activate, back, forward, reveal");
+    expect(() => parseControlCommand({ name: "pullRequest", action: { name: "submit" } })).toThrow("the command has unknown fields: action");
+    expect(() => parseControlCommand({ name: "desktop", action: { name: "reconnect", force: true } })).toThrow("action has unknown fields: force");
+  });
+
   it("names the field and what it must be", () => {
     expect(() => parseControlCommand("show")).toThrow("invalid command: the command must be a JSON object with a name");
     const names = "show, tab, openFile, openDiff, openSettings, openGuardrails, openBrowser";
@@ -89,6 +144,19 @@ describe("ensureRunnable", () => {
     expect(() => ensureRunnable({ name: "tab", tab: "factory" }, remoteSession())).toThrow("the session has no factory tab");
     expect(() => ensureRunnable({ name: "tab", tab: "factory" }, { ...remoteSession(), mode: "swf" })).not.toThrow();
     expect(() => ensureRunnable({ name: "tab", tab: "factory" }, { ...localSession(), mode: "swf" })).not.toThrow();
+  });
+
+  it("reads and sets only the tabs the session's inspector has", () => {
+    const review = { ...localSession(), pullRequest: { number: 12, url: "https://github.com/unshoppable/hunt/pull/12" } };
+    expect(() => ensureRunnable({ name: "pullRequest" }, localSession())).toThrow("the session has no pullRequest tab");
+    expect(() => ensureRunnable({ name: "pullRequest" }, review)).not.toThrow();
+    expect(() => ensureRunnable({ name: "desktop", action: { name: "reconnect" } }, localSession())).toThrow("the session has no desktop tab");
+    expect(() => ensureRunnable({ name: "desktop" }, remoteSession())).not.toThrow();
+    expect(() => ensureRunnable({ name: "factory" }, localSession())).toThrow("the session has no factory tab");
+    expect(() => ensureRunnable({ name: "factory", action: { name: "refresh" } }, { ...localSession(), mode: "swf" })).not.toThrow();
+    for (const name of ["state", "graph", "diff", "git", "editor", "checks", "terminal"] as const) {
+      expect(() => ensureRunnable({ name }, localSession())).not.toThrow();
+    }
   });
 
   it("needs a local worktree for files, diffs and guardrails", () => {

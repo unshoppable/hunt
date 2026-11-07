@@ -30,6 +30,10 @@ const CHECK_POLL_MS = 2000;
 const SERVICE_POLL_MS = 2000;
 /** How long `services start` waits for the services it started before it prints their state as it is. */
 const SERVICE_WAIT_MS = 5 * 60_000;
+/** How often `graph generate` asks whether the diagram it started is written. */
+const GRAPH_POLL_MS = 2000;
+/** How long `graph generate` waits for the diagram before it prints the tab's state as it is. */
+const GRAPH_WAIT_MS = 15 * 60_000;
 /** The longest request line Hunt's control socket reads, its newline included. */
 const MAX_REQUEST_LINE_BYTES = 4096;
 /** Why a missing variable means hunt-client cannot reach Hunt. */
@@ -38,9 +42,25 @@ const OUTSIDE_HUNT = "hunt-client works only in an agent that Hunt started on th
 const OVERVIEW_COLUMN = 24;
 
 /** The tabs of a session, as `tab` names them. */
-const TAB_NAMES = ["diff", "git", "editor", "graph", "pullRequest", "desktop", "checks", "terminal"];
+const TAB_NAMES = ["diff", "git", "editor", "graph", "pullRequest", "desktop", "checks", "terminal", "factory"];
 /** The pages `open settings --page` opens. */
 const SETTINGS_PAGES = ["updates"];
+/** The diagram types of the Architecture tab. */
+const DIAGRAM_TYPES = ["dependencies", "c4-context", "c4-container", "states", "erd", "process", "freeform"];
+/** The review levels below which the dependency graph hides files; 1 shows every file. */
+const REVIEW_LEVELS = ["1", "2", "3", "4"];
+/** The tabs of the Diff tab's changelist. */
+const CHANGE_LIST_TABS = ["changelist", "shelf", "review"];
+/** Whose changes the changelist lists. */
+const CHANGELIST_SCOPES = ["own", "downstream", "all"];
+/** Whose lines the diff of a file shows. */
+const LINE_SCOPES = ["own", "all"];
+/** How the changelist lists its files. */
+const CHANGELIST_VIEWS = ["flat", "tree"];
+/** How the Diff tab lays out a file's changes. */
+const DIFF_MODES = ["split", "unified"];
+/** Whether the Diff tab collapses unchanged lines. */
+const SWITCH_STATES = ["on", "off"];
 
 /** Every option as `parseArgs` reads it, with the placeholder of its value and its help. */
 const OPTIONS = {
@@ -51,7 +71,20 @@ const OPTIONS = {
   column: { type: "string", placeholder: "<n>", description: "put the cursor on column <n>, counting from 1" },
   window: { type: "boolean", description: "open the file in an editor window of its own instead" },
   page: { type: "string", placeholder: "<page>", description: `open the settings on <page>: ${SETTINGS_PAGES.join(", ")}` },
-  "no-wait": { type: "boolean", description: "return once the checks or services started instead of waiting for them" },
+  "no-wait": { type: "boolean", description: "return once the checks, services or the diagram started instead of waiting for them" },
+  clear: { type: "boolean", description: "clear the choice, so the tab shows its default" },
+  "only-changed": { type: "boolean", description: "hide every table the branch neither adds nor changes" },
+  hide: { type: "string", placeholder: "<id,…>", description: "hide the tables with these ids" },
+  "show-all": { type: "boolean", description: "show every table or file again" },
+  exclude: { type: "string", placeholder: "<path,…>", description: "hide these changed files" },
+  "min-review": { type: "string", placeholder: "<1-4>", description: "hide the files the agent rated below this level; 1 shows all" },
+  "hide-globs": { type: "string", placeholder: "<globs>", description: "hide the files matching these comma or space separated globs" },
+  instructions: { type: "string", placeholder: "<text>", description: "additional instructions for this run" },
+  ref: { type: "string", placeholder: "<ref>", description: "list the commits reachable from <ref>" },
+  text: { type: "string", placeholder: "<text>", description: "list the commits whose message or author contains <text>; empty for all" },
+  all: { type: "boolean", description: "close every tab of every pane" },
+  dir: { type: "string", placeholder: "<path>", description: "start the shell in the folder <path>" },
+  script: { type: "string", placeholder: "<name>", description: "run the package script <name> in the shell" },
 };
 /** The options every command takes. */
 const COMMON_OPTIONS = ["session", "help"];
@@ -121,10 +154,24 @@ const COMMANDS = [
     waitsForChecks: true,
   },
   {
+    words: ["checks", "stop"],
+    operands: ["[<name>]"],
+    options: [],
+    summary: "stop the running check <name>, or every running check",
+    toCommand: ([check]) => tabAction("checks", check === undefined ? { name: "stop" } : { name: "stop", check }),
+  },
+  {
+    words: ["checks", "select"],
+    operands: ["[<name>]"],
+    options: ["clear"],
+    summary: "show the check <name> in the Checks tab; --clear lets the tab pick",
+    toCommand: ([check], options) => tabAction("checks", { name: "select", check: clearableOperand("checks select", check, options) }),
+  },
+  {
     words: ["checks"],
     operands: [],
     options: [],
-    summary: "print the checks of hunt.json with their last runs, a failed one with the end of its output",
+    summary: "print the checks of hunt.json with their last runs, a failed one with the end of its output, and the check the tab shows",
     toCommand: () => ({ name: "checks" }),
   },
   {
@@ -149,6 +196,282 @@ const COMMANDS = [
     summary: "print the services of hunt.json: state, port, whether it listens and the log of its window",
     toCommand: () => ({ name: "services" }),
   },
+  {
+    words: ["state"],
+    operands: [],
+    options: [],
+    summary: "print the tab the session's inspector shows and that tab's state",
+    toCommand: () => ({ name: "state" }),
+  },
+  {
+    words: ["graph", "type"],
+    operands: ["<type>"],
+    options: [],
+    summary: `show the diagram type <type> in the Architecture tab: ${DIAGRAM_TYPES.join(", ")}`,
+    toCommand: ([type]) => tabAction("graph", { name: "type", type: oneOf("diagram type", type, DIAGRAM_TYPES) }),
+  },
+  {
+    words: ["graph", "file"],
+    operands: ["[<path>]"],
+    options: ["clear"],
+    summary: "show the diagram file <path> of the repository in the Architecture tab; --clear goes back to the generated diagrams",
+    toCommand: ([path], options, workingDirectory) =>
+      tabAction("graph", { name: "file", path: clearableOperand("graph file", path === undefined ? undefined : resolve(workingDirectory, path), options) }),
+  },
+  {
+    words: ["graph", "tables"],
+    operands: [],
+    options: ["only-changed", "hide", "show-all"],
+    summary: "choose the tables the ERD shows: only those the branch adds or changes, all but some, or all",
+    toCommand: graphTablesCommand,
+  },
+  {
+    words: ["graph", "files"],
+    operands: [],
+    options: ["exclude", "show-all"],
+    summary: "choose the changed files the dependency graph shows: all but some, or all",
+    toCommand: graphFilesCommand,
+  },
+  {
+    words: ["graph", "filter"],
+    operands: [],
+    options: ["min-review", "hide-globs"],
+    summary: "filter the dependency graph's files by the agent's review rating and by path",
+    toCommand: graphFilterCommand,
+  },
+  {
+    words: ["graph", "generate"],
+    operands: [],
+    options: ["instructions", "no-wait"],
+    summary: "generate the diagram the Architecture tab shows, wait until it is written and print the tab's state",
+    toCommand: (_operands, options) =>
+      tabAction("graph", options.instructions === undefined ? { name: "generate" } : { name: "generate", instructions: options.instructions }),
+    waitsForGraph: true,
+  },
+  {
+    words: ["graph"],
+    operands: [],
+    options: [],
+    summary: "print the state of the Architecture tab: diagram type or file, hidden tables and files, filter, generation",
+    toCommand: () => ({ name: "graph" }),
+  },
+  {
+    words: ["diff", "select"],
+    operands: ["[<path>]"],
+    options: ["clear"],
+    summary: "select the changed file <path> in the Diff tab; --clear selects none",
+    toCommand: ([path], options, workingDirectory) =>
+      tabAction("diff", { name: "select", path: clearableOperand("diff select", path === undefined ? undefined : resolve(workingDirectory, path), options) }),
+  },
+  {
+    words: ["diff", "subtab"],
+    operands: ["<tab>"],
+    options: [],
+    summary: `show the changelist's tab <tab>: ${CHANGE_LIST_TABS.join(", ")}`,
+    toCommand: ([tab]) => tabAction("diff", { name: "subtab", tab: oneOf("changelist tab", tab, CHANGE_LIST_TABS) }),
+  },
+  {
+    words: ["diff", "scope"],
+    operands: ["<scope>"],
+    options: [],
+    summary: `list the changes of this session (own), also of its sub sessions (downstream) or of every session (all) in the changelist`,
+    toCommand: ([scope]) => tabAction("diff", { name: "scope", scope: oneOf("changelist scope", scope, CHANGELIST_SCOPES) }),
+  },
+  {
+    words: ["diff", "globs"],
+    operands: ["[<globs>]"],
+    options: ["clear"],
+    summary: "hide the changed files matching the comma or space separated <globs> from the changelist; --clear shows all",
+    toCommand: ([globs], options) => tabAction("diff", { name: "globs", globs: clearableOperand("diff globs", globs, options) ?? "" }),
+  },
+  {
+    words: ["diff", "view"],
+    operands: ["<view>"],
+    options: [],
+    summary: `list the changed files ${CHANGELIST_VIEWS.join(" or as a ")}`,
+    toCommand: ([view]) => tabAction("diff", { name: "view", view: oneOf("changelist view", view, CHANGELIST_VIEWS) }),
+  },
+  {
+    words: ["diff", "lines"],
+    operands: ["<scope>"],
+    options: [],
+    summary: "show only this session's lines (own) or every change (all) in the diff of a file other sessions changed too",
+    toCommand: ([scope]) => tabAction("diff", { name: "lines", scope: oneOf("line scope", scope, LINE_SCOPES) }),
+  },
+  {
+    words: ["diff", "mode"],
+    operands: ["<mode>"],
+    options: [],
+    summary: `lay out the diff ${DIFF_MODES.join(" or ")}`,
+    toCommand: ([mode]) => tabAction("diff", { name: "mode", mode: oneOf("diff mode", mode, DIFF_MODES) }),
+  },
+  {
+    words: ["diff", "collapse"],
+    operands: ["<on|off>"],
+    options: [],
+    summary: "collapse the unchanged lines of the diff, or show them",
+    toCommand: ([state]) => tabAction("diff", { name: "collapse", collapsed: oneOf("collapse state", state, SWITCH_STATES) === "on" }),
+  },
+  {
+    words: ["diff", "check"],
+    operands: ["[<path,…>]"],
+    options: ["clear"],
+    summary: "check these changed files in the changelist, the files a commit takes; --clear unchecks all",
+    toCommand: ([paths], options, workingDirectory) =>
+      tabAction("diff", { name: "check", paths: listOf(clearableOperand("diff check", paths, options) ?? "").map((path) => resolve(workingDirectory, path)) }),
+  },
+  {
+    words: ["diff"],
+    operands: [],
+    options: [],
+    summary: "print the state of the Diff tab: changelist tab, scope, filters, layout, selected and checked files, the changed files",
+    toCommand: () => ({ name: "diff" }),
+  },
+  {
+    words: ["git", "filter"],
+    operands: [],
+    options: ["ref", "text"],
+    summary: "filter the Git tab's log by a reference and by text",
+    toCommand: gitFilterCommand,
+  },
+  {
+    words: ["git", "select-file"],
+    operands: ["[<path>]"],
+    options: ["clear"],
+    summary: "show the file <path> (relative to the repository) of the selected commit in the Git tab; --clear shows none",
+    toCommand: ([path], options) => tabAction("git", { name: "selectFile", path: clearableOperand("git select-file", path, options) }),
+  },
+  {
+    words: ["git", "select"],
+    operands: ["[<commit>]"],
+    options: ["clear"],
+    summary: "select the commit <commit> in the Git tab's log; --clear selects none",
+    toCommand: ([commit], options) => tabAction("git", { name: "select", commit: clearableOperand("git select", commit, options) }),
+  },
+  {
+    words: ["git"],
+    operands: [],
+    options: [],
+    summary: "print the state of the Git tab: references, filter, the first commits of the log, the selected commit and file",
+    toCommand: () => ({ name: "git" }),
+  },
+  {
+    words: ["editor", "close"],
+    operands: ["[<path>]"],
+    options: ["all"],
+    summary: "close the editor tab of the file <path>, or with --all every tab",
+    toCommand: editorCloseCommand,
+  },
+  {
+    words: ["editor", "activate"],
+    operands: ["<path>"],
+    options: [],
+    summary: "bring the open editor tab of the file <path> to the front; `open file` opens one",
+    toCommand: ([path], _options, workingDirectory) => tabAction("editor", { name: "activate", path: resolve(workingDirectory, path) }),
+  },
+  {
+    words: ["editor", "back"],
+    operands: [],
+    options: [],
+    summary: "go back to the previous place in the editor",
+    toCommand: () => tabAction("editor", { name: "back" }),
+  },
+  {
+    words: ["editor", "forward"],
+    operands: [],
+    options: [],
+    summary: "go forward to the next place in the editor",
+    toCommand: () => tabAction("editor", { name: "forward" }),
+  },
+  {
+    words: ["editor", "reveal"],
+    operands: ["[<path>]"],
+    options: [],
+    summary: "reveal the file or folder <path>, or the active file, in the project tree",
+    toCommand: ([path], _options, workingDirectory) =>
+      tabAction("editor", path === undefined ? { name: "reveal" } : { name: "reveal", path: resolve(workingDirectory, path) }),
+  },
+  {
+    words: ["editor"],
+    operands: [],
+    options: [],
+    summary: "print the state of the Editor tab: panes with their tabs and active files, history",
+    toCommand: () => ({ name: "editor" }),
+  },
+  {
+    words: ["pull-request"],
+    operands: [],
+    options: [],
+    summary: "print the state of the Pull request tab: the reviewed pull request, review drafts and threads",
+    toCommand: () => ({ name: "pullRequest" }),
+  },
+  {
+    words: ["desktop", "reconnect"],
+    operands: [],
+    options: [],
+    summary: "connect the Desktop tab to the VM's desktop again",
+    toCommand: () => tabAction("desktop", { name: "reconnect" }),
+  },
+  {
+    words: ["desktop"],
+    operands: [],
+    options: [],
+    summary: "print the state of the Desktop tab's connection",
+    toCommand: () => ({ name: "desktop" }),
+  },
+  {
+    words: ["terminal", "select"],
+    operands: ["<key>"],
+    options: [],
+    summary: "show the terminal tab <key>, as `hunt-client terminal` lists them",
+    toCommand: ([key]) => tabAction("terminal", { name: "select", key }),
+  },
+  {
+    words: ["terminal", "new"],
+    operands: [],
+    options: ["dir", "script"],
+    summary: "open a shell in the Terminal tab, in the worktree or --dir, running --script if given",
+    toCommand: terminalNewCommand,
+  },
+  {
+    words: ["terminal", "rerun"],
+    operands: ["<key>"],
+    options: [],
+    summary: "run the command of the terminal window <key> again",
+    toCommand: ([key]) => tabAction("terminal", { name: "rerun", key }),
+  },
+  {
+    words: ["terminal"],
+    operands: [],
+    options: [],
+    summary: "print the state of the Terminal tab: its tabs with their keys and the active one",
+    toCommand: () => ({ name: "terminal" }),
+  },
+  {
+    words: ["factory", "select"],
+    operands: ["[<n>]"],
+    options: ["clear"],
+    summary: "show the run <n> of the pipeline in the Factory tab; --clear lets the tab pick",
+    toCommand: ([run], options) => {
+      const value = clearableOperand("factory select", run, options);
+      if (value !== null && !/^[1-9][0-9]*$/.test(value)) throw new UsageError(`factory select needs the positive number of a run, not ${value}`);
+      return tabAction("factory", { name: "select", run: value === null ? null : Number(value) });
+    },
+  },
+  {
+    words: ["factory", "refresh"],
+    operands: [],
+    options: [],
+    summary: "load the pipeline of the Factory tab again",
+    toCommand: () => tabAction("factory", { name: "refresh" }),
+  },
+  {
+    words: ["factory"],
+    operands: [],
+    options: [],
+    summary: "print the state of the Factory tab: the issue's pipeline, its runs and the one shown",
+    toCommand: () => ({ name: "factory" }),
+  },
 ];
 
 /** An error in the arguments, reported with exit code 2 and the help of the command it concerns. */
@@ -158,8 +481,8 @@ class UsageError extends Error {}
  * Reads the arguments `argv` of hunt-client (without node and the script): `{ kind: "help", text }` with the help to
  * print, `{ kind: "usageError", message, help }` with the help of the command the error concerns, or
  * `{ kind: "command", command, session }` with the command object for Hunt and the value of `--session` (`undefined`
- * without one), plus `waitsForChecks: true` or `waitsForServices: true` when hunt-client waits for the checks or the
- * services the command starts. Relative paths
+ * without one), plus `waitsForChecks: true`, `waitsForServices: true` or `waitsForGraph: true` when hunt-client waits
+ * for the checks, the services or the diagram the command starts. Relative paths
  * resolve against `workingDirectory`.
  */
 export function parseCommandLine(argv, workingDirectory) {
@@ -175,6 +498,7 @@ export function parseCommandLine(argv, workingDirectory) {
     if (values["no-wait"]) return parsed;
     if (command.waitsForChecks) return { ...parsed, waitsForChecks: true };
     if (command.waitsForServices) return { ...parsed, waitsForServices: true };
+    if (command.waitsForGraph) return { ...parsed, waitsForGraph: true };
     return parsed;
   } catch (error) {
     if (!(error instanceof UsageError) && !error?.code?.startsWith("ERR_PARSE_ARGS_")) throw error;
@@ -239,6 +563,7 @@ async function run(argv, environment, workingDirectory) {
     const ask = (name) => () => exchange(socketPath, JSON.stringify({ type: "ui", session, command: { name } }));
     if (parsed.waitsForChecks) return await waitForChecks(ask("checks"), parsed.command.check);
     if (parsed.waitsForServices) return await waitForServices(ask("services"), parsed.command.service);
+    if (parsed.waitsForGraph) return await waitForGraph(ask("graph"));
     return outcome;
   } catch (error) {
     return failure(1, `Hunt does not run or did not answer (HUNT_CONTROL_SOCKET=${socketPath}): ${error.message}`);
@@ -270,6 +595,23 @@ async function waitForServices(askForServices, name) {
     const report = reportOfService(JSON.parse(line).result, name);
     if (!isAnyServiceStarting(report) || Date.now() >= deadline) return { ...outcome, stdout: resultText(report) };
     await sleep(SERVICE_POLL_MS);
+  }
+}
+
+/**
+ * Asks for the Architecture tab's state with `askForGraph` until the diagram it shows is no longer generating, at most
+ * GRAPH_WAIT_MS; resolves to the outcome that prints that state, or to a failure with the generation's error.
+ */
+async function waitForGraph(askForGraph) {
+  const deadline = Date.now() + GRAPH_WAIT_MS;
+  for (;;) {
+    const line = await askForGraph();
+    const outcome = replyOutcome(line);
+    if (outcome.exitCode !== 0) return outcome;
+    const state = JSON.parse(line).result;
+    if (!state.isGenerating && state.error) return failure(1, `the diagram was not generated: ${state.error}`);
+    if (!state.isGenerating || Date.now() >= deadline) return outcome;
+    await sleep(GRAPH_POLL_MS);
   }
 }
 
@@ -348,6 +690,94 @@ function matchingLine(path, text) {
   return lineNumbers[0];
 }
 
+/** The command that runs `action` on the inspector tab `tab`. */
+function tabAction(tab, action) {
+  return { name: tab, action };
+}
+
+/** `operand`, or `null` with `--clear`; throws a UsageError when the command `name` got both or neither. */
+function clearableOperand(name, operand, options) {
+  if (options.clear && operand !== undefined) throw new UsageError(`${name} takes an argument or --clear, not both`);
+  if (options.clear) return null;
+  if (operand === undefined) throw new UsageError(`${name} needs an argument or --clear`);
+  return operand;
+}
+
+/** The items of the comma separated `value`, trimmed, without empty ones. */
+function listOf(value) {
+  return value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+/** The one option of `names` that `options` holds; throws a UsageError naming the command `name` when it holds none or several. */
+function oneOptionOf(name, options, names) {
+  const given = names.filter((option) => options[option] !== undefined);
+  if (given.length !== 1) throw new UsageError(`${name} takes exactly one of ${names.map((option) => `--${option}`).join(", ")}`);
+  return given[0];
+}
+
+function graphTablesCommand(_operands, options) {
+  const option = oneOptionOf("graph tables", options, ["only-changed", "hide", "show-all"]);
+  if (option === "only-changed") return tabAction("graph", { name: "changedTables" });
+  const hide = option === "hide" ? listOf(options.hide) : [];
+  if (option === "hide" && hide.length === 0) throw new UsageError("--hide needs the ids of tables");
+  return tabAction("graph", { name: "tables", hide });
+}
+
+function graphFilesCommand(_operands, options, workingDirectory) {
+  const option = oneOptionOf("graph files", options, ["exclude", "show-all"]);
+  const exclude = option === "exclude" ? listOf(options.exclude).map((path) => resolve(workingDirectory, path)) : [];
+  if (option === "exclude" && exclude.length === 0) throw new UsageError("--exclude needs the paths of files");
+  return tabAction("graph", { name: "files", exclude });
+}
+
+function graphFilterCommand(_operands, options) {
+  if (options["min-review"] === undefined && options["hide-globs"] === undefined) throw new UsageError("graph filter needs --min-review or --hide-globs");
+  const action = { name: "filter" };
+  if (options["min-review"] !== undefined) {
+    action.minReview = Number(oneOf("review level", options["min-review"], REVIEW_LEVELS));
+  }
+  if (options["hide-globs"] !== undefined) {
+    action.hiddenGlobs = options["hide-globs"];
+  }
+  return tabAction("graph", action);
+}
+
+function gitFilterCommand(_operands, options) {
+  if (options.ref === undefined && options.text === undefined) throw new UsageError("git filter needs --ref or --text");
+  const action = { name: "filter" };
+  if (options.ref !== undefined) {
+    if (!options.ref) throw new UsageError("--ref needs a reference");
+    action.reference = options.ref;
+  }
+  if (options.text !== undefined) {
+    action.text = options.text;
+  }
+  return tabAction("git", action);
+}
+
+function editorCloseCommand([path], options, workingDirectory) {
+  if (options.all && path !== undefined) throw new UsageError("editor close takes a path or --all, not both");
+  if (options.all) return tabAction("editor", { name: "closeAll" });
+  if (path === undefined) throw new UsageError("editor close needs a path or --all");
+  return tabAction("editor", { name: "close", path: resolve(workingDirectory, path) });
+}
+
+function terminalNewCommand(_operands, options, workingDirectory) {
+  const action = { name: "new" };
+  if (options.dir !== undefined) {
+    if (!options.dir) throw new UsageError("--dir needs a folder");
+    action.directory = resolve(workingDirectory, options.dir);
+  }
+  if (options.script !== undefined) {
+    if (!options.script) throw new UsageError("--script needs the name of a package script");
+    action.script = options.script;
+  }
+  return tabAction("terminal", action);
+}
+
 function openSettingsCommand(_operands, options) {
   if (options.page === undefined) return { name: "openSettings" };
   return { name: "openSettings", page: oneOf("settings page", options.page, SETTINGS_PAGES) };
@@ -387,7 +817,7 @@ function overviewHelp() {
   return [
     "usage: hunt-client [--session <id>] <command> [<arguments>]",
     "",
-    "Shows the user something in Hunt, the app that started this agent, runs the checks of its Checks tab and starts the services of hunt.json in its Terminal tab. Prints nothing when it worked, except for the result of a checks or services command.",
+    "Shows the user something in Hunt, the app that started this agent: reads and sets what each tab of the session's inspector shows (`hunt-client <tab>` prints a tab's state as JSON, `hunt-client <tab> <verb>` changes it and shows the tab), runs the checks of its Checks tab and starts the services of hunt.json in its Terminal tab. Prints nothing when it worked, except for the commands that print a state or a report.",
     "",
     "Commands:",
     ...listing(commandRows, OVERVIEW_COLUMN),
@@ -401,14 +831,18 @@ function overviewHelp() {
   ].join("\n");
 }
 
-/** The help of `command`: its usage, what it shows the user and its options. */
+/** The help of `command`: its usage, what it shows the user, its options and, for a command such as `graph`, the commands it begins. */
 function commandHelp(command) {
   const optionRows = [...command.options, ...COMMON_OPTIONS].map(optionRow);
+  const subcommandRows = COMMANDS.filter((other) => other !== command && command.words.every((word, position) => other.words[position] === word)).map(
+    (other) => [usageOf(other, other.options), other.summary],
+  );
   return [
     `usage: hunt-client ${usageOf(command, [...command.options, "session"])}`,
     "",
     `${command.summary[0].toUpperCase()}${command.summary.slice(1)}.`,
     "",
+    ...(subcommandRows.length ? ["Commands:", ...listing(subcommandRows, OVERVIEW_COLUMN), ""] : []),
     "Options:",
     ...listing(optionRows, Math.max(...optionRows.map(([label]) => label.length)) + 4),
     "",

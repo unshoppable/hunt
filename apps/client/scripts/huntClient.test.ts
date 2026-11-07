@@ -12,7 +12,7 @@ const CLIENT = fileURLToPath(new URL("./huntClient.mjs", import.meta.url));
 const SESSION_ID = "6f0c2a52-0b55-4c4e-9d0e-2f8b1f3c7a10";
 const OTHER_SESSION_ID = "0d4b9a71-3c2e-4f6a-8b1d-5e7f9a0c2b34";
 const WORKING_DIRECTORY = "/Users/agent/worktree";
-const TAB_NAMES = ["diff", "git", "editor", "graph", "pullRequest", "desktop", "checks", "terminal"];
+const TAB_NAMES = ["diff", "git", "editor", "graph", "pullRequest", "desktop", "checks", "terminal", "factory"];
 
 type Message = Record<string, unknown>;
 
@@ -170,6 +170,13 @@ describe("parseCommandLine", () => {
       expect(fileHelp.text).toContain(`\n  ${option} `);
     }
     expect((commandOf(["tab", "--help"]) as { text: string }).text).toContain(TAB_NAMES.join(", "));
+
+    const graphHelp = (commandOf(["graph", "--help"]) as { text: string }).text;
+    expect(graphHelp).toMatch(/^usage: hunt-client graph \[--session <id>\]\n/);
+    for (const usage of ["graph type <type>", "graph tables [--only-changed] [--hide <id,…>] [--show-all]", "graph generate [--instructions <text>] [--no-wait]"]) {
+      expect(graphHelp).toContain(`\n  ${usage}`);
+    }
+    expect(fileHelp.text).not.toContain("Commands:");
   });
 
   it("puts the cursor of open file --match on the one line of the file that contains the text", () => {
@@ -252,6 +259,121 @@ describe("services", () => {
   });
 });
 
+describe("tab commands", () => {
+  const W = WORKING_DIRECTORY;
+  const action = (tab: string, value: Message) => ({ name: tab, action: value });
+
+  it("reads each tab's state and the shown tab's state", () => {
+    const cases: [string[], Message][] = [
+      [["state"], { name: "state" }],
+      [["graph"], { name: "graph" }],
+      [["diff"], { name: "diff" }],
+      [["git"], { name: "git" }],
+      [["editor"], { name: "editor" }],
+      [["pull-request"], { name: "pullRequest" }],
+      [["desktop"], { name: "desktop" }],
+      [["terminal"], { name: "terminal" }],
+      [["factory"], { name: "factory" }],
+    ];
+    for (const [argv, command] of cases) {
+      expect(commandOf(argv), argv.join(" ")).toStrictEqual({ kind: "command", command, session: undefined });
+    }
+  });
+
+  it("reads every tab action into the command Hunt's frontend runs, with paths resolved in the working directory", () => {
+    const cases: [string[], Message][] = [
+      [["graph", "type", "erd"], action("graph", { name: "type", type: "erd" })],
+      [["graph", "file", "docs/erd.react-flow.json"], action("graph", { name: "file", path: `${W}/docs/erd.react-flow.json` })],
+      [["graph", "file", "--clear"], action("graph", { name: "file", path: null })],
+      [["graph", "tables", "--only-changed"], action("graph", { name: "changedTables" })],
+      [["graph", "tables", "--hide", "users, orders,"], action("graph", { name: "tables", hide: ["users", "orders"] })],
+      [["graph", "tables", "--show-all"], action("graph", { name: "tables", hide: [] })],
+      [["graph", "files", "--exclude", "src/a.ts,src/b.ts"], action("graph", { name: "files", exclude: [`${W}/src/a.ts`, `${W}/src/b.ts`] })],
+      [["graph", "files", "--show-all"], action("graph", { name: "files", exclude: [] })],
+      [["graph", "filter", "--min-review", "3"], action("graph", { name: "filter", minReview: 3 })],
+      [["graph", "filter", "--hide-globs", "**/*.test.ts", "--min-review", "1"], action("graph", { name: "filter", minReview: 1, hiddenGlobs: "**/*.test.ts" })],
+      [["graph", "generate", "--no-wait"], action("graph", { name: "generate" })],
+      [["graph", "generate", "--instructions", "only the order tables", "--no-wait"], action("graph", { name: "generate", instructions: "only the order tables" })],
+      [["diff", "select", "src/a.ts"], action("diff", { name: "select", path: `${W}/src/a.ts` })],
+      [["diff", "select", "--clear"], action("diff", { name: "select", path: null })],
+      [["diff", "subtab", "shelf"], action("diff", { name: "subtab", tab: "shelf" })],
+      [["diff", "scope", "downstream"], action("diff", { name: "scope", scope: "downstream" })],
+      [["diff", "globs", "*.md, dist/**"], action("diff", { name: "globs", globs: "*.md, dist/**" })],
+      [["diff", "globs", "--clear"], action("diff", { name: "globs", globs: "" })],
+      [["diff", "view", "flat"], action("diff", { name: "view", view: "flat" })],
+      [["diff", "lines", "own"], action("diff", { name: "lines", scope: "own" })],
+      [["diff", "mode", "unified"], action("diff", { name: "mode", mode: "unified" })],
+      [["diff", "collapse", "on"], action("diff", { name: "collapse", collapsed: true })],
+      [["diff", "collapse", "off"], action("diff", { name: "collapse", collapsed: false })],
+      [["diff", "check", "a.ts,src/b.ts"], action("diff", { name: "check", paths: [`${W}/a.ts`, `${W}/src/b.ts`] })],
+      [["diff", "check", "--clear"], action("diff", { name: "check", paths: [] })],
+      [["git", "filter", "--ref", "master"], action("git", { name: "filter", reference: "master" })],
+      [["git", "filter", "--text", ""], action("git", { name: "filter", text: "" })],
+      [["git", "select", "b3c3dcf6"], action("git", { name: "select", commit: "b3c3dcf6" })],
+      [["git", "select", "--clear"], action("git", { name: "select", commit: null })],
+      [["git", "select-file", "src/a.ts"], action("git", { name: "selectFile", path: "src/a.ts" })],
+      [["git", "select-file", "--clear"], action("git", { name: "selectFile", path: null })],
+      [["editor", "close", "src/a.ts"], action("editor", { name: "close", path: `${W}/src/a.ts` })],
+      [["editor", "close", "--all"], action("editor", { name: "closeAll" })],
+      [["editor", "activate", "src/a.ts"], action("editor", { name: "activate", path: `${W}/src/a.ts` })],
+      [["editor", "back"], action("editor", { name: "back" })],
+      [["editor", "forward"], action("editor", { name: "forward" })],
+      [["editor", "reveal"], action("editor", { name: "reveal" })],
+      [["editor", "reveal", "src"], action("editor", { name: "reveal", path: `${W}/src` })],
+      [["desktop", "reconnect"], action("desktop", { name: "reconnect" })],
+      [["checks", "stop"], action("checks", { name: "stop" })],
+      [["checks", "stop", "lint"], action("checks", { name: "stop", check: "lint" })],
+      [["checks", "select", "lint"], action("checks", { name: "select", check: "lint" })],
+      [["checks", "select", "--clear"], action("checks", { name: "select", check: null })],
+      [["terminal", "select", "service:web"], action("terminal", { name: "select", key: "service:web" })],
+      [["terminal", "new"], action("terminal", { name: "new" })],
+      [["terminal", "new", "--dir", "apps/web", "--script", "dev"], action("terminal", { name: "new", directory: `${W}/apps/web`, script: "dev" })],
+      [["terminal", "rerun", "window:local:3"], action("terminal", { name: "rerun", key: "window:local:3" })],
+      [["factory", "select", "2"], action("factory", { name: "select", run: 2 })],
+      [["factory", "select", "--clear"], action("factory", { name: "select", run: null })],
+      [["factory", "refresh"], action("factory", { name: "refresh" })],
+    ];
+    for (const [argv, command] of cases) {
+      expect(commandOf(argv), argv.join(" ")).toStrictEqual({ kind: "command", command, session: undefined });
+    }
+  });
+
+  it("waits for the diagram graph generate starts unless --no-wait", () => {
+    expect(commandOf(["graph", "generate"])).toStrictEqual({ kind: "command", command: action("graph", { name: "generate" }), session: undefined, waitsForGraph: true });
+  });
+
+  it("reports a usage error for a tab action whose arguments do not fit", () => {
+    const cases: [string[], string][] = [
+      [["graph", "type", "uml"], "unknown diagram type uml; it is one of dependencies, c4-context, c4-container, states, erd, process, freeform"],
+      [["graph", "file"], "graph file needs an argument or --clear"],
+      [["graph", "file", "a.json", "--clear"], "graph file takes an argument or --clear, not both"],
+      [["graph", "tables"], "graph tables takes exactly one of --only-changed, --hide, --show-all"],
+      [["graph", "tables", "--only-changed", "--show-all"], "graph tables takes exactly one of --only-changed, --hide, --show-all"],
+      [["graph", "tables", "--hide", ","], "--hide needs the ids of tables"],
+      [["graph", "files", "--exclude", ""], "--exclude needs the paths of files"],
+      [["graph", "filter"], "graph filter needs --min-review or --hide-globs"],
+      [["graph", "filter", "--min-review", "5"], "unknown review level 5; it is one of 1, 2, 3, 4"],
+      [["graph", "frobnicate"], "unexpected argument frobnicate"],
+      [["diff", "subtab", "commits"], "unknown changelist tab commits; it is one of changelist, shelf, review"],
+      [["diff", "collapse", "yes"], "unknown collapse state yes; it is one of on, off"],
+      [["diff", "mode", "inline"], "unknown diff mode inline; it is one of split, unified"],
+      [["git", "filter"], "git filter needs --ref or --text"],
+      [["git", "filter", "--ref", ""], "--ref needs a reference"],
+      [["editor", "close"], "editor close needs a path or --all"],
+      [["editor", "close", "a.ts", "--all"], "editor close takes a path or --all, not both"],
+      [["editor", "activate"], "editor activate needs <path>"],
+      [["terminal", "select"], "terminal select needs <key>"],
+      [["terminal", "new", "--script", ""], "--script needs the name of a package script"],
+      [["factory", "select", "0"], "factory select needs the positive number of a run, not 0"],
+      [["checks", "select"], "checks select needs an argument or --clear"],
+      [["pull-request", "--clear"], "pull-request takes no --clear"],
+    ];
+    for (const [argv, message] of cases) {
+      expect(commandOf(argv), argv.join(" ")).toMatchObject({ kind: "usageError", message });
+    }
+  });
+});
+
 describe("replyOutcome", () => {
   it("prints the result of a command, a string as it is and anything else as JSON", () => {
     expect(replyOutcome('{"ok":true,"result":"done"}')).toStrictEqual({ exitCode: 0, stdout: "done\n", stderr: "" });
@@ -292,6 +414,30 @@ describe("huntClient.mjs", () => {
     expect(run.exitCode).toBe(0);
     expect(JSON.parse(run.stdout)).toStrictEqual({ problem: null, services: [{ name: "web", state: "running", port: 4200, isListening: true }] });
     expect(requests.map((request) => request.command)).toStrictEqual([{ name: "startServices", service: "web" }, { name: "services" }, { name: "services" }]);
+  });
+
+  it("graph generate asks for the Architecture tab's state until the diagram is written and prints it", async () => {
+    const state = (isGenerating: boolean, error: string | null = null) => JSON.stringify({ ok: true, result: { type: "erd", file: null, isGenerating, error } });
+    await startControl([JSON.stringify({ ok: true }), state(true), state(false)]);
+
+    const run = await runClient(["graph", "generate", "--instructions", "only the order tables"]);
+
+    expect(run.exitCode).toBe(0);
+    expect(JSON.parse(run.stdout)).toStrictEqual({ type: "erd", file: null, isGenerating: false, error: null });
+    expect(requests.map((request) => request.command)).toStrictEqual([
+      { name: "graph", action: { name: "generate", instructions: "only the order tables" } },
+      { name: "graph" },
+      { name: "graph" },
+    ]);
+  });
+
+  it("graph generate exits with 1 and the reason when the diagram was not generated", async () => {
+    await startControl([JSON.stringify({ ok: true }), JSON.stringify({ ok: true, result: { type: "erd", file: null, isGenerating: false, error: "the agent ended" } })]);
+
+    const run = await runClient(["graph", "generate"]);
+
+    expect(run.exitCode).toBe(1);
+    expect(run.stderr).toBe("hunt-client: the diagram was not generated: the agent ended\n");
   });
 
   it("checks run --no-wait returns once Hunt started the checks, and a check Hunt cannot start exits with 1", async () => {

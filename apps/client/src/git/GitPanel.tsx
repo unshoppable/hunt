@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commands } from "../ipc/commands";
 import type { FileDiff } from "../diff/diff.types";
-import type { Commit, CommitDetails, CommitFile, GitRef, GitScope, RefList } from "./git.types";
+import type { Commit, CommitDetails, GitRef, GitScope, RefList } from "./git.types";
 import { useHuntStore } from "../sessions/hunt.store";
+import { useSessionViewStore, type GitLogFilter, type InspectorViewFields } from "../sessions/inspector.store";
 import { reportFailure, reportSuccess } from "../ui/status-toasts.store";
 import { remoteOf } from "../sessions/remote/remote-session.utils";
 import { useSettingsStore } from "../settings/settings.store";
@@ -23,11 +24,51 @@ import { GitMenu, type GitMenuEntry } from "./GitMenu";
 import { RefTree } from "./RefTree";
 import { ResetDialog } from "./ResetDialog";
 
-/** Commits one page of the log loads; scrolling near the end loads the next. */
-const PAGE_SIZE = 500;
+/** Commits one page of the log loads; scrolling near the end loads the next. A selected commit beyond the first page gives way to the newest one. */
+export const LOG_PAGE_SIZE = 500;
 
-/** Filter of the log: the branch or tag whose history shows (every ref when empty) and the text or hash to look for. */
-export type LogFilter = { reference: string; text: string };
+/** The filter the log starts with: the history of `branch` (every ref when empty), no text. */
+export function defaultLogFilter(branch: string): GitLogFilter {
+  return { reference: branch, text: "" };
+}
+
+/** The Git tab's log filter, selected commit and the selected file of that commit, by its path. */
+type GitSelection = { filter: GitLogFilter; commit: string | null; file: string | null };
+
+type GitSelectionChange = Pick<InspectorViewFields, "gitFilter" | "gitCommit" | "gitFile">;
+
+/**
+ * The selection of the Git tab and the function that changes it: a session's lives in its inspector view, so that
+ * `hunt-client git` reads and sets it also while the tab is not mounted; a repository's checkout (`sessionId` null)
+ * keeps its own in the panel. The log starts on `branch`.
+ */
+function useGitSelection(sessionId: string | null, branch: string): [GitSelection, (change: GitSelectionChange) => void] {
+  const storedFilter = useSessionViewStore((state) => (sessionId ? state.views[sessionId]?.gitFilter : undefined));
+  const storedCommit = useSessionViewStore((state) => (sessionId ? state.views[sessionId]?.gitCommit : null) ?? null);
+  const storedFile = useSessionViewStore((state) => (sessionId ? state.views[sessionId]?.gitFile : null) ?? null);
+  const updateView = useSessionViewStore((state) => state.updateView);
+  const startFilter = useMemo(() => defaultLogFilter(branch), [branch]);
+  const [local, setLocal] = useState<GitSelection>(() => ({ filter: startFilter, commit: null, file: null }));
+  const selection = useMemo(
+    () => (sessionId ? { filter: storedFilter ?? startFilter, commit: storedCommit, file: storedFile } : local),
+    [sessionId, storedFilter, startFilter, storedCommit, storedFile, local],
+  );
+  const change = useCallback(
+    (change: GitSelectionChange) => {
+      if (sessionId) {
+        updateView(sessionId, change);
+        return;
+      }
+      setLocal((current) => ({
+        filter: change.gitFilter ?? current.filter,
+        commit: change.gitCommit === undefined ? current.commit : change.gitCommit,
+        file: change.gitFile === undefined ? current.file : change.gitFile,
+      }));
+    },
+    [sessionId, updateView],
+  );
+  return [selection, change];
+}
 
 /** The context menu of a commit in the log: resets the local branch `branch` to it; `null` while a remote branch or tag is picked. */
 function commitMenuEntries(branch: string | null): GitMenuEntry<"reset">[] {
@@ -77,15 +118,19 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   const diffLineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
   const [refs, setRefs] = useState<RefList | null>(null);
-  const [filter, setFilter] = useState<LogFilter>(() => ({ reference: session?.branch ?? "", text: "" }));
+  const [selection, changeSelection] = useGitSelection(sessionId, session?.branch ?? "");
+  const { filter, commit: selectedId } = selection;
   const [commits, setCommits] = useState<Commit[]>([]);
   /** Whether the last page was full, so there may be more commits to load. */
   const [hasMore, setHasMore] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
   const [details, setDetails] = useState<CommitDetails | null>(null);
-  const [selectedFile, setSelectedFile] = useState<CommitFile | null>(null);
+  /** The selected file of the selected commit, once that commit's details have loaded. */
+  const selectedFile = useMemo(
+    () => (selection.file && details?.id === selectedId ? (details.files.find((file) => file.path === selection.file) ?? null) : null),
+    [selection.file, details, selectedId],
+  );
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** What the loaded commits belong to; a page that arrives for another key is dropped. */
@@ -102,7 +147,15 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   const logKeyRef = useRef(logKey);
   logKeyRef.current = logKey;
   /** The filter whose commits the log shows; the first page of another one selects its newest commit. */
-  const shownFilterRef = useRef<string | null>(null);
+  const shownFilterRef = useRef(`${filter.reference}\n${filter.text}`);
+
+  const setFilter = (next: GitLogFilter) => changeSelection({ gitFilter: next });
+  /** Selects the commit `id`, which deselects the file of the one selected before. */
+  const selectCommit = (id: string | null) => {
+    if (id !== selectedId) {
+      changeSelection({ gitCommit: id, gitFile: null });
+    }
+  };
 
   useLoad(
     () => commands.gitRefs(scope),
@@ -114,19 +167,20 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   useLoad(
     () => {
       setIsLoading(true);
-      return commands.gitLog(scope, { ...filter, skip: 0, limit: PAGE_SIZE });
+      return commands.gitLog(scope, { ...filter, skip: 0, limit: LOG_PAGE_SIZE });
     },
     {
       onValue: (page) => {
         setIsLoading(false);
         setCommits(page);
-        setHasMore(page.length === PAGE_SIZE);
+        setHasMore(page.length === LOG_PAGE_SIZE);
         setError(null);
+        // A new filter selects its newest commit; otherwise the selection holds while the page has it.
         const filterKey = `${filter.reference}\n${filter.text}`;
-        if (shownFilterRef.current !== filterKey) {
-          shownFilterRef.current = filterKey;
-          setSelectedId(page[0]?.id ?? null);
-        }
+        const isNewFilter = shownFilterRef.current !== filterKey;
+        shownFilterRef.current = filterKey;
+        const isKept = !isNewFilter && page.some((commit) => commit.id === selectedId);
+        selectCommit(isKept ? selectedId : (page[0]?.id ?? null));
       },
       onError: (reason) => {
         setIsLoading(false);
@@ -141,23 +195,17 @@ export function GitPanel({ scope }: { scope: GitScope }) {
     const key = logKeyRef.current;
     setIsLoadingMore(true);
     commands
-      .gitLog(scope, { ...filter, skip: commits.length, limit: PAGE_SIZE })
+      .gitLog(scope, { ...filter, skip: commits.length, limit: LOG_PAGE_SIZE })
       .then((page) => {
         if (logKeyRef.current !== key) return;
         setCommits((current) => [...current, ...page]);
-        setHasMore(page.length === PAGE_SIZE);
+        setHasMore(page.length === LOG_PAGE_SIZE);
       })
       .catch((reason) => setError(errorText(reason)))
       .finally(() => setIsLoadingMore(false));
   }, [hasMore, isLoading, isLoadingMore, scope, filter, commits.length]);
 
-  // The selection follows the list: a commit that left it gives way to the first one.
   useEffect(() => {
-    setSelectedId((current) => (current && commits.some((commit) => commit.id === current) ? current : (commits[0]?.id ?? null)));
-  }, [commits]);
-
-  useEffect(() => {
-    setSelectedFile(null);
     setDiff(null);
     if (!selectedId) {
       setDetails(null);
@@ -174,7 +222,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   useLoad(
     () => commands.gitCommitFileDiff(scope, selectedId ?? "", selectedFile?.path ?? "", selectedFile?.oldPath ?? null),
     { onValue: setDiff, onError: (reason) => setError(errorText(reason)) },
-    [scopeKey, selectedId, selectedFile],
+    [scopeKey, selectedId, selectedFile?.path, selectedFile?.oldPath],
     { isEnabled: !!selectedId && !!selectedFile },
   );
 
@@ -267,7 +315,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
 
   const onRenamed = (branch: string, newName: string) => {
     if (filter.reference === branch) {
-      setFilter((current) => ({ ...current, reference: newName }));
+      setFilter({ ...filter, reference: newName });
     }
     refresh();
   };
@@ -282,7 +330,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
           menuFor={menu?.ref.name ?? null}
           busyLabel={busyLabel}
           prunable={prunable}
-          onFilter={(reference) => setFilter((current) => ({ ...current, reference }))}
+          onFilter={(reference) => setFilter({ ...filter, reference })}
           onContextMenu={(ref, x, y) => setMenu({ ref, x, y })}
           onFetch={() => void fetchOrigin()}
           onPrune={() => void pruneBranches()}
@@ -298,7 +346,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
           filter={filter}
           onFilterChange={setFilter}
           selectedId={selectedId}
-          onSelect={setSelectedId}
+          onSelect={selectCommit}
           onContextMenu={(commit, x, y) => setCommitMenu({ commit, x, y })}
           hasMore={hasMore}
           isLoading={isLoading || isLoadingMore}
@@ -310,7 +358,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
       <Panel id="commit" defaultSize="34%" minSize={240} className="flex">
         <PersistentGroup id="hunt-git-commit" fillPane="diff" orientation="vertical" className="h-full min-h-0 flex-1">
           <Panel id="files" defaultSize="45%" minSize={120} className="flex">
-            <CommitFiles sessionId={sessionId} commit={selectedCommit} details={details} localBranches={localBranches} selectedPath={selectedFile?.path ?? null} onSelect={setSelectedFile} />
+            <CommitFiles sessionId={sessionId} commit={selectedCommit} details={details} localBranches={localBranches} selectedPath={selectedFile?.path ?? null} onSelect={(file) => changeSelection({ gitFile: file.path })} />
           </Panel>
           <PaneSeparator orientation="vertical" />
           <Panel id="diff" minSize={120} className="flex">

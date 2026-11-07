@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEve
 import type { Commit } from "./git.types";
 import { useSettingsStore, type GitLogColumns } from "../settings/settings.store";
 import { trackDrag } from "../ui/pointer-drag.utils";
-import type { LogFilter } from "./GitPanel";
+import type { GitLogFilter } from "../sessions/inspector.store";
 import { layoutGraph, type GraphRow } from "./commit-graph.utils";
 import { BranchIcon, CloseIcon, TagIcon } from "../ui/Icons";
 import { logLabels, type LogLabel } from "./log-labels.utils";
@@ -57,8 +57,8 @@ export function CommitLog({
   localBranches: ReadonlySet<string>;
   /** Commits a push would publish. */
   unpushed: Set<string>;
-  filter: LogFilter;
-  onFilterChange: (filter: LogFilter) => void;
+  filter: GitLogFilter;
+  onFilterChange: (filter: GitLogFilter) => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
   onContextMenu: (commit: Commit, x: number, y: number) => void;

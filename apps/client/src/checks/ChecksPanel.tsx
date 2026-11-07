@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { EMPTY_CHECKS, useChecksStore } from "./checks.store";
 import { useHuntStore } from "../sessions/hunt.store";
+import { useSessionViewStore } from "../sessions/inspector.store";
 import { AgentButton } from "../ui/AgentButton";
 import { HEADER_BAR } from "../ui/bars.constants";
 import { GHOST_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
@@ -30,7 +31,8 @@ const EXAMPLE = `"checks": {
 /**
  * The Checks tab of a session: the checks of the worktree's hunt.json (lint, test, build, …) with the state of their
  * last run, run one by one or all at once, each in a tmux window, locally or on the session's VM; below them the window
- * of the selected check, by default of the first one that runs or failed, or why it could not start. A result that
+ * of the selected check (kept in the session's inspector view, where `hunt-client checks select` sets it), by default of
+ * the first one that runs or failed, or why it could not start. A result that
  * started on another state of the worktree reads as outdated. A failed check goes to the agent with the end of its output. Reads the checks again when the agent
  * edits files and when the window gets the focus.
  */
@@ -38,7 +40,8 @@ export function ChecksPanel({ sessionId }: { sessionId: string }) {
   const checks = useChecksStore((state) => state.checks[sessionId] ?? EMPTY_CHECKS);
   const editVersion = useHuntStore((state) => state.chats[sessionId]?.editVersion ?? 0);
   const { refresh, run, runAll, cancel, cancelAll, sendFailure, setUp } = useChecksStore.getState();
-  const [selectedName, setSelectedName] = useState<string | null>(null);
+  const selectedName = useSessionViewStore((state) => state.views[sessionId]?.checksSelected ?? null);
+  const updateView = useSessionViewStore((state) => state.updateView);
   const isRunning = isAnyCheckRunning(checks.status);
   const now = useClock(isRunning);
 
@@ -106,7 +109,7 @@ export function ChecksPanel({ sessionId }: { sessionId: string }) {
                 row={row}
                 now={now}
                 isSelected={row === shownRow}
-                onSelect={() => setSelectedName(row.definition.name)}
+                onSelect={() => updateView(sessionId, { checksSelected: row.definition.name })}
                 onRun={() => run(sessionId, row.definition.name)}
                 onCancel={() => cancel(sessionId, row.definition.name)}
                 onSendFailure={() => void sendFailure(sessionId, row.definition.name)}

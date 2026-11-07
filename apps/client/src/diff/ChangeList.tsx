@@ -15,6 +15,7 @@ import { useFileIconUrl, useFolderIconUrl } from "../ui/file-icons/file-icons.ho
 import { useReviewCommentCounts, useReviewDraftCount, useReviewedPullRequest } from "../review/review-comments.hook";
 import type { ChangeListTab } from "../sessions/inspector.store";
 import { useLoad } from "../ui/load.hook";
+import { useChangelistSelectionStore } from "./changelist-selection.store";
 import { ReviewDialog } from "../review/ReviewDialog";
 import { CommentCount } from "../review/CommentCount";
 import { ReviewBars } from "../graph/ReviewBars";
@@ -50,11 +51,7 @@ export type ChangeListTarget = { path: string; files: ChangedFile[]; isFolder: b
 /** One visible row of the tree view; `depth` is the indentation level. */
 type Row = { node: TreeNode; depth: number };
 
-/**
- * Checked and collapsed paths of every changelist, kept across session switches for the window's lifetime. A session and
- * its sub sessions share one checked set, keyed by the parent's ID, so a selection made in one of them shows in all.
- */
-const checkedByFamily = new Map<string, Set<string>>();
+/** Collapsed folders of every changelist, kept across session switches for the window's lifetime. */
 const collapsedBySession = new Map<string, Set<string>>();
 
 /**
@@ -159,7 +156,9 @@ export function ChangeList({
   const commentCounts = useReviewCommentCounts(sessionId);
   /** Files start unchecked; the checked paths survive a switch to another session and back and are shared with the parent and its sub sessions. */
   const checkedKey = parentId ?? sessionId;
-  const [checked, setCheckedState] = useState<Set<string>>(() => checkedByFamily.get(checkedKey) ?? new Set());
+  const storedChecked = useChangelistSelectionStore((state) => state.checkedByFamily[checkedKey]);
+  const storeChecked = useChangelistSelectionStore((state) => state.setChecked);
+  const checked = useMemo(() => new Set(storedChecked), [storedChecked]);
   const [collapsed, setCollapsedState] = useState<Set<string>>(() => collapsedBySession.get(sessionId) ?? new Set());
   const [dialog, setDialog] = useState<Dialog>(null);
   /** Shown in the footer once a review went out, until the next dialog opens. */
@@ -176,9 +175,8 @@ export function ChangeList({
   );
 
   useEffect(() => {
-    setCheckedState(checkedByFamily.get(checkedKey) ?? new Set());
     setCollapsedState(collapsedBySession.get(sessionId) ?? new Set());
-  }, [sessionId, checkedKey]);
+  }, [sessionId]);
 
   const tree = useMemo(() => buildChangeTree(files), [files]);
   const filesByPath = useMemo(() => new Map(files.map((file) => [file.path, file])), [files]);
@@ -257,8 +255,7 @@ export function ChangeList({
         next.delete(file.path);
       }
     }
-    checkedByFamily.set(checkedKey, next);
-    setCheckedState(next);
+    storeChecked(checkedKey, next);
   };
 
   const toggleGroup = (targets: ChangedFile[]) => setChecked(targets, stateOf(targets) !== "checked");
@@ -283,8 +280,7 @@ export function ChangeList({
     for (const path of paths) {
       next.delete(path);
     }
-    checkedByFamily.set(checkedKey, next);
-    setCheckedState(next);
+    storeChecked(checkedKey, next);
   };
 
   const toggleCollapsed = (path: string) => {

@@ -8,13 +8,44 @@ import { useChecksStore } from "../checks/checks.store";
 import { commands } from "../ipc/commands";
 import { listenTo } from "../ipc/events";
 import { useHuntStore } from "../sessions/hunt.store";
-import { useSessionViewStore } from "../sessions/inspector.store";
+import { useSessionViewStore, type RightTab } from "../sessions/inspector.store";
+import type { SessionView } from "../sessions/session.types";
 import { useServicesStore } from "../terminal/services.store";
 import { openSettingsWindow } from "../settings/settings-window.utils";
+import { runChecksCommand } from "./checks-commands.service";
 import type { ControlCommandEvent } from "./control-command.types";
-import { ensureRunnable, parseControlCommand, worktreeFilePath } from "./control-command.utils";
+import { ensureRunnable, parseControlCommand, sessionHasTab, worktreeFilePath } from "./control-command.utils";
+import { runDesktopCommand } from "./desktop-commands.service";
+import { runDiffCommand } from "./diff-commands.service";
+import { runEditorCommand } from "./editor-commands.service";
+import { runFactoryCommand } from "./factory-commands.service";
+import { runGitCommand } from "./git-commands.service";
+import { runGraphCommand } from "./graph-commands.service";
+import { readPullRequestState } from "./pull-request-commands.service";
+import { runTerminalCommand } from "./terminal-commands.service";
 
 const MAIN_WINDOW_LABEL = "main";
+
+/** How `hunt-client state` reads each tab; the mapped type makes the compiler insist on a reader per `RightTab`. */
+const TAB_STATE_READERS: { [Tab in RightTab]: (session: SessionView) => Promise<unknown> } = {
+  diff: (session) => runDiffCommand(session, undefined),
+  git: (session) => runGitCommand(session, undefined),
+  editor: (session) => runEditorCommand(session, undefined),
+  graph: (session) => runGraphCommand(session, undefined),
+  pullRequest: readPullRequestState,
+  desktop: (session) => runDesktopCommand(session, undefined),
+  checks: (session) => runChecksCommand(session, undefined),
+  terminal: (session) => runTerminalCommand(session, undefined),
+  factory: (session) => runFactoryCommand(session, undefined),
+};
+
+/** The tab the inspector of `session` shows, its remembered one or the last picked, and the Diff tab when it lacks that one (as `App` does), with that tab's state. */
+async function readShownState(session: SessionView): Promise<{ tab: RightTab; state: unknown }> {
+  const { views, lastTab } = useSessionViewStore.getState();
+  const remembered = views[session.id]?.tab || lastTab;
+  const tab = sessionHasTab(session, remembered) ? remembered : "diff";
+  return { tab, state: await TAB_STATE_READERS[tab](session) };
+}
 
 /**
  * Lets the main window run the `hunt-client` commands of the agents (see src-tauri/src/session/commands/control.rs):
@@ -85,7 +116,7 @@ async function runControlCommand(sessionId: string, value: unknown): Promise<unk
       await commands.browserOpen(sessionId);
       return;
     case "checks":
-      return useChecksStore.getState().readReport(sessionId);
+      return runChecksCommand(session, command.action);
     case "runChecks":
       return useChecksStore.getState().start(sessionId, command.check);
     case "services":
@@ -94,5 +125,23 @@ async function runControlCommand(sessionId: string, value: unknown): Promise<unk
       return useServicesStore.getState().start(sessionId, command.service);
     case "stopService":
       return useServicesStore.getState().stop(sessionId, command.service);
+    case "state":
+      return readShownState(session);
+    case "graph":
+      return runGraphCommand(session, command.action);
+    case "diff":
+      return runDiffCommand(session, command.action);
+    case "git":
+      return runGitCommand(session, command.action);
+    case "editor":
+      return runEditorCommand(session, command.action);
+    case "pullRequest":
+      return readPullRequestState(session);
+    case "desktop":
+      return runDesktopCommand(session, command.action);
+    case "terminal":
+      return runTerminalCommand(session, command.action);
+    case "factory":
+      return runFactoryCommand(session, command.action);
   }
 }

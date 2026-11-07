@@ -288,7 +288,7 @@ meta; the diagram instructions go only to the diagram agent (see "Architecture d
 The processes of a local agent steer this Hunt through its control socket, `<app data>/control/hunt-<pid>.sock` (one
 per Hunt process, since a `tauri dev` beside the installed app shares the app data folder; mode 0600, folder 0700),
 whose path the agent and its Playwright MCP wrapper get in `HUNT_CONTROL_SOCKET` (`apps/client/src-tauri/src/platform/control.rs`).
-Each connection carries one JSON line of at most 64 KiB and one answer, `{"ok":true}`, `{"ok":true,"result":…}` or
+Each connection carries one JSON line of at most 4096 bytes and one answer, `{"ok":true}`, `{"ok":true,"result":…}` or
 `{"error":"…"}`: `{"type":"openBrowser",…}` opens the session's Chrome, `{"type":"ui","session":…,"command":…}` runs a
 command of `hunt-client`.
 
@@ -297,24 +297,27 @@ command of `hunt-client`.
   `apps/client/prompts/session/client.system-prompt.md` names, each for the agent's own session (`HUNT_SESSION_ID`) unless
   `--session` names another; `--help` lists them. It prints a command's result on stdout, a string as it is and
   anything else as JSON.
-  - *Read*: `state` reports what the main window shows of the session: whether it is selected, whether the window is
-    visible and focused, the inspector tab, the file of the Editor tab's active pane with cursor and selection (the
-    selected text cut to 20 000 characters) and the file of the Diff tab. An editor window is a webview of its own,
-    which `state` does not see. `checks` reports the checks of hunt.json with their last runs, a failed one with the end
-    of its output (`failureExcerpt`). `services` reports the services of hunt.json of a local session with their state,
-    port, whether something listens there and the log of their window.
+  - *Read*: `state` reports the tab the inspector shows (the Diff tab when the session lacks the remembered one) with
+    that tab's state. `<tab>` reports one tab: `graph` (diagram type or repository file, hidden ERD tables with their
+    change marks, excluded files, filter, whether the shown diagram is generating and its error), `diff`, `git`,
+    `editor`, `pull-request`, `desktop`, `checks` (the checks of hunt.json with their last runs, a failed one with the end
+    of its output, and the selected check), `terminal` and `factory`. `services` reports the services of hunt.json of a
+    local session with their state, port, whether something listens there and the log of their window.
   - *Show*: `show`, `tab <name>`, `open file <path>` (`--line`, `--match` finds the line by its text, `--column`,
-    `--end-line` selects lines, `--window`), `open diff <path>`, `open commit <revision>` (resolved by
-    `git_resolve_commit`, then selected in the Git tab),
-    `open terminal <name>` (a tab of the Terminal panel by its label), `open preview <service>` (a session on a VM),
-    `open settings [--page <page>]`, `open guardrails` and `open browser`.
-  - *Act*: `notify <text>` shows a toast while the focused main window shows the session, else a system notification
-    (`tauri-plugin-notification`; a click on it does not select the session). `checks run [<name>]` starts one or every check
-    and, unless `--no-wait`, asks for `checks` every 2 s until those ended. `services start [<name>]` starts one or every
-    service of a local session and, unless `--no-wait`, asks for `services` every 2 s until each listens on its port or
-    ended, at most 5 minutes; `services stop <name>` stops one. `subchat <prompt>` starts a sub chat beside
-    the session with its agent setup and prints `{"session":…}`. `title <text>` sets the title and marks it fixed
-    (`titleIsFixed`), so neither the summarizer nor the naming after the first prompt changes it again.
+    `--window`), `open diff <path>`, `open settings [--page <page>]`, `open guardrails` and `open browser`.
+  - *Set*: `<tab> <verb>` changes the view state of one tab and shows it: `graph type|file|tables|files|filter`,
+    `diff select|subtab|scope|globs|view|lines|mode|collapse|check`, `git filter|select|select-file`,
+    `editor close|activate|back|forward|reveal`, `checks select`, `terminal select`, `factory select`. The command
+    object is `{"name":"<tab>","action":{…}}` (`src/control/tab-commands.utils.ts`); the view state it sets lives in
+    stores (`useSessionViewStore`, `useSettingsStore`, `useIdeStore`), so it holds also for a session whose panel is
+    not mounted.
+  - *Act*: `checks run [<name>]` starts one or every check and, unless `--no-wait`, asks for `checks` every 2 s until
+    those ended; `checks stop [<name>]` stops one or all. `services start [<name>]` starts one or every service of a
+    local session and, unless `--no-wait`, asks for `services` every 2 s until each listens on its port or ended, at
+    most 5 minutes; `services stop <name>` stops one. `graph generate [--instructions <text>]` generates the shown
+    diagram and, unless `--no-wait`, asks for `graph` every 2 s until it is written, at most 15 minutes.
+    `desktop reconnect`, `terminal new|rerun` and `factory refresh` do what their buttons do. Nothing commits, pushes,
+    reverts, shelves, deletes or posts to GitHub.
 - **Main window**: Rust passes the command on unchecked as `control:command` to the window `main`
   (`session/commands/control.rs`) and waits up to 15 s for `answer_control_command`. `useControlCommands`
   (`apps/client/src/control/`) checks it and runs it with the functions the UI uses itself, since every window and tab

@@ -8,6 +8,15 @@ command. Each command acts on your own session. Use it when the user asks you to
 file or tab makes your answer clearly easier to follow; never only to look busy. `{{huntClient}} show` brings Hunt to
 the front with your session selected; run it only when the user asks for it.
 
+Every tab of the session's panel can be read and set the same way: `{{huntClient}} <tab>` prints what the tab shows as
+JSON (`graph` for the Architecture tab, `diff`, `git`, `editor`, `pull-request`, `desktop`, `checks`, `terminal`,
+`factory`), and `{{huntClient}} <tab> <verb>` changes it and shows the tab, for example
+`{{huntClient}} graph type erd` followed by `{{huntClient}} graph tables --only-changed` to show only the tables the
+branch adds or changes, `{{huntClient}} diff select <path>` or `{{huntClient}} git select <commit>`.
+`{{huntClient}} state` prints which tab the panel shows and its state; read it when the user refers to what they see.
+`{{huntClient}} <tab> --help` lists a tab's verbs. These commands only change what Hunt shows, plus harmless actions
+such as generating a diagram or opening a shell; commits, pushes and other git changes stay with your own tools.
+
 To run a check of `hunt.json`, use `{{huntClient}} checks run <name>`, or leave out the name to run all of them. It runs
 the check in the Checks tab, waits until it ended and prints how it ended, a failed check with the end of its output;
 give a long check the time it needs, for example by running the command in the background. `--no-wait` returns at once.

@@ -13,11 +13,36 @@ export type RightTab = "diff" | "git" | "editor" | "graph" | "pullRequest" | "de
 /** The changelist's tabs; `review` exists only for a pull request under review. */
 export type ChangeListTab = "changelist" | "shelf" | "review";
 
+/** How the Diff tab lays out a file's changes. */
+export type DiffMode = "split" | "unified";
+
+/** The commits the Git tab's log lists: those reachable from `reference` whose message or author contains `text`. */
+export type GitLogFilter = { reference: string; text: string };
+
 /**
- * What the inspector of a session showed when it was left: the tab, the file selected in the Diff tab, the changelist's
- * tab (stored under the parent session only, for it and its sub sessions) and the Editor tab's panes.
+ * What the inspector of a session showed when it was left: the tab, the file selected in the Diff tab with its layout
+ * and whether unchanged lines are collapsed, the changelist's tab (stored under the parent session only, for it and its
+ * sub sessions), the Editor tab's panes, the Git tab's log filter, selected commit and file of that commit, the check
+ * the Checks tab shows, the Terminal tab's active tab key and the run the Factory tab shows. Every window and
+ * `hunt-client` read and set these here, so they hold also while the tab is not mounted.
  */
-export type InspectorView = { tab?: RightTab; diffPath?: string | null; changeListTab?: ChangeListTab; editor?: IdeSnapshot };
+export type InspectorView = {
+  tab?: RightTab;
+  diffPath?: string | null;
+  diffMode?: DiffMode;
+  diffCollapsed?: boolean;
+  changeListTab?: ChangeListTab;
+  editor?: IdeSnapshot;
+  gitFilter?: GitLogFilter;
+  gitCommit?: string | null;
+  gitFile?: string | null;
+  checksSelected?: string | null;
+  terminalTab?: string | null;
+  factoryRun?: number | null;
+};
+
+/** The fields of an inspector view that `updateView` sets; the tab, the changelist's tab and the editor have setters of their own. */
+export type InspectorViewFields = Omit<InspectorView, "tab" | "changeListTab" | "editor">;
 
 /** How many sessions' views are kept; the least recently changed fall off beyond this. */
 export const SESSION_VIEW_LIMIT = 200;
@@ -36,7 +61,20 @@ type SessionViewState = {
   /** Picks the changelist's `tab` for the parent session `familyId` and its sub sessions. */
   setChangeListTab: (familyId: string, tab: ChangeListTab) => void;
   setEditor: (sessionId: string, editor: IdeSnapshot) => void;
+  /** Sets the fields of `change` for the session `sessionId`; leaves the state as it is when they hold these values already. */
+  updateView: (sessionId: string, change: InspectorViewFields) => void;
 };
+
+/** Whether every field of `change` holds the same value in `view`; objects are compared field by field. */
+export function holdsFields(view: InspectorView | undefined, change: InspectorViewFields): boolean {
+  return Object.entries(change).every(([key, value]) => {
+    const current: unknown = view?.[key as keyof InspectorViewFields];
+    if (value && typeof value === "object" && current && typeof current === "object") {
+      return Object.entries(value).every(([field, fieldValue]) => (current as Record<string, unknown>)[field] === fieldValue);
+    }
+    return current === value;
+  });
+}
 
 /** `views` with the entry of `sessionId` updated by `change` and moved to the end, cut to `SESSION_VIEW_LIMIT` entries. */
 export function withSessionView(views: Record<string, InspectorView>, sessionId: string, change: Partial<InspectorView>): Record<string, InspectorView> {
@@ -75,6 +113,8 @@ export const useSessionViewStore = create<SessionViewState>()(
       setChangeListTab: (familyId, tab) =>
         set((state) => (state.views[familyId]?.changeListTab === tab ? state : { views: withSessionView(state.views, familyId, { changeListTab: tab }) })),
       setEditor: (sessionId, editor) => set((state) => ({ views: withSessionView(state.views, sessionId, { editor }) })),
+      updateView: (sessionId, change) =>
+        set((state) => (holdsFields(state.views[sessionId], change) ? state : { views: withSessionView(state.views, sessionId, change) })),
     }),
     { name: "hunt-session-views", merge: mergeSessionViews },
   ),

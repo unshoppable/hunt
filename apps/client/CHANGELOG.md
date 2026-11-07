@@ -1,3 +1,14 @@
+## 0.151.0 (2026-11-07)
+
+### 🚀 Features
+
+- **client:** show the parent's panels in the start view of a sub session ([3f1dbb3](https://github.com/unshoppable/hunt/commit/3f1dbb3))
+- **client:** render diagrams sharp at every zoom and pan them with the right mouse button ([2d7e6e0](https://github.com/unshoppable/hunt/commit/2d7e6e0))
+
+### 🩹 Fixes
+
+- **client:** show a diagram file's folder beside its name and align the table filter rows ([2b1352e](https://github.com/unshoppable/hunt/commit/2b1352e))
+
 ## 0.150.0 (2026-11-07)
 
 ### 🚀 Features

@@ -77,7 +77,7 @@ export function TableFilterPopover({
           {shownCount} of {tables.length} shown
         </span>
       </div>
-      <ul {...nav.listProps} className="min-h-0 flex-1 overflow-y-auto p-1 leading-6 outline-none">
+      <ul {...nav.listProps} className="min-h-0 flex-1 overflow-y-auto p-1 leading-[25px] outline-none">
         {sorted.map((table) => (
           <li
             key={table.id}

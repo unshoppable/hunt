@@ -192,8 +192,9 @@ export function DiagramStatusBadge({
   return (
     <div className="absolute top-3 left-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2">
       {filePath ? (
-        <span className="truncate font-mono text-[12px] text-neutral-400" title={filePath}>
-          {baseName(filePath)}
+        <span className="flex min-w-0 font-mono text-[12px] text-neutral-400" title={filePath}>
+          {dirName(filePath) ? <span className="truncate">{dirName(filePath)}/</span> : null}
+          <span className="shrink-0 font-semibold text-neutral-300">{baseName(filePath)}</span>
         </span>
       ) : null}
       {filePath && !hasSources ? null : status?.isOutdated ? (

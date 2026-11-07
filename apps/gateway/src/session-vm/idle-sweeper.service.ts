@@ -16,7 +16,7 @@ import type { SessionVmService } from "./session-vm.service.ts";
 import type { SessionVmSsh } from "./session-vm-ssh.client.ts";
 
 export const IDLE_SWEEP_INTERVAL_MS = 60_000;
-/** The decision of an idle check that asks for a suspend; the other decisions are `keep:` and `poweroff:`. */
+/** The decision of an idle check that asks for a suspend; the other decisions are `keep:`, `wait:` and `poweroff:`. */
 const IDLE_DECISION = "idle:";
 
 export interface IdleSweeperDeps {

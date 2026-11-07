@@ -8,6 +8,8 @@ import { afterEach, describe, expect, it } from "vitest";
 const SCRIPT = fileURLToPath(new URL("./hunt-idle-check", import.meta.url));
 const NOW_MS = 1_800_000_000_000;
 const MINUTE_MS = 60_000;
+/** The default of IDLE_CHECKS. */
+const IDLE_RUNS = 15;
 
 /**
  * Commands the script runs that read the machine, replaced by scripts that read the fixture: `date` prints NOW_MS,
@@ -47,6 +49,11 @@ interface Fixture {
   resumedMinutesAgo?: number;
   /** Minutes since a run first found the VM idle; no idle-since file without it. */
   idleSinceMinutesAgo?: number;
+  /**
+   * How many runs in a row found nothing that keeps the VM up; IDLE_RUNS by default, so that the other tests see the
+   * decision a VM gets once the runs are enough; `null` writes no idle-runs file.
+   */
+  idleRuns?: number | null;
 }
 
 describe("hunt-idle-check", () => {
@@ -115,6 +122,10 @@ describe("hunt-idle-check", () => {
     if (fixture.idleSinceMinutesAgo !== undefined) {
       writeFileSync(join(state, "idle-since"), `${seconds(fixture.idleSinceMinutesAgo)}\n`);
     }
+    const idleRuns = fixture.idleRuns === undefined ? IDLE_RUNS : fixture.idleRuns;
+    if (idleRuns !== null) {
+      writeFileSync(join(state, "idle-runs"), `${idleRuns}\n`);
+    }
     const env = {
       ...process.env,
       PATH: `${dir}${delimiter}${process.env.PATH ?? ""}`,
@@ -142,7 +153,7 @@ describe("hunt-idle-check", () => {
   }
 
   /** The state files a run left, by name, trimmed; `null` for a missing one. */
-  function readState(dir: string): { lastRun: string | null; idleSince: string | null } {
+  function readState(dir: string): { lastRun: string | null; idleSince: string | null; idleRuns: string | null } {
     const read = (name: string) => {
       try {
         return readFileSync(join(dir, name), "utf8").trim();
@@ -150,7 +161,7 @@ describe("hunt-idle-check", () => {
         return null;
       }
     };
-    return { lastRun: read("idle-last-run"), idleSince: read("idle-since") };
+    return { lastRun: read("idle-last-run"), idleSince: read("idle-since"), idleRuns: read("idle-runs") };
   }
 
   function decision(fixture: Fixture): string {
@@ -169,6 +180,23 @@ describe("hunt-idle-check", () => {
 
   it("reports an idle VM", () => {
     expect(decision({})).toBe(IDLE);
+  });
+
+  it("waits until IDLE_CHECKS runs in a row found nothing that keeps the VM up", () => {
+    expect(decision({ idleRuns: null })).toBe("wait: nothing keeps the VM up, 0 of 15 checks in a row found nothing");
+    expect(decision({ idleRuns: 14 })).toBe("wait: nothing keeps the VM up, 14 of 15 checks in a row found nothing");
+    expect(decision({ idleRuns: 15 })).toBe(IDLE);
+    expect(decision({ idleRuns: 3, status: { turn: "running" } })).toBe("keep: a turn is running");
+    expect(decision({ config: "IDLE_CHECKS=10", idleRuns: 9 })).toBe("wait: nothing keeps the VM up, 9 of 10 checks in a row found nothing");
+    expect(decision({ config: "IDLE_CHECKS=10", idleRuns: 10 })).toBe(IDLE);
+  });
+
+  it("counts the runs in a row that found nothing and starts again at a run that finds something", () => {
+    expect(run({ idleRuns: null }, [])).toMatchObject({ status: 0, stdout: "", systemctl: "", state: { idleRuns: "1", idleSince: null } });
+    expect(run({ idleRuns: 14 }, []).state).toMatchObject({ idleRuns: "15", idleSince: null });
+    expect(run({ idleRuns: 14 }).state).toMatchObject({ idleRuns: "14" });
+    expect(run({ idleRuns: 9, status: { turn: "running" } }, []).state).toMatchObject({ idleRuns: null });
+    expect(run({ idleRuns: 9, lastRunMinutesAgo: 4 }, []).state).toMatchObject({ idleRuns: null });
   });
 
   it("keeps a VM up within the grace period after a resume, which a gap between two runs shows", () => {
@@ -243,11 +271,11 @@ describe("hunt-idle-check", () => {
   it("records its run and since when the VM is idle, reports idleness once, and changes nothing with --dry-run", () => {
     expect(run({})).toMatchObject({ stdout: IDLE, state: { lastRun: null, idleSince: null } });
     expect(run({}, [])).toMatchObject({ status: 0, stdout: `${IDLE.slice("idle: ".length)}; waiting for the gateway to suspend the VM`, systemctl: "" });
-    expect(run({}, []).state).toEqual({ lastRun: `${NOW_S}`, idleSince: `${NOW_S}` });
+    expect(run({}, []).state).toEqual({ lastRun: `${NOW_S}`, idleSince: `${NOW_S}`, idleRuns: `${IDLE_RUNS}` });
     expect(run({ idleSinceMinutesAgo: 5 }, [])).toMatchObject({ stdout: "", systemctl: "", state: { idleSince: `${NOW_S - 300}` } });
     expect(run({ status: { turn: "running" }, idleSinceMinutesAgo: 5 }, [])).toMatchObject({ stdout: "", state: { lastRun: `${NOW_S}`, idleSince: null } });
-    expect(run({ lastRunMinutesAgo: 4, idleSinceMinutesAgo: 40 }, []).state).toEqual({ lastRun: `${NOW_S} ${NOW_S}`, idleSince: null });
-    expect(run({ lastRunMinutesAgo: 1, resumedMinutesAgo: 10 }, []).state).toEqual({ lastRun: `${NOW_S} ${NOW_S - 600}`, idleSince: null });
+    expect(run({ lastRunMinutesAgo: 4, idleSinceMinutesAgo: 40 }, []).state).toEqual({ lastRun: `${NOW_S} ${NOW_S}`, idleSince: null, idleRuns: null });
+    expect(run({ lastRunMinutesAgo: 1, resumedMinutesAgo: 10 }, []).state).toEqual({ lastRun: `${NOW_S} ${NOW_S - 600}`, idleSince: null, idleRuns: null });
   });
 
   it("powers off through systemctl only without --dry-run and refuses other arguments", () => {

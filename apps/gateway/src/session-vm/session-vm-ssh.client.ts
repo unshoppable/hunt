@@ -250,8 +250,8 @@ export interface SessionVmSsh {
   /** Unpacks `files` (name → text, mode 0600) into the agent's ~/.claude through `hunt-ctl put-files <id> --claude`. */
   putClaudeFiles(sessionId: SessionId, files: Record<string, string>): Promise<void>;
   /**
-   * The decision of the VM's idle check (`apps/session/vm/hunt-idle-check --dry-run`): `keep: <reason>`, `idle: <reason>`
-   * or `poweroff: <reason>`.
+   * The decision of the VM's idle check (`apps/session/vm/hunt-idle-check --dry-run`): `keep: <reason>`, `wait: <reason>`
+   * (nothing keeps the VM up, but not yet in IDLE_CHECKS runs in a row), `idle: <reason>` or `poweroff: <reason>`.
    */
   idleDecision(): Promise<string>;
   /** A connection to the session's relay socket. */

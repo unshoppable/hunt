@@ -1460,7 +1460,8 @@ the gateway after 30 minutes without a running turn, client activity, terminal i
 a session the software factory's poller cloned, which waits on people with nothing running; `hunt-ctl start` writes
 `IDLE_MINUTES` of `/etc/hunt/idle.conf` by the session's origin): its idle check
 (`apps/session/vm/hunt-idle-check`, every minute through `hunt-idle.timer`) decides and the gateway's sweeper (above)
-asks it and suspends; a preview page view or a request other than GET counts too, for at most two hours after the agent
+asks it and suspends, but only once 15 runs of the check in a row found nothing that keeps the VM up (`IDLE_CHECKS` in
+`/etc/hunt/idle.conf`), so that one run which misses an activity cannot get it suspended; a preview page view or a request other than GET counts too, for at most two hours after the agent
 last worked. Services, dev servers and containers left running do not count. A VM cannot suspend itself, so when the
 gateway has not suspended it 15 minutes after it first reported idle (`SUSPEND_WAIT_MINUTES` in `/etc/hunt/idle.conf`),
 it powers itself off as a fallback. A suspended VM keeps its memory: the next prompt or preview page resumes it within

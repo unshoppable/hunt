@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# Decides every minute (hunt-idle.timer) whether the session on this VM is idle. Once it has been idle for IDLE_MINUTES
-# the script reports it, and the gateway's sweeper (`apps/gateway/src/session-vm/idle-sweeper.service.ts`), which runs it with --dry-run over SSH,
+# Decides every minute (hunt-idle.timer) whether the session on this VM is idle. Once IDLE_CHECKS runs in a row found
+# nothing below that keeps it up, the script reports it idle, and the gateway's sweeper (`apps/gateway/src/session-vm/idle-sweeper.service.ts`), which runs it with --dry-run over SSH,
 # suspends the VM: a VM cannot suspend itself. The VM powers itself off only when SUSPEND_WAIT_MINUTES pass idle without
 # a suspend, so that a gateway that cannot suspend (an outage, a missing permission) does not leave it running. The disk
 # keeps everything; Hunt or the gateway resumes or starts the VM again when the session is needed. With --dry-run it
-# prints its decision ("keep: <reason>", "idle: <reason>" or "poweroff: <reason>") and changes nothing.
+# prints its decision ("keep: <reason>", "wait: <reason>" while fewer than IDLE_CHECKS runs in a row found nothing,
+# "idle: <reason>" or "poweroff: <reason>") and changes nothing; only a run without it counts towards IDLE_CHECKS, so
+# that a single run which misses an activity (a heartbeat late by a hiccup of the relay) cannot get the VM suspended.
 #
 # The VM stays up while
 #   - it booted, or resumed from a suspend, less than BOOT_GRACE_MINUTES ago (a resume shows as a gap of more than
@@ -21,9 +23,10 @@
 #   - an interactive login, such as Hunt's terminal, had input within IDLE_MINUTES (the IDLE column of `w`).
 # Dev servers, the services of hunt.json (hunt-service@ units) included, and containers the agent left running do not
 # count. A heartbeat older than two minutes means the relay is gone; its status does not count. IDLE_MINUTES,
-# BOOT_GRACE_MINUTES, PREVIEW_MAX_MINUTES and SUSPEND_WAIT_MINUTES come from /etc/hunt/idle.conf (defaults 30, 15, 120
-# and 15), which `hunt-ctl start` writes by the session's origin: 15 idle minutes for a session the software factory's
-# poller cloned, whose runner waits on people with nothing running, 30 for one someone works in. The state of the runs (when the last one ran, when the VM resumed, since when it is idle) lives in
+# BOOT_GRACE_MINUTES, PREVIEW_MAX_MINUTES, SUSPEND_WAIT_MINUTES and IDLE_CHECKS come from /etc/hunt/idle.conf (defaults
+# 30, 15, 120, 15 and 15), which `hunt-ctl start` writes by the session's origin: 15 idle minutes for a session the software factory's
+# poller cloned, whose runner waits on people with nothing running, 30 for one someone works in. The state of the runs
+# (when the last one ran, when the VM resumed, how many runs in a row found nothing, since when it is idle) lives in
 # /run/hunt, which a boot clears and a suspend keeps. The HUNT_IDLE_* variables point it at other files, for tests.
 set -euo pipefail
 
@@ -35,6 +38,7 @@ proxy_log=${HUNT_IDLE_PROXY_LOG:-/var/log/hunt-proxy/access.log}
 state_dir=${HUNT_IDLE_STATE_DIR:-/run/hunt}
 last_run_file=$state_dir/idle-last-run
 idle_since_file=$state_dir/idle-since
+idle_runs_file=$state_dir/idle-runs
 readonly HEARTBEAT_MAX_AGE_MS=120000
 readonly RESUME_GAP_SECONDS=180
 
@@ -42,16 +46,17 @@ IDLE_MINUTES=30
 BOOT_GRACE_MINUTES=15
 PREVIEW_MAX_MINUTES=120
 SUSPEND_WAIT_MINUTES=15
+IDLE_CHECKS=15
 
-# Reads IDLE_MINUTES, BOOT_GRACE_MINUTES, PREVIEW_MAX_MINUTES and SUSPEND_WAIT_MINUTES from the config file; other lines
-# and malformed values are ignored.
+# Reads IDLE_MINUTES, BOOT_GRACE_MINUTES, PREVIEW_MAX_MINUTES, SUSPEND_WAIT_MINUTES and IDLE_CHECKS from the config file;
+# other lines and malformed values are ignored.
 read_config() {
   local key value
   [[ -r $config ]] || return 0
   while IFS='=' read -r key value || [[ -n $key ]]; do
     key=${key//[[:space:]]/}
     value=${value//[[:space:]\"\']/}
-    if [[ $key =~ ^(IDLE_MINUTES|BOOT_GRACE_MINUTES|PREVIEW_MAX_MINUTES|SUSPEND_WAIT_MINUTES)$ && $value =~ ^[0-9]+$ ]]; then
+    if [[ $key =~ ^(IDLE_MINUTES|BOOT_GRACE_MINUTES|PREVIEW_MAX_MINUTES|SUSPEND_WAIT_MINUTES|IDLE_CHECKS)$ && $value =~ ^[0-9]+$ ]]; then
       printf -v "$key" '%d' "$((10#$value))"
     fi
   done <"$config"
@@ -157,8 +162,19 @@ seconds_idle() {
   return 0
 }
 
+# Prints how many runs in a row, up to the last one, found nothing that keeps the VM up; 0 without a record.
+idle_runs() {
+  local runs=
+  [[ -r $idle_runs_file ]] && read -r runs <"$idle_runs_file" || true
+  if [[ $runs =~ ^[0-9]+$ ]]; then
+    echo "$((10#$runs))"
+  else
+    echo 0
+  fi
+}
+
 decide() {
-  local now_ms uptime resumed modified activity_age checks reason login_idle preview_ms idle
+  local now_ms uptime resumed modified activity_age checks reason login_idle preview_ms idle runs
   now_ms=$(date +%s%3N)
   read -r uptime _ <"$uptime_file"
   uptime=${uptime%.*}
@@ -214,6 +230,11 @@ decide() {
     echo "poweroff: idle for $((idle / 60)) min and not suspended by the gateway"
     return
   fi
+  runs=$(idle_runs)
+  if (( runs < IDLE_CHECKS )); then
+    echo "wait: nothing keeps the VM up, $runs of $IDLE_CHECKS checks in a row found nothing"
+    return
+  fi
   echo "idle: no turn, client, permission request, preview page view, login or hunt-ctl activity for $IDLE_MINUTES min"
 }
 
@@ -236,7 +257,10 @@ now_s=$(( $(date +%s%3N) / 1000 ))
 record_run "$now_s"
 case $decision in
   keep:*)
-    rm -f "$idle_since_file"
+    rm -f "$idle_since_file" "$idle_runs_file"
+    ;;
+  wait:*)
+    echo "$(($(idle_runs) + 1))" >"$idle_runs_file"
     ;;
   idle:*)
     if [[ ! -e $idle_since_file ]]; then

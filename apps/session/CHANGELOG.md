@@ -1,3 +1,9 @@
+## 0.33.13 (2026-11-07)
+
+### 🩹 Fixes
+
+- **session:** auto-compact a remote session at 400k tokens instead of near the full 1M window ([2be2d77](https://github.com/unshoppable/hunt/commit/2be2d77))
+
 ## 0.33.12 (2026-11-07)
 
 ### 🩹 Fixes

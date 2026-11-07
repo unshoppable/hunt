@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ShapeDiagram } from "./shape-diagram.types";
-import { addColumn, addTable, emptyErd, moveColumn, newColumnName, relationshipsOf, removeColumn, removeTable, serializeShapeDiagram, tableIdFor, updateColumn, updateTable } from "./erd-edit.utils";
+import { addColumn, addRelationship, addTable, emptyErd, moveColumn, newColumnName, relationshipsOf, removeColumn, removeTable, serializeShapeDiagram, tableIdFor, updateColumn, updateTable } from "./erd-edit.utils";
 import { parseShapeDiagram } from "./shape-schema.utils";
 
 const erd: ShapeDiagram = {
@@ -88,6 +88,27 @@ describe("relationshipsOf", () => {
   });
 });
 
+describe("addRelationship", () => {
+  it("relates two columns many to one, marked as added, and returns the relationship's id", () => {
+    const added = addRelationship(erd, { table: "customers", column: "email" }, { table: "orders", column: "id" });
+    expect(added.id).toBe("customers.email->orders.id");
+    expect(added.diagram.edges[1]).toEqual({ source: "customers", target: "orders", sourceColumn: "email", targetColumn: "id", cardinality: { source: "many", target: "one" }, change: "added" });
+    expect(erd.edges).toHaveLength(1);
+  });
+
+  it("refuses a table joined to itself, a missing table or column and an existing relationship", () => {
+    const refusals = [
+      addRelationship(erd, { table: "orders", column: "customer_id" }, { table: "orders", column: "id" }),
+      addRelationship(erd, { table: "orders", column: "customer_id" }, { table: "products", column: "id" }),
+      addRelationship(erd, { table: "orders", column: "missing" }, { table: "customers", column: "id" }),
+      addRelationship(erd, { table: "orders", column: "customer_id" }, { table: "customers", column: "id" }),
+    ];
+    for (const refusal of refusals) {
+      expect(refusal).toEqual({ diagram: erd, id: null });
+    }
+  });
+});
+
 describe("serializeShapeDiagram", () => {
   it("writes the file the agent would write and round-trips through the parser", () => {
     const text = serializeShapeDiagram(erd);
@@ -102,5 +123,12 @@ describe("serializeShapeDiagram", () => {
     expect(JSON.parse(serializeShapeDiagram(emptyErd()))).toEqual({ type: "erd", nodes: [], edges: [] });
     const colored: ShapeDiagram = { ...erd, nodes: erd.nodes.map((node, index) => (index ? node : { ...node, color: "cyan" as const })) };
     expect(parseShapeDiagram(JSON.parse(serializeShapeDiagram(colored)), "erd").diagram).toEqual(colored);
+  });
+
+  it("keeps the sources with their hashes, so an edit or a save leaves the outdated check intact", () => {
+    const sourced: ShapeDiagram = { ...erd, sources: [{ path: "src/order.entity.ts", hash: "ab12" }, { path: "src/item.entity.ts" }] };
+    const text = serializeShapeDiagram(sourced);
+    expect(text.indexOf('"title"')).toBeLessThan(text.indexOf('"sources"'));
+    expect(parseShapeDiagram(JSON.parse(text), "erd").diagram).toEqual(sourced);
   });
 });

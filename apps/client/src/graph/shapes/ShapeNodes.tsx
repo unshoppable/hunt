@@ -5,6 +5,7 @@ import {
   Handle,
   Position,
   getSmoothStepPath,
+  useConnection,
   useStore,
   type EdgeProps,
   type EdgeTypes,
@@ -15,10 +16,9 @@ import {
 } from "@xyflow/react";
 import type { ShapeChange, ShapeKind, TableColumn } from "./shape-diagram.types";
 import { EDGE_COLOR, EDGE_COLOR_HIGHLIGHTED, LABEL_HEIGHT, MAX_LABEL_WIDTH, orthogonalPath, pathMidpoint } from "../layout.utils";
-import { HANDLE_STYLE } from "../DiagramNodes";
 import { COLOR_STYLE } from "./shape-color.constants";
 import { isMovableSegment, moveSegment, routeAroundObstacles, routeThroughBends, type Obstacle } from "./edge-route.utils";
-import { TABLE_ROW_HEIGHT, columnPortId, crowMarker, tableHeaderHeight, tableRowCenterY, type BoundaryFlowNode, type CrowTone, type ShapeFlowEdge, type ShapeFlowNode } from "./shape-diagram.utils";
+import { TABLE_ROW_HEIGHT, columnPortId, crowMarker, portColumn, tableHeaderHeight, tableRowCenterY, type BoundaryFlowNode, type CrowTone, type ShapeFlowEdge, type ShapeFlowNode } from "./shape-diagram.utils";
 
 /*
  * Style contract of the shape diagrams, shared by every branch: the agent's file holds content only, Hunt draws
@@ -238,11 +238,18 @@ function TableIcon({ className }: { className: string }) {
 
 /**
  * One column row of a table: a key icon for a primary or foreign key, the name and the type muted on the right. A
- * lit row takes part in the hovered relationship or table.
+ * lit row takes part in the hovered relationship or table; the drop target is the row a dragged relationship would
+ * end at. `data-column` lets the panel find the row under the pointer when a relationship is dropped.
  */
-function TableRow({ column, isLit }: { column: TableColumn; isLit: boolean }) {
+function TableRow({ column, isLit, isDropTarget, onPointerEnter }: { column: TableColumn; isLit: boolean; isDropTarget: boolean; onPointerEnter: () => void }) {
   return (
-    <div className={`flex items-center gap-2 px-3 transition-colors ${isLit ? "bg-sky-400/10" : ""}`} style={{ height: TABLE_ROW_HEIGHT }} title={`${column.name} ${column.type}`}>
+    <div
+      data-column={column.name}
+      onPointerEnter={onPointerEnter}
+      className={`flex items-center gap-2 px-3 transition-colors ${isDropTarget ? "bg-blue-400/25" : isLit ? "bg-sky-400/10" : ""}`}
+      style={{ height: TABLE_ROW_HEIGHT }}
+      title={`${column.name} ${column.type}`}
+    >
       <span className="flex w-4 shrink-0 justify-center">
         {column.isPrimaryKey ? <KeyIcon className="size-3.5 text-amber-300" /> : column.isForeignKey ? <ReferenceIcon className="size-3.5 text-sky-300/90" /> : null}
       </span>
@@ -254,23 +261,31 @@ function TableRow({ column, isLit }: { column: TableColumn; isLit: boolean }) {
 
 /**
  * An ERD table as a card: a header with the table's name, its description as a second line and the change tag, then
- * one row per column; a colored table has its border and header in that color. Each row has invisible handles for
- * incoming and outgoing relationships on both sides, named by `columnPortId`, so a relationship joins the two columns
- * it is on from whichever side the layout chose. The panel marks the selected table (the one in
- * the editor), the hovered one and fades the tables unrelated to the hovered one.
+ * one row per column; a colored table has its border and header in that color. Each row has handles for incoming and
+ * outgoing relationships on both sides, named by `columnPortId`, so a relationship joins the two columns it is on from
+ * whichever side the layout chose. They are invisible, except that the outgoing ones of the hovered row show as dots
+ * on the card's border (`.table-port-active`) to drag a new relationship from; while one is dragged from another
+ * table, the row it would end at lights up. The handles sit outside the clipped card, so the dots are not cut in half.
+ * The panel marks the selected table (the one in the editor), the hovered one and fades the tables unrelated to the
+ * hovered one.
  */
 export const TableNodeView = memo(function TableNodeView({ id, data }: NodeProps<ShapeFlowNode>) {
   const columns = data.columns ?? [];
   const lit = new Set(data.litColumns ?? []);
+  const [hoveredRow, setHoveredRow] = useState<string | null>(null);
+  const drop = useConnection((connection) => ({
+    isTarget: connection.inProgress && connection.fromNode.id !== id,
+    port: connection.inProgress && connection.toNode?.id === id ? connection.toHandle?.id : null,
+  }));
+  // The handle a dragged relationship snapped to decides its column, as when it is dropped; else the row under the pointer.
+  const dropRow = drop.isTarget ? (portColumn({ id, columns }, drop.port)?.name ?? hoveredRow) : null;
   // A change mark keeps its border, a color tints the header; each shows where the other leaves room.
   const changeTone = TABLE_TONE[data.change ?? "none"];
   const colorTone = data.color ? COLOR_STYLE[data.color] : null;
   const tone = { card: data.change || !colorTone ? changeTone.card : colorTone.card, header: colorTone ? colorTone.header : changeTone.header };
   const ring = data.isSelected ? "ring-2 ring-blue-400/80" : data.isHovered ? "ring-1 ring-white/20" : "";
   return (
-    <div
-      className={`relative flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-xl border bg-(--surface-inset) text-neutral-100 shadow-lg shadow-black/30 transition-[opacity,box-shadow] duration-150 ${tone.card} ${ring} ${data.isMuted ? "opacity-40" : ""}`}
-    >
+    <div className="relative h-full w-full" onPointerLeave={() => setHoveredRow(null)}>
       <VerticalHandles />
       {columns.flatMap((column, index) =>
         (["left", "right"] as const).flatMap((side) =>
@@ -280,23 +295,29 @@ export const TableNodeView = memo(function TableNodeView({ id, data }: NodeProps
               type={end === "in" ? "target" : "source"}
               position={side === "left" ? Position.Left : Position.Right}
               id={columnPortId(id, column.name, end, side)}
-              style={{ ...HANDLE_STYLE, top: tableRowCenterY(data, index) }}
+              className={`table-port ${end === "out" && column.name === hoveredRow && !drop.isTarget ? "table-port-active" : ""}`}
+              title={end === "out" ? "Drag onto another table" : undefined}
+              style={{ top: tableRowCenterY(data, index) }}
             />
           )),
         ),
       )}
-      <div className={`flex shrink-0 flex-col justify-center gap-0.5 border-b border-white/10 px-3 ${tone.header}`} style={{ height: tableHeaderHeight(data) }} title={data.description ? `${data.label}\n${data.description}` : data.label}>
-        <div className="flex items-center gap-2">
-          <TableIcon className="size-3.5 shrink-0 text-neutral-400" />
-          <span className="min-w-0 flex-1 truncate text-[13px] font-semibold uppercase">{data.label}</span>
-          {data.change ? <span className={`shrink-0 rounded border px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${CHANGE_TAG[data.change]}`}>{data.change}</span> : null}
+      <div
+        className={`flex h-full w-full cursor-pointer flex-col overflow-hidden rounded-xl border bg-(--surface-inset) text-neutral-100 shadow-lg shadow-black/30 transition-[opacity,box-shadow] duration-150 ${tone.card} ${ring} ${data.isMuted ? "opacity-40" : ""}`}
+      >
+        <div className={`flex shrink-0 flex-col justify-center gap-0.5 border-b border-white/10 px-3 ${tone.header}`} style={{ height: tableHeaderHeight(data) }} title={data.description ? `${data.label}\n${data.description}` : data.label}>
+          <div className="flex items-center gap-2">
+            <TableIcon className="size-3.5 shrink-0 text-neutral-400" />
+            <span className="min-w-0 flex-1 truncate text-[13px] font-semibold uppercase">{data.label}</span>
+            {data.change ? <span className={`shrink-0 rounded border px-1.5 text-[10px] leading-4 font-semibold tracking-wide uppercase ${CHANGE_TAG[data.change]}`}>{data.change}</span> : null}
+          </div>
+          {data.description ? <span className="truncate text-[12px] text-neutral-400">{data.description}</span> : null}
         </div>
-        {data.description ? <span className="truncate text-[12px] text-neutral-400">{data.description}</span> : null}
-      </div>
-      <div className="divide-y divide-white/5">
-        {columns.map((column) => (
-          <TableRow key={column.name} column={column} isLit={lit.has(column.name)} />
-        ))}
+        <div className="divide-y divide-white/5">
+          {columns.map((column) => (
+            <TableRow key={column.name} column={column} isLit={lit.has(column.name)} isDropTarget={column.name === dropRow} onPointerEnter={() => setHoveredRow(column.name)} />
+          ))}
+        </div>
       </div>
     </div>
   );

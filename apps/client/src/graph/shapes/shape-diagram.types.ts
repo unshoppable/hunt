@@ -58,8 +58,14 @@ export type ShapeEdge = {
   change?: ShapeChange;
 };
 
+/**
+ * A file the diagram was derived from: its worktree-relative `path`, which the agent names, and the SHA-256 of its
+ * content when the diagram was written, which Hunt adds; the diagram is outdated once a hash no longer matches.
+ */
+export type DiagramSource = { path: string; hash?: string };
+
 /** The validated content of a shape diagram file (`.hunt/diagrams/<type>.react-flow.json` or one saved into the repository). */
-export type ShapeDiagram = { type: ShapeDiagramType; title?: string; nodes: ShapeNode[]; groups?: ShapeGroup[]; edges: ShapeEdge[] };
+export type ShapeDiagram = { type: ShapeDiagramType; title?: string; sources?: DiagramSource[]; nodes: ShapeNode[]; groups?: ShapeGroup[]; edges: ShapeEdge[] };
 
 /** What the editor beside the canvas shows and a deletion removes: an element, a connection (by `shapeEdgeId`) or a boundary. */
 export type ShapeSelection = { kind: "node" | "edge" | "group"; id: string };

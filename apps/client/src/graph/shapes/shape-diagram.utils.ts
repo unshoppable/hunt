@@ -1,6 +1,6 @@
 import type { Edge, Node, XYPosition } from "@xyflow/react";
 import { Position } from "@xyflow/react";
-import type { Cardinality, ShapeChange, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeKind, ShapeNode } from "./shape-diagram.types";
+import type { Cardinality, ShapeChange, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeKind, ShapeNode, TableColumn } from "./shape-diagram.types";
 import type { LayoutInput, LayoutNode, LayoutPort, LayoutResult, LayoutSpacing } from "../layout.utils";
 import { GROUP_PADDING as BOUNDARY_PADDING, edgeMarker, layoutGraph } from "../layout.utils";
 import { placeWithoutOverlaps } from "./element-overlap.utils";
@@ -131,6 +131,17 @@ export type RelationshipSides = { source: HandleSide; target: HandleSide };
 /** Id of the port (and React Flow handle) of `column` where a relationship leaves (`out`) or enters (`in`) the table on `side`. */
 export function columnPortId(nodeId: string, column: string, end: "in" | "out", side: HandleSide): string {
   return `${nodeId}:${column}:${end}:${side}`;
+}
+
+/**
+ * The column of `table` whose port on either side and end is `handleId`; undefined for any other handle. It compares
+ * against the ports of the table's columns rather than splitting the id, so a `:` in a table id or column name is fine.
+ */
+export function portColumn(table: Pick<ShapeNode, "id" | "columns">, handleId: string | null | undefined): TableColumn | undefined {
+  if (!handleId) return undefined;
+  return table.columns?.find((column) =>
+    (["in", "out"] as const).some((end) => (["left", "right"] as const).some((side) => columnPortId(table.id, column.name, end, side) === handleId)),
+  );
 }
 
 /** A relationship runs between the facing sides of two tables only when they leave room for both its stubs. */

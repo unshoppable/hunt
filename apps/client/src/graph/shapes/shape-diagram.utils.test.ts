@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ShapeDiagram } from "./shape-diagram.types";
-import { columnPortId, decorateShapeFlow, erdMarkers, layoutShapeDiagram, relationshipSides, shapeNodeSize, TABLE_HEADER_HEIGHT, TABLE_HEADER_HEIGHT_WITH_DESCRIPTION, TABLE_ROW_HEIGHT, tableRowCenterY, toLayoutInput } from "./shape-diagram.utils";
+import { columnPortId, decorateShapeFlow, erdMarkers, layoutShapeDiagram, portColumn, relationshipSides, shapeNodeSize, TABLE_HEADER_HEIGHT, TABLE_HEADER_HEIGHT_WITH_DESCRIPTION, TABLE_ROW_HEIGHT, tableRowCenterY, toLayoutInput } from "./shape-diagram.utils";
 
 // Node has no Web Worker; ELK's in-thread stand-in runs the layouts instead.
 const elkWorker = (await import("elkjs/lib/elk-worker.js")) as unknown as { Worker: typeof Worker };
@@ -63,6 +63,21 @@ describe("shapeNodeSize", () => {
     expect(shapeNodeSize(described).height).toBe(TABLE_HEADER_HEIGHT_WITH_DESCRIPTION + 3 * TABLE_ROW_HEIGHT + 6);
     expect(tableRowCenterY(table, 2)).toBe(TABLE_HEADER_HEIGHT + 2 * TABLE_ROW_HEIGHT + TABLE_ROW_HEIGHT / 2);
     expect(tableRowCenterY(described, 0)).toBe(TABLE_HEADER_HEIGHT_WITH_DESCRIPTION + TABLE_ROW_HEIGHT / 2);
+  });
+});
+
+describe("portColumn", () => {
+  it("finds the column of any port of a table, also when ids and names hold a colon", () => {
+    const [orders] = erd.nodes;
+    for (const end of ["in", "out"] as const) {
+      expect(portColumn(orders, columnPortId("orders", "customer_id", end, "left"))?.name).toBe("customer_id");
+      expect(portColumn(orders, columnPortId("orders", "id", end, "right"))?.name).toBe("id");
+    }
+    const colons = { id: "a:b", columns: [{ name: "c:d", type: "int" }, { name: "d", type: "int" }] };
+    expect(portColumn(colons, columnPortId("a:b", "c:d", "out", "left"))?.name).toBe("c:d");
+    expect(portColumn(colons, columnPortId("a:b", "d", "in", "right"))?.name).toBe("d");
+    expect(portColumn(orders, columnPortId("customers", "id", "in", "left"))).toBeUndefined();
+    expect(portColumn(orders, null)).toBeUndefined();
   });
 });
 

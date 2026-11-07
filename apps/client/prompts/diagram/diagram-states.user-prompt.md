@@ -2,7 +2,7 @@ Update the Hunt state diagram for this session. The session's changes are the fi
 `git diff --name-only {{diffBase}}` lists plus untracked files (`git ls-files --others --exclude-standard`); use
 exactly this base, whatever earlier diagrams covered.
 
-Rebuild `.hunt/diagrams/states.react-flow.json` (`"type": "states"`, schema in `.hunt/diagrams/diagram.schema.json`) as described in
+Rebuild `{{diagramFile}}` (`"type": "states"`, schema in `.hunt/diagrams/diagram.schema.json`) as described in
 your instructions:
 
 - Scope: the diagram shows the one state machine of the entity the session's changes touch (an order, a session, a

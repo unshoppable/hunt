@@ -1,5 +1,5 @@
 import type { ShapeDiagramType } from "../../common/diagram/diagram.types";
-import type { Cardinality, ShapeChange, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeNode, ShapePosition, TableColumn } from "./shape-diagram.types";
+import type { Cardinality, DiagramSource, ShapeChange, ShapeDiagram, ShapeEdge, ShapeGroup, ShapeNode, ShapePosition, TableColumn } from "./shape-diagram.types";
 import { KINDS_BY_TYPE } from "../diagram-types.constants";
 import { SHAPE_COLORS, isShapeColor } from "./shape-color.constants";
 
@@ -253,8 +253,30 @@ export function parseShapeDiagram(value: unknown, expected: ShapeDiagramType, fi
   if (title) {
     diagram.title = title;
   }
+  const sources = parseSources(value.sources, problems);
+  if (sources.length) {
+    diagram.sources = sources;
+  }
   if (groups.size) {
     diagram.groups = [...groups.values()];
   }
   return { diagram, problems };
+}
+
+/** The usable entries of a diagram's `sources`: each with a string `path`, its `hash` kept when it is a string. */
+function parseSources(value: unknown, problems: string[]): DiagramSource[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    problems.push("`sources` is not an array; ignored.");
+    return [];
+  }
+  return value.flatMap((raw): DiagramSource[] => {
+    const path = isRecord(raw) ? optionalString(raw.path) : undefined;
+    if (!path) {
+      problems.push(`Source ${JSON.stringify(raw)} has no \`path\`; dropped.`);
+      return [];
+    }
+    const hash = isRecord(raw) ? optionalString(raw.hash) : undefined;
+    return [hash ? { path, hash } : { path }];
+  });
 }

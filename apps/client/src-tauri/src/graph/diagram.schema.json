@@ -8,9 +8,22 @@
   "properties": {
     "type": {
       "enum": ["c4-context", "c4-container", "states", "erd", "process", "freeform"],
-      "description": "Which diagram the file holds; must match the file name `<type>.react-flow.json`."
+      "description": "Which diagram the file holds; must match the file name `<type>.react-flow.json` in `.hunt/diagrams/`."
     },
     "title": { "type": "string", "maxLength": 80, "description": "What the diagram shows in a few words, e.g. the subsystem or the flow it covers." },
+    "sources": {
+      "type": "array",
+      "description": "The files the diagram was derived from; Hunt marks the diagram outdated once one of them changes.",
+      "items": {
+        "type": "object",
+        "required": ["path"],
+        "additionalProperties": false,
+        "properties": {
+          "path": { "type": "string", "description": "Worktree-relative path of the file." },
+          "hash": { "type": "string", "description": "SHA-256 of the file's content when the diagram was written; Hunt sets it, the agent leaves it out." }
+        }
+      }
+    },
     "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
     "groups": { "type": "array", "items": { "$ref": "#/$defs/group" }, "description": "Boundaries that enclose the nodes naming them as `parent`, e.g. the system under review in a C4 container diagram." },
     "edges": { "type": "array", "items": { "$ref": "#/$defs/edge" } }

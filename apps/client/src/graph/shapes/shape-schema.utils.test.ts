@@ -252,4 +252,13 @@ describe("parseShapeDiagram", () => {
     expect(parsed.diagram.nodes).toEqual([{ id: "open", kind: "state", label: "Open" }]);
     expect(parsed.problems).toEqual([]);
   });
+
+  it("keeps the sources that name a path, with their hash when it is a string", () => {
+    const sources = [{ path: "src/order.entity.ts", hash: "ab12" }, { path: "src/item.entity.ts", hash: 7 }, { hash: "cd34" }, "src/x.ts"];
+    const parsed = parseShapeDiagram({ ...states, sources }, "states");
+    expect(parsed.diagram.sources).toEqual([{ path: "src/order.entity.ts", hash: "ab12" }, { path: "src/item.entity.ts" }]);
+    expect(parsed.problems).toEqual([expect.stringContaining("has no `path`"), expect.stringContaining("has no `path`")]);
+    expect(parseShapeDiagram({ ...states, sources: "src" }, "states").problems).toEqual(["`sources` is not an array; ignored."]);
+    expect(parseShapeDiagram(states, "states").diagram.sources).toBeUndefined();
+  });
 });

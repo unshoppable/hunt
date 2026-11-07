@@ -388,7 +388,7 @@ describe("prompt queue", () => {
     const commandsCalled = () => vi.mocked(invoke).mock.calls.map(([command]) => command).filter((command) => command !== "get_plan_usage");
 
     const refresh = useHuntStore.getState().refreshGraph(SESSION, "erd");
-    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("refresh_graph", { id: SESSION, diagramType: "erd", instructions: "", ...DEFAULT_GRAPH_AGENT });
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("refresh_graph", { id: SESSION, diagramType: "erd", instructions: "", ...DEFAULT_GRAPH_AGENT, file: null });
     expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ generatingDiagrams: ["erd"], isBusy: false, isHiddenTurn: false });
 
     await useHuntStore.getState().refreshGraph(SESSION, "erd");
@@ -419,6 +419,21 @@ describe("prompt queue", () => {
     vi.mocked(invoke).mockResolvedValueOnce(undefined);
     await useHuntStore.getState().refreshGraph(SESSION, "dependencies");
     expect(useHuntStore.getState().chats[SESSION].diagramErrors.dependencies).toBeUndefined();
+  });
+
+  it("updates a saved diagram file apart from the session's diagram of its type and reloads it afterwards", async () => {
+    const generation = deferredTurn();
+    vi.mocked(invoke).mockReturnValueOnce(generation.turn);
+    const file = "docs/diagrams/orders.react-flow.json";
+    const editVersion = useHuntStore.getState().chats[SESSION]?.editVersion ?? 0;
+
+    const refresh = useHuntStore.getState().refreshGraph(SESSION, "erd", "", file);
+    expect(vi.mocked(invoke)).toHaveBeenLastCalledWith("refresh_graph", { id: SESSION, diagramType: "erd", instructions: "", ...DEFAULT_GRAPH_AGENT, file });
+    expect(useHuntStore.getState().chats[SESSION].generatingDiagrams).toEqual([file]);
+
+    generation.finish("");
+    await refresh;
+    expect(useHuntStore.getState().chats[SESSION]).toMatchObject({ generatingDiagrams: [], editVersion: editVersion + 1 });
   });
 
   it("keeps queued prompts unsent when the turn was cancelled", async () => {

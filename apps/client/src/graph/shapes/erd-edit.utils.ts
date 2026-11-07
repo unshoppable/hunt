@@ -1,4 +1,5 @@
 import type { ShapeDiagram, ShapeEdge, ShapeNode, TableColumn } from "./shape-diagram.types";
+import { shapeEdgeId } from "./shape-diagram.utils";
 
 /**
  * Edits of an ERD as pure functions: every one returns a new diagram and leaves the given one alone, so the panel
@@ -127,6 +128,30 @@ export function relationshipsOf(diagram: ShapeDiagram, id: string): ShapeEdge[] 
   return diagram.edges.filter((edge) => edge.source === id || edge.target === id);
 }
 
+/** One end of a relationship: a table and the column of it the relationship is on. */
+export type ColumnRef = { table: string; column: string };
+
+/**
+ * Relates the column `from` to the column `to` of another table, many rows to one and marked as added; returns the
+ * unchanged diagram and a null id for a table joined to itself, a missing table or column, or a relationship between
+ * those columns in that direction already.
+ */
+export function addRelationship(diagram: ShapeDiagram, from: ColumnRef, to: ColumnRef): { diagram: ShapeDiagram; id: string | null } {
+  const hasColumn = (end: ColumnRef) => diagram.nodes.some((node) => node.id === end.table && node.columns?.some((column) => column.name === end.column));
+  const edge: ShapeEdge = {
+    source: from.table,
+    target: to.table,
+    sourceColumn: from.column,
+    targetColumn: to.column,
+    cardinality: { source: "many", target: "one" },
+    change: "added",
+  };
+  const id = shapeEdgeId(diagram, edge);
+  const exists = diagram.edges.some((existing) => shapeEdgeId(diagram, existing) === id);
+  if (from.table === to.table || !hasColumn(from) || !hasColumn(to) || exists) return { diagram, id: null };
+  return { diagram: { ...diagram, edges: [...diagram.edges, edge] }, id };
+}
+
 /**
  * The file content of a diagram as the agent writes it: two-space indented, the fields in the order the system
  * prompt lists them, optional fields left out where they do not apply.
@@ -135,6 +160,7 @@ export function serializeShapeDiagram(diagram: ShapeDiagram): string {
   const content = {
     type: diagram.type,
     title: diagram.title,
+    sources: diagram.sources?.map((source) => ({ path: source.path, hash: source.hash })),
     nodes: diagram.nodes.map((node) => ({
       id: node.id,
       kind: node.kind,

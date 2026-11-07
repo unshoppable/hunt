@@ -359,12 +359,15 @@ export const commands = {
   writeGraph: (id: string, diagramType: DiagramType, content: string) => invoke<void>("write_graph", { id, diagramType, content }),
   /** When the diagram of `diagramType` was generated and whether the worktree's sessions changed files since. */
   graphStatus: (id: string, diagramType: DiagramType) => invoke<GraphStatus>("graph_status", { id, diagramType }),
+  /** Whether one of the files the diagram saved at the worktree-relative `path` was derived from changed since. */
+  diagramFileStatus: (id: string, path: string) => invoke<GraphStatus>("diagram_file_status", { id, path }),
   /**
    * Generates the diagram of `diagramType` with its standard prompt and `instructions` appended for this run in a
    * background agent on `model` with `effort`, apart from the session's chat agent; resolves once the agent finished.
+   * With `file`, the worktree-relative path of a copy saved into the repository, the agent updates that copy.
    */
-  refreshGraph: (id: string, diagramType: DiagramType, instructions: string, model: string, effort: string) =>
-    invoke<void>("refresh_graph", { id, diagramType, instructions, model, effort }),
+  refreshGraph: (id: string, diagramType: DiagramType, instructions: string, model: string, effort: string, file: string | null) =>
+    invoke<void>("refresh_graph", { id, diagramType, instructions, model, effort, file }),
   /** Entries of a worktree directory (`path` relative, empty for the root): folders first, then files. */
   listDir: (id: string, path: string) => invoke<DirEntry[]>("list_dir", { id, path }),
   /** Every project file of the worktree (tracked and untracked, ignored excluded), sorted, for the file search. */

@@ -59,8 +59,9 @@ decision records that steer the agent.
   gutter and submit the review through `gh`.
 - **Architecture diagrams.** The agent writes a dependency graph of the change to `.hunt/diagrams/dependencies.react-flow.json` and C4, state,
   ERD, process and freeform diagrams to `.hunt/diagrams/<type>.react-flow.json`; Hunt validates them and lays them out with ELK inside
-  React Flow in its own style. A diagram flags itself as outdated when the worktree changes. Shape diagrams are
-  editable, can be saved into the repository and opened from there again ("Show in Architecture").
+  React Flow in its own style. A diagram flags itself as outdated when a file it was derived from changes. Shape
+  diagrams are editable, can be saved into the repository, opened from there again ("Show in Architecture") and
+  updated there.
 - **Checks tab.** Runs the commands that `hunt.json` declares, such as lint, test and build, one by one or all at
   once, shows which pass and whether a result is outdated, and sends a failure to the agent.
 - **Guardrails window.** Edit `CLAUDE.md`, `.claude/rules/*.md`, skills and ADRs in one place, with templates for
@@ -636,10 +637,13 @@ Dependencies diagram describes the current diff and is neither saved nor edited.
 `apps/client/prompts/diagram/`: `diagram.system-prompt.md` extends the diagram agent's system prompt with the rules shared by the six
 types, `diagram-<type>.user-prompt.md` is the message of one type. A shape diagram is generated only on a click.
 
-The modification time of a diagram file is the time it was generated; every session records in `sessions.json` when
-it last changed worktree files (agent edits via the change attribution, saves in Hunt panes, revert, shelve,
-unshelve), and the panel marks the diagram "Outdated" once such a change is newer than the diagram (`graph_status`
-command).
+A shape diagram lists under `sources` the files the agent derived it from; after each run Hunt adds the SHA-256 of
+each file's content (`graph::stamp_sources`), and the panel marks the diagram "Outdated" once one of them hashes
+differently or is gone (`graph_status`, and `diagram_file_status` for a file saved into the repository, which keeps its
+sources, so the check travels with it). *Update diagram* on an opened file has the agent rewrite that file in place.
+A diagram without sources (the Dependencies diagram, older files) falls back to the modification time of its file:
+every session records in `sessions.json` when it last changed worktree files (agent edits via the change attribution,
+saves in Hunt panes, revert, shelve, unshelve), and such a change newer than the diagram marks it "Outdated".
 
 The diagrams are React Flow, not tldraw: tldraw 5 needs a paid licence bound to the host name for a production build,
 which a Tauri app cannot satisfy, and its elbow arrows cross other shapes.

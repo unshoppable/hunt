@@ -2,7 +2,7 @@ Update the Hunt ERD diagram for this session. The session's changes are the file
 `git diff --name-only {{diffBase}}` lists plus untracked files (`git ls-files --others --exclude-standard`); use
 exactly this base, whatever earlier diagrams covered.
 
-Rebuild `.hunt/diagrams/erd.react-flow.json` (`"type": "erd"`, schema in `.hunt/diagrams/diagram.schema.json`) as described in your
+Rebuild `{{diagramFile}}` (`"type": "erd"`, schema in `.hunt/diagrams/diagram.schema.json`) as described in your
 instructions:
 
 - Scope: the diagram shows the entities the session's changes touch together with every table they reference or

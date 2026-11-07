@@ -4,14 +4,14 @@
 use tauri::AppHandle;
 use uuid::Uuid;
 
-use super::worktree_session;
+use super::{session_file, worktree_session};
 use crate::graph;
 use crate::session::diagram_agent;
 use crate::session::store;
 
 /// Generates the diagram of `diagram_type` with its standard prompt, extended by the user's free-text `instructions`
 /// for this one run, in a background agent on `model` with `effort` (see `diagram_agent`); the session's chat agent
-/// takes no part.
+/// takes no part. With `file`, the worktree-relative path of a copy saved into the repository, it updates that copy.
 #[tauri::command]
 pub async fn refresh_graph(
     app: AppHandle,
@@ -20,9 +20,10 @@ pub async fn refresh_graph(
     instructions: String,
     model: String,
     effort: String,
+    file: Option<String>,
 ) -> Result<(), String> {
     let record = worktree_session(&app, id)?;
-    diagram_agent::generate(&app, &record, diagram_type, &instructions, &model, &effort).await
+    diagram_agent::generate(&app, &record, diagram_type, &instructions, &model, &effort, file.as_deref()).await
 }
 
 /// The session's diagram file of `diagram_type`, or `None` while the agent has not written it.
@@ -46,4 +47,11 @@ pub async fn graph_status(app: AppHandle, id: Uuid, diagram_type: graph::Diagram
     let record = worktree_session(&app, id)?;
     let changed_at = store::worktree_changed_at(&app, &record.worktree_path)?;
     graph::status(&record.worktree_path, diagram_type, changed_at)
+}
+
+/// Whether one of the files the diagram saved at the worktree-relative `path` was derived from changed since.
+#[tauri::command]
+pub async fn diagram_file_status(app: AppHandle, id: Uuid, path: String) -> Result<graph::GraphStatus, String> {
+    let (record, file) = session_file(&app, id, &path)?;
+    graph::file_status(&record.worktree_path, &file)
 }

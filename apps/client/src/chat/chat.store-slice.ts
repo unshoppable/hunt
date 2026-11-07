@@ -7,6 +7,7 @@ import type { ChatItem, MessageTimesEvent, PendingPermission, PermissionEvent, P
 import type { GuardrailDeclineReason } from "./guardrail/guardrail-suggestion.types";
 import type { GuardrailSuggestion } from "./guardrail/guardrail-suggestion.utils";
 import type { DiagramType } from "../common/diagram/diagram.types";
+import { diagramRunKey } from "../common/diagram/diagram-file.utils";
 import type { HuntGet, HuntSet, HuntState } from "../sessions/hunt.store";
 import type { RemoteStep } from "../sessions/remote/remote-session.types";
 import type { FileSync, SessionMove } from "../sessions/remote/remote-session.store-slice";
@@ -85,10 +86,10 @@ export type SessionChat = {
   editChanges: EditChanges | null;
   /** Bumped when the watcher reports a rewritten graph file. */
   graphVersion: number;
-  /** The diagram types a background agent is generating right now (see `refreshGraph`). */
-  generatingDiagrams: DiagramType[];
-  /** Why the last generation of a diagram type failed; cleared when that type is generated again. */
-  diagramErrors: Partial<Record<DiagramType, string>>;
+  /** The diagrams a background agent is generating right now, by `diagramRunKey` (see `refreshGraph`). */
+  generatingDiagrams: string[];
+  /** Why the last generation of a diagram failed, by `diagramRunKey`; cleared when it is generated again. */
+  diagramErrors: Partial<Record<string, string>>;
   /**
    * Whether the latest turn is one Hunt sent itself (a diagram refresh, which older sessions replay from their transcript).
    * The chat shows neither its prompt nor its output nor a working indicator; the next turn of the user ends it.
@@ -163,9 +164,11 @@ export type ChatSlice = {
   acceptGuardrail: (id: string, suggestion: GuardrailSuggestion) => void;
   /**
    * Generates the diagram of `diagramType` in a background agent, independent of the chat agent, which may run a turn
-   * meanwhile; one run per type at a time (see `SessionChat.generatingDiagrams` and `diagramErrors`).
+   * meanwhile; one run per diagram at a time (see `SessionChat.generatingDiagrams` and `diagramErrors`). With `file`,
+   * the worktree-relative path of a copy saved into the repository, the agent updates that copy, and every view reloads
+   * it afterwards.
    */
-  refreshGraph: (id: string, diagramType: DiagramType, instructions?: string) => Promise<void>;
+  refreshGraph: (id: string, diagramType: DiagramType, instructions?: string, file?: string | null) => Promise<void>;
   cancelPrompt: (id: string) => Promise<void>;
   setMode: (id: string, modeId: string) => Promise<void>;
   setConfigOption: (id: string, configId: string, value: string) => Promise<void>;
@@ -642,21 +645,23 @@ export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): C
       });
     },
 
-    refreshGraph: async (id, diagramType, instructions = "") => {
+    refreshGraph: async (id, diagramType, instructions = "", file = null) => {
+      const key = diagramRunKey(diagramType, file);
       const current = get().chats[id];
-      if (current?.move || current?.generatingDiagrams.includes(diagramType)) return;
+      if (current?.move || current?.generatingDiagrams.includes(key)) return;
       const { model, effort } = useSettingsStore.getState().graphAgent;
       updateChat(id, (chat) => ({
         ...chat,
-        generatingDiagrams: [...chat.generatingDiagrams, diagramType],
-        diagramErrors: { ...chat.diagramErrors, [diagramType]: undefined },
+        generatingDiagrams: [...chat.generatingDiagrams, key],
+        diagramErrors: { ...chat.diagramErrors, [key]: undefined },
       }));
       try {
-        await commands.refreshGraph(id, diagramType, instructions, model, effort);
+        await commands.refreshGraph(id, diagramType, instructions, model, effort, file);
+        if (file) get().noteWorktreeChanged(id);
       } catch (error) {
-        updateChat(id, (chat) => ({ ...chat, diagramErrors: { ...chat.diagramErrors, [diagramType]: String(error) } }));
+        updateChat(id, (chat) => ({ ...chat, diagramErrors: { ...chat.diagramErrors, [key]: String(error) } }));
       } finally {
-        updateChat(id, (chat) => ({ ...chat, generatingDiagrams: chat.generatingDiagrams.filter((type) => type !== diagramType) }));
+        updateChat(id, (chat) => ({ ...chat, generatingDiagrams: chat.generatingDiagrams.filter((running) => running !== key) }));
         usePlanUsageStore.getState().refresh();
       }
     },

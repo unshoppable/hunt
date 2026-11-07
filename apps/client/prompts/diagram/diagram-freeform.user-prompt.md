@@ -2,7 +2,7 @@ Update the Hunt freeform diagram for this session. The session's changes are the
 `git diff --name-only {{diffBase}}` lists plus untracked files (`git ls-files --others --exclude-standard`); use
 exactly this base, whatever earlier diagrams covered.
 
-Rebuild `.hunt/diagrams/freeform.react-flow.json` (`"type": "freeform"`, schema in `.hunt/diagrams/diagram.schema.json`) as
+Rebuild `{{diagramFile}}` (`"type": "freeform"`, schema in `.hunt/diagrams/diagram.schema.json`) as
 described in your instructions:
 
 - Scope: the diagram shows what the additional instructions below ask for. Without instructions it sketches the

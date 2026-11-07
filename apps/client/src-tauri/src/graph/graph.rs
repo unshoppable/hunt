@@ -174,13 +174,21 @@ const REFRESH_PROMPT_START: &str = "Update the Hunt component diagram for this s
 
 /// The user turn that asks the agent for a fresh diagram of `diagram_type` covering the session's changes against
 /// `diff_base` (the commit or ref the changelist compares the worktree with), labeled in `language`; `instructions`
-/// is the user's free text for this one run, empty when there is none.
-pub fn refresh_prompt(diagram_type: DiagramType, language: &str, diff_base: &str, instructions: &str) -> String {
+/// is the user's free text for this one run, empty when there is none. A shape diagram is written to `file`, the
+/// worktree-relative path of a copy saved into the repository, or to its file in `.hunt/diagrams/` without one.
+pub fn refresh_prompt(diagram_type: DiagramType, language: &str, diff_base: &str, instructions: &str, file: Option<&str>) -> String {
     if let Some(template) = diagram_type.user_prompt_template() {
         let instructions = if instructions.is_empty() { "(none)" } else { instructions };
+        let diagram_file = file.map_or_else(|| format!("{DIAGRAMS_DIR}/{}", diagram_type.file_name()), str::to_string);
         return fill_prompt(
             template,
-            &[("language", language), ("diffBase", diff_base), ("englishTerms", ENGLISH_TERMS), ("instructions", instructions)],
+            &[
+                ("language", language),
+                ("diffBase", diff_base),
+                ("englishTerms", ENGLISH_TERMS),
+                ("instructions", instructions),
+                ("diagramFile", &diagram_file),
+            ],
         );
     }
 
@@ -301,12 +309,14 @@ pub fn unwatch(registry: &WatcherRegistry, hunt_session_id: Uuid) {
 pub struct GraphStatus {
     /// When the agent last wrote the diagram file; `None` while there is none.
     pub generated_at: Option<DateTime<Utc>>,
-    /// True once a session changed files in the worktree after the diagram was generated.
+    /// True once a file the diagram was derived from changed, or, for a diagram that names none, once a session changed
+    /// files in the worktree after the diagram was generated.
     pub is_outdated: bool,
 }
 
-/// Compares the modification time of the file of `diagram_type` with `changed_at`, the latest file change of the
-/// worktree's sessions.
+/// The status of the file of `diagram_type`: outdated once one of its stamped `sources` changed (`sources_outdated`);
+/// a file without them, such as the dependency graph, compares its modification time with `changed_at`, the latest
+/// file change of the worktree's sessions.
 pub fn status(worktree: &Path, diagram_type: DiagramType, changed_at: Option<DateTime<Utc>>) -> Result<GraphStatus, String> {
     let path = diagram_path(worktree, diagram_type);
     if !path.exists() {
@@ -315,8 +325,62 @@ pub fn status(worktree: &Path, diagram_type: DiagramType, changed_at: Option<Dat
 
     let modified = std::fs::metadata(&path).and_then(|metadata| metadata.modified()).map_err(|error| error.to_string())?;
     let generated_at = DateTime::<Utc>::from(modified);
-    let is_outdated = changed_at.is_some_and(|changed| changed > generated_at);
+    let by_sources = read_json(&path).ok().and_then(|diagram| sources_outdated(worktree, &diagram));
+    let is_outdated = by_sources.unwrap_or_else(|| changed_at.is_some_and(|changed| changed > generated_at));
     Ok(GraphStatus { generated_at: Some(generated_at), is_outdated })
+}
+
+/// The status of a diagram file saved into the repository (`path`, absolute inside `worktree`): outdated once one of
+/// its stamped `sources` changed; a file without them is never outdated, since nothing tells what it was derived from.
+pub fn file_status(worktree: &Path, path: &Path) -> Result<GraphStatus, String> {
+    let diagram = read_json(path)?;
+    Ok(GraphStatus { generated_at: None, is_outdated: sources_outdated(worktree, &diagram).unwrap_or(false) })
+}
+
+/// Sets the `hash` of every entry of the diagram's `sources` (the worktree-relative files the agent derived it from) to
+/// the hash of the file's current content, dropping it for a file that does not exist, and writes the file back; a
+/// diagram without `sources` stays untouched. Runs after the agent wrote `path`, since it cannot hash the files itself.
+pub fn stamp_sources(worktree: &Path, path: &Path) -> Result<(), String> {
+    let mut diagram = read_json(path)?;
+    let Some(sources) = diagram.get_mut("sources").and_then(|sources| sources.as_array_mut()) else { return Ok(()) };
+    for source in sources.iter_mut().filter_map(|source| source.as_object_mut()) {
+        let hash = source.get("path").and_then(|path| path.as_str()).and_then(|relative| content_hash(worktree, relative));
+        match hash {
+            Some(hash) => source.insert("hash".into(), hash.into()),
+            None => source.remove("hash"),
+        };
+    }
+    let content = serde_json::to_string_pretty(&diagram).map_err(|error| format!("failed to stamp the sources of {}: {error}", path.display()))?;
+    std::fs::write(path, content + "\n").map_err(|error| format!("failed to stamp the sources of {}: {error}", path.display()))
+}
+
+/// Whether one of the stamped `sources` of `diagram` changed or is gone; `None` when it names no stamped source.
+fn sources_outdated(worktree: &Path, diagram: &serde_json::Value) -> Option<bool> {
+    let stamped: Vec<(&str, &str)> = diagram
+        .get("sources")?
+        .as_array()?
+        .iter()
+        .filter_map(|source| Some((source.get("path")?.as_str()?, source.get("hash")?.as_str()?)))
+        .collect();
+    if stamped.is_empty() {
+        return None;
+    }
+    Some(stamped.iter().any(|(relative, hash)| content_hash(worktree, relative).as_deref() != Some(*hash)))
+}
+
+/// Hex SHA-256 of the content of `relative` in `worktree`; `None` for a path outside it or a file that cannot be read.
+fn content_hash(worktree: &Path, relative: &str) -> Option<String> {
+    use sha2::{Digest, Sha256};
+
+    crate::git::ensure_inside_worktree(relative).ok()?;
+    let bytes = std::fs::read(worktree.join(relative)).ok()?;
+    Some(Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect())
+}
+
+/// The JSON in `path`.
+fn read_json(path: &Path) -> Result<serde_json::Value, String> {
+    let content = std::fs::read_to_string(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    serde_json::from_str(&content).map_err(|error| format!("{} is not valid JSON: {error}", path.display()))
 }
 
 /// Writes `content`, the serialized diagram the frontend edited, as the file of `diagram_type` in `worktree`; the
@@ -383,13 +447,13 @@ mod tests {
 
     #[test]
     fn refresh_prompt_names_the_diff_base() {
-        let prompt = refresh_prompt(DiagramType::Dependencies, "German", "d9f3dfc", "");
+        let prompt = refresh_prompt(DiagramType::Dependencies, "German", "d9f3dfc", "", None);
         assert!(prompt.starts_with(REFRESH_PROMPT_START));
         assert!(prompt.contains("`git diff --name-only d9f3dfc`"));
         assert!(prompt.contains("in German"));
         assert!(!prompt.contains("Additional instructions"));
 
-        let with_instructions = refresh_prompt(DiagramType::Dependencies, "German", "d9f3dfc", "only the backend");
+        let with_instructions = refresh_prompt(DiagramType::Dependencies, "German", "d9f3dfc", "only the backend", None);
         assert!(with_instructions.ends_with(" Additional instructions for this run: only the backend"));
     }
 
@@ -397,7 +461,7 @@ mod tests {
     fn shape_refresh_prompts_fill_their_template() {
         for diagram_type in SHAPE_TYPES {
             let template = diagram_type.user_prompt_template().expect("shape types have a template");
-            let prompt = refresh_prompt(diagram_type, "German", "d9f3dfc", "");
+            let prompt = refresh_prompt(diagram_type, "German", "d9f3dfc", "", None);
             assert!(prompt.starts_with(prompt_start(template)), "{diagram_type:?}");
             assert!(prompt.contains("`git diff --name-only d9f3dfc`"), "{diagram_type:?}");
             assert!(prompt.contains("in German"), "{diagram_type:?}");
@@ -405,9 +469,13 @@ mod tests {
             assert!(prompt.ends_with("Additional instructions for this run: (none)\n"), "{diagram_type:?}");
             assert!(!prompt.contains("{{"), "{diagram_type:?}");
 
-            let with_instructions = refresh_prompt(diagram_type, "German", "d9f3dfc", "only the backend");
+            let with_instructions = refresh_prompt(diagram_type, "German", "d9f3dfc", "only the backend", None);
             assert!(with_instructions.ends_with("Additional instructions for this run: only the backend\n"), "{diagram_type:?}");
             assert!(!with_instructions.contains("(none)"), "{diagram_type:?}");
+
+            let saved = refresh_prompt(diagram_type, "German", "d9f3dfc", "", Some("docs/diagrams/orders.react-flow.json"));
+            assert!(saved.contains("`docs/diagrams/orders.react-flow.json`"), "{diagram_type:?}");
+            assert!(!saved.contains(&format!("`.hunt/diagrams/{}`", diagram_type.file_name())), "{diagram_type:?}");
         }
     }
 
@@ -444,6 +512,51 @@ mod tests {
     }
 
     #[test]
+    fn stamped_sources_decide_whether_a_diagram_is_outdated() {
+        let worktree = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(worktree.path().join(DIAGRAMS_DIR)).unwrap();
+        std::fs::write(worktree.path().join("order.entity.ts"), "class Order {}").unwrap();
+        std::fs::write(worktree.path().join("item.entity.ts"), "class Item {}").unwrap();
+        let path = diagram_path(worktree.path(), DiagramType::Erd);
+        let diagram = r#"{"type":"erd","sources":[{"path":"order.entity.ts"},{"path":"item.entity.ts","hash":"stale"},{"path":"gone.ts"}],"nodes":[],"edges":[]}"#;
+        std::fs::write(&path, diagram).unwrap();
+
+        stamp_sources(worktree.path(), &path).unwrap();
+        let stamped = read_json(&path).unwrap();
+        let hashes: Vec<Option<&str>> = stamped["sources"].as_array().unwrap().iter().map(|source| source["hash"].as_str()).collect();
+        assert_eq!(hashes[0].map(str::len), Some(64));
+        assert_ne!(hashes[1], Some("stale"));
+        assert_eq!(hashes[2], None, "a missing file gets no hash");
+        assert_eq!(stamped.as_object().unwrap().keys().next().map(String::as_str), Some("type"), "the field order stays");
+
+        // A later change of the worktree no longer counts; only the sources do.
+        let later = Some(Utc::now() + chrono::Duration::days(1));
+        assert!(!status(worktree.path(), DiagramType::Erd, later).unwrap().is_outdated);
+        assert!(!file_status(worktree.path(), &path).unwrap().is_outdated);
+
+        std::fs::write(worktree.path().join("item.entity.ts"), "class Item { id = 1 }").unwrap();
+        assert!(status(worktree.path(), DiagramType::Erd, None).unwrap().is_outdated);
+        assert!(file_status(worktree.path(), &path).unwrap().is_outdated);
+
+        std::fs::write(worktree.path().join("item.entity.ts"), "class Item {}").unwrap();
+        std::fs::remove_file(worktree.path().join("order.entity.ts")).unwrap();
+        assert!(file_status(worktree.path(), &path).unwrap().is_outdated, "a deleted source makes it outdated");
+    }
+
+    #[test]
+    fn a_saved_diagram_without_stamped_sources_is_never_outdated() {
+        let worktree = tempfile::tempdir().unwrap();
+        let path = worktree.path().join("orders.react-flow.json");
+        std::fs::write(&path, r#"{"type":"erd","sources":[{"path":"order.entity.ts"}],"nodes":[],"edges":[]}"#).unwrap();
+        let status = file_status(worktree.path(), &path).unwrap();
+        assert!(!status.is_outdated);
+        assert!(status.generated_at.is_none());
+
+        std::fs::write(&path, r#"{"type":"erd","sources":[{"path":"../outside.ts","hash":"x"}],"nodes":[],"edges":[]}"#).unwrap();
+        assert!(file_status(worktree.path(), &path).unwrap().is_outdated, "a source outside the worktree counts as gone");
+    }
+
+    #[test]
     fn status_and_read_graph_use_the_file_of_the_type() {
         let worktree = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(worktree.path().join(DIAGRAMS_DIR)).unwrap();
@@ -471,11 +584,11 @@ mod tests {
             _ => None,
         };
 
-        let mut refresh = chunk(refresh_prompt(DiagramType::Dependencies, "German", "HEAD", ""));
+        let mut refresh = chunk(refresh_prompt(DiagramType::Dependencies, "German", "HEAD", "", None));
         hide_replayed_refresh(&mut refresh);
         assert_eq!(meta_of(&refresh), Some(hidden_turn_meta()));
 
-        let mut shape_refresh = chunk(refresh_prompt(DiagramType::Process, "German", "HEAD", "only the checkout"));
+        let mut shape_refresh = chunk(refresh_prompt(DiagramType::Process, "German", "HEAD", "only the checkout", None));
         hide_replayed_refresh(&mut shape_refresh);
         assert_eq!(meta_of(&shape_refresh), Some(hidden_turn_meta()));
 

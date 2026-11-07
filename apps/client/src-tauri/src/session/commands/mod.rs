@@ -196,6 +196,7 @@ command_handler![
     graph::read_graph,
     graph::write_graph,
     graph::graph_status,
+    graph::diagram_file_status,
     swf::read_swf_pipeline,
     swf::read_swf_step,
     swf::read_swf_transcript,

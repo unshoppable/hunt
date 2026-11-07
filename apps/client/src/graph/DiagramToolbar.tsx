@@ -172,11 +172,22 @@ export function SaveDiagramButton({ sessionId, diagram, content, onSaved }: { se
 }
 
 /**
- * "Outdated" while worktree files changed after the diagram was generated, "Up to date" otherwise; nothing without a
- * diagram. An opened diagram file shows its name instead, since it has no generation to be outdated against. Floats in
- * the top-left corner of the diagram canvas, so its parent must be positioned.
+ * "Outdated" once files the diagram was derived from changed since it was written, "Up to date" otherwise; nothing
+ * without a diagram. An opened diagram file shows its name before the chip, and the chip only when the file records
+ * hashed sources (`hasSources`), since nothing else tells what it was derived from. Floats in the top-left corner of
+ * the diagram canvas, so its parent must be positioned.
  */
-export function DiagramStatusBadge({ status, hasDiagram, filePath }: { status: GraphStatus | null; hasDiagram: boolean; filePath?: string | null }) {
+export function DiagramStatusBadge({
+  status,
+  hasDiagram,
+  filePath,
+  hasSources = false,
+}: {
+  status: GraphStatus | null;
+  hasDiagram: boolean;
+  filePath?: string | null;
+  hasSources?: boolean;
+}) {
   if (!hasDiagram) return null;
   return (
     <div className="absolute top-3 left-3 z-10 flex max-w-[calc(100%-1.5rem)] items-center gap-2">
@@ -184,12 +195,13 @@ export function DiagramStatusBadge({ status, hasDiagram, filePath }: { status: G
         <span className="truncate font-mono text-[12px] text-neutral-400" title={filePath}>
           {baseName(filePath)}
         </span>
-      ) : status?.isOutdated ? (
-        <span className={`${BADGE_BASE} border-amber-400/30 bg-amber-400/10 text-amber-300`} title="Files changed since the diagram was generated.">
+      ) : null}
+      {filePath && !hasSources ? null : status?.isOutdated ? (
+        <span className={`${BADGE_BASE} shrink-0 border-amber-400/30 bg-amber-400/10 text-amber-300`} title="Files the diagram was derived from changed since it was written.">
           Outdated
         </span>
       ) : (
-        <span className={`${BADGE_BASE} border-emerald-400/30 bg-emerald-400/10 text-emerald-300`} title="No files changed since the diagram was generated.">
+        <span className={`${BADGE_BASE} shrink-0 border-emerald-400/30 bg-emerald-400/10 text-emerald-300`} title="No file the diagram was derived from changed since it was written.">
           Up to date
         </span>
       )}

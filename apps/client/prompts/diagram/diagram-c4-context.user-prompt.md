@@ -2,7 +2,7 @@ Update the Hunt C4 context diagram for this session. The session's changes are t
 `git diff --name-only {{diffBase}}` lists plus untracked files (`git ls-files --others --exclude-standard`); use
 exactly this base, whatever earlier diagrams covered.
 
-Rebuild `.hunt/diagrams/c4-context.react-flow.json` (`"type": "c4-context"`, schema in `.hunt/diagrams/diagram.schema.json`) as described
+Rebuild `{{diagramFile}}` (`"type": "c4-context"`, schema in `.hunt/diagrams/diagram.schema.json`) as described
 in your instructions:
 
 - Scope: the diagram shows the system the session's changes belong to as one `system` node, the `person` nodes for

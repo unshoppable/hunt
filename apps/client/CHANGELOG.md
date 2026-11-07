@@ -1,3 +1,9 @@
+## 0.151.1 (2026-11-07)
+
+### 🩹 Fixes
+
+- **client:** keep diagram text in proportion when zoomed out ([61d01c7](https://github.com/unshoppable/hunt/commit/61d01c7))
+
 ## 0.151.0 (2026-11-07)
 
 ### 🚀 Features

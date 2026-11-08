@@ -1,3 +1,9 @@
+## 0.154.0 (2026-11-08)
+
+### 🚀 Features
+
+- **client:** show the VM's name, status, zone and uptime when hovering the "On VM" button ([11e13b0](https://github.com/unshoppable/hunt/commit/11e13b0))
+
 ## 0.153.1 (2026-11-07)
 
 This was a version bump only for client to align it with other projects, there were no code changes.

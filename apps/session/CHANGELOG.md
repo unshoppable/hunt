@@ -1,3 +1,9 @@
+## 0.33.16 (2026-11-08)
+
+### 🩹 Fixes
+
+- **session:** cap the agent's memory in hunt-agent.slice so that a full memory no longer stalls the session VM ([cb67071](https://github.com/unshoppable/hunt/commit/cb67071))
+
 ## 0.33.15 (2026-11-07)
 
 This was a version bump only for session to align it with other projects, there were no code changes.

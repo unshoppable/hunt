@@ -674,7 +674,12 @@ while Hunt is connected; after every turn with an older helper) and before it br
 without the VM too (`read_swf_pipeline`, `read_swf_step`, `read_swf_transcript`). The tab says so when the pipeline has not reported yet. The
 sidebar's chip of such a session names the pipeline's current step once the tab read the record, else the step the
 gateway recorded; the chat of a connected swf session notes that it shows the current step's conversation, which starts
-afresh with every step and reconnects by itself. `apps/client/src/factory/` holds the panel and
+afresh with every step and reconnects by itself. The graph's top left corner shows the plan limits of the models the
+runs used and below them an estimate of the VM's cost (`factory/vm-cost.utils.ts`): its running time, which the
+gateway's `vms.usage` sums from Cloud Monitoring's `compute.googleapis.com/instance/uptime` for the VM's name over the
+six weeks Monitoring keeps it, also across stops outside Hunt and moves between zones, at the list price of its machine
+type (`machineTypeEurPerHour`), without disk; read every five minutes and whenever a turn starts or ends. The gateway's
+service account needs `roles/monitoring.viewer` for it. `apps/client/src/factory/` holds the panel and
 the pure derivation of the graph (`pipeline-graph.utils.ts`); the store of the read records and their types live in
 `apps/client/src/sessions/swf-pipeline.*`, below the sidebar that reads them.
 
@@ -694,7 +699,7 @@ The first call to a gateway in an app run checks that its `hello.api` is the `ap
 otherwise asks to update Hunt or to wait for the next server deploy. The handoff calls `sessions.provision`; a connect
 calls `vms.get` and reaches a running VM directly, since the gateway's `vms.start` also waits for the boot and checks
 the release over `gcloud compute ssh`, which takes seconds, and calls `vms.start` only for a VM that is off or does
-not answer; diffs call `vms.get`, deleting a session calls `vms.delete`, adoption calls `sessions.list`, and the remote
+not answer; diffs call `vms.get`, the Factory tab `vms.usage`, deleting a session calls `vms.delete`, adoption calls `sessions.list`, and the remote
 secrets of *Settings → Remote VM* call `secrets.list`, `secrets.set` and `secrets.delete`. So the
 gcloud login needs no Compute Engine rights to change VMs: Hunt uses it for the IAP tunnel to the gateway and the
 session VMs, for registering its SSH key with OS Login, and once per app run to find the gateway, the VM of the project

@@ -153,6 +153,7 @@ describe("the gateway API over its Unix socket", () => {
     api = createApiServer({
       sessionVmService: new SessionVmService({
         compute: compute.compute,
+        monitoring: { runningSeconds: async (name) => (name === VM ? 7200.4 : 0) },
         location,
         zones: () => [location.zone],
         vm: () => vm.vm,
@@ -227,6 +228,12 @@ describe("the gateway API over its Unix socket", () => {
 
     const listed = await call("sessions.list");
     expect(listed.final).toMatchObject({ type: "result", data: { sessions: [{ id: ID, vm: VM, owner: "jane_doe_example_com", repo: "acme/app" }] } });
+  });
+
+  it("reports the machine type of a session's VM and the seconds Cloud Monitoring counted it running", async () => {
+    expect((await call("vms.usage", { id: ID })).final).toEqual({ type: "result", data: { machineType: null, runningSeconds: 7200 } });
+    await call("sessions.provision", { ...PROVISION, machineType: "c4d-highcpu-16" });
+    expect((await call("vms.usage", { id: ID })).final).toEqual({ type: "result", data: { machineType: "c4d-highcpu-16", runningSeconds: 7200 } });
   });
 
   it("stores remote secrets, lists them without values, puts them on the VMs it brings up and logs only their names", async () => {

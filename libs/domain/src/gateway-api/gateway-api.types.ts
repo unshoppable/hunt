@@ -83,11 +83,24 @@ export interface VmInfo {
   startedAt: string | null;
 }
 
+/**
+ * How long a session's VM ran, as `vms.usage` reports it for the estimate of its cost: the seconds Cloud Monitoring
+ * counted as running (`compute.googleapis.com/instance/uptime`) for the VM's name over the metric's retention of six
+ * weeks, before and after moves between zones and whoever stopped or started it. The metric reaches Monitoring up to
+ * about four minutes late.
+ */
+export interface VmUsage {
+  /** The VM's machine type, e.g. `c4d-standard-8`; null when the VM does not exist. */
+  machineType: string | null;
+  runningSeconds: number;
+}
+
 /** Request and result of every method. */
 export interface Methods {
   hello: { request: Record<string, never>; result: HelloResult };
   "sessions.list": { request: Record<string, never>; result: { sessions: SessionSummary[] } };
   "vms.get": { request: { id: string }; result: VmInfo };
+  "vms.usage": { request: { id: string }; result: VmUsage };
   /** Creates the session's VM unless it exists, records the session in its metadata, starts it, waits for its startup
    *  script and updates its release; streams progress. `conflict` when the VM holds another session. */
   "sessions.provision": {
@@ -113,6 +126,7 @@ export const METHODS: readonly Method[] = [
   "hello",
   "sessions.list",
   "vms.get",
+  "vms.usage",
   "sessions.provision",
   "vms.start",
   "vms.stop",

@@ -27,7 +27,7 @@
  * hears its progress from the start, a different one waits until the first ended. `createSessionVmService` wires the
  * service to the gateway's project for hunt-api and hunt-swf.
  */
-import type { ProgressStep, ReleaseInfo, SessionSummary, VmInfo, VmRef } from "../../../../libs/domain/src/gateway-api/gateway-api.types.ts";
+import type { ProgressStep, ReleaseInfo, SessionSummary, VmInfo, VmRef, VmUsage } from "../../../../libs/domain/src/gateway-api/gateway-api.types.ts";
 import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
 import type { Log } from "../../../../libs/domain/src/shared/journal.utils.ts";
 import { ApiError } from "../../../../libs/domain/src/gateway-api/api.error.ts";
@@ -45,6 +45,7 @@ import {
   type Operation as ComputeOperation,
   type OperationError,
 } from "../gcp/compute-engine.client.ts";
+import { createMonitoring, type Monitoring } from "../gcp/cloud-monitoring.client.ts";
 import type { Metadata } from "../gcp/metadata-server.client.ts";
 import { remoteSecretStore, type RemoteSecretStore } from "../remote-secrets/remote-secrets.service.ts";
 import { readSessionZones } from "../shared/session-zones.utils.ts";
@@ -120,6 +121,7 @@ export interface StartResult {
 
 export interface SessionVmServiceDeps {
   compute: Compute;
+  monitoring: Monitoring;
   /** The gateway's project, where the session VMs live, and its zone. */
   location: VmLocation;
   /** The zones a new session VM may go into, in order of preference. */
@@ -250,6 +252,16 @@ export class SessionVmService {
       zone: instance?.zone ?? null,
       startedAt: instance?.lastStartTimestamp || null,
     };
+  }
+
+  /** The machine type of the session's VM and how long it ran (`VmUsage`), for the estimate of its cost. */
+  async usage(sessionId: SessionId): Promise<VmUsage> {
+    const [{ vm, moving }, runningSeconds] = await Promise.all([
+      this.locateSession(sessionId),
+      this.deps.monitoring.runningSeconds(sessionId.vm.name, new Date(this.deps.now())),
+    ]);
+    const instance = vm ?? moving;
+    return { machineType: instance?.machineType || null, runningSeconds: Math.round(runningSeconds) };
   }
 
   /** The session VMs of every zone of the gateway's project, oldest first. */
@@ -747,6 +759,7 @@ export async function createSessionVmService(
   const location = { project: await metadata.project(), zone: await metadata.zone() };
   return new SessionVmService({
     compute,
+    monitoring: createMonitoring(metadata, fetch, log),
     location,
     zones: () => readSessionZones(location.zone),
     vm: (name, zone) => createSessionVmSsh(name, { project: location.project, zone }, log),

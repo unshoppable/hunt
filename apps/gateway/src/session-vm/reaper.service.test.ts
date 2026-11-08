@@ -71,6 +71,7 @@ function createReaper(vms: Instance[], current?: Map<string, Instance | null>) {
   let now = NOW;
   const sessionVmService = new SessionVmService({
     compute,
+    monitoring: { runningSeconds: async () => 0 },
     location: { project: "medconomy-hunt", zone: ZONE },
     zones: () => [ZONE],
     vm: () => ({}) as never,

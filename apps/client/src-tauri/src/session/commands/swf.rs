@@ -5,8 +5,9 @@
 use tauri::AppHandle;
 use uuid::Uuid;
 
-use super::remote_host;
+use super::{gateway_api, remote_host};
 use crate::agent::plan_usage::{self, PlanUsage};
+use crate::remote::api::VmUsage;
 use crate::remote::hunt_ctl;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::session::store;
@@ -58,4 +59,15 @@ pub async fn read_session_plan_usage(app: AppHandle, session_id: Uuid) -> Result
     let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
     let output = hunt_ctl(&ssh, &["plan-usage", &owner.to_string()]).await?;
     plan_usage::parse_output(&output.to_string()).map(Some)
+}
+
+/// How long the VM of the session `session_id` ran and its machine type, from the gateway (`vms.usage`), for the
+/// estimate of its cost; `None` for a session without a VM. Works while the VM is off.
+#[tauri::command]
+pub async fn read_session_vm_usage(app: AppHandle, session_id: Uuid) -> Result<Option<VmUsage>, String> {
+    let record = store::find_session(&app, session_id)?;
+    let Some((owner, _)) = remote_host(&app, &record) else {
+        return Ok(None);
+    };
+    gateway_api("read the session VM's running time").await?.vm_usage(owner).await.map(Some)
 }

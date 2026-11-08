@@ -330,6 +330,7 @@ function createService(compute: Compute, vm: SessionVmSsh = fakeVm().vm, zones =
   const vmZones: string[] = [];
   const service = new SessionVmService({
     compute,
+    monitoring: { runningSeconds: async () => 0 },
     location: LOCATION,
     zones: () => zones,
     vm: (_name, zone) => {

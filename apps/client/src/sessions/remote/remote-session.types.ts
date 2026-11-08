@@ -46,6 +46,12 @@ export type SessionVm = {
 export type SessionVmInfo = { exists: boolean; name: string; status: string | null; zone: string | null; startedAt: string | null };
 
 /**
+ * How long a session's VM ran, for the estimate of its cost (mirror of `VmUsage` in src-tauri/src/remote/api.rs): its
+ * machine type, null when the VM does not exist, and the seconds Cloud Monitoring counted it running over six weeks.
+ */
+export type SessionVmUsage = { machineType: string | null; runningSeconds: number };
+
+/**
  * What the relay of a remote session last reported through the status channel (mirror of `RelayActivity` in
  * src-tauri/src/remote/target.rs): whether its agent runs a turn and whether it waits for the user's answer to a question;
  * `isQuestion` is null for an older relay that does not say.

@@ -143,6 +143,16 @@ pub struct VmInfo {
     pub started_at: Option<String>,
 }
 
+/// How long a session's VM ran, as `vms.usage` reports it from Cloud Monitoring (`VmUsage` in
+/// `libs/domain/src/gateway-api/gateway-api.types.ts`): its machine type, None when the VM does not exist, and the
+/// seconds it ran over the last six weeks.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VmUsage {
+    pub machine_type: Option<String>,
+    pub running_seconds: u64,
+}
+
 #[derive(Deserialize)]
 struct StartedVm {
     vm: VmRef,
@@ -220,6 +230,11 @@ impl GatewayApi {
     /// The VM of session `id`: whether it exists, its status, zone and last start.
     pub async fn vm_info(&self, id: Uuid) -> Result<VmInfo, String> {
         self.call("vms.get", &json!({ "id": id })).await
+    }
+
+    /// How long the VM of session `id` ran and its machine type.
+    pub async fn vm_usage(&self, id: Uuid) -> Result<VmUsage, String> {
+        self.call("vms.usage", &json!({ "id": id })).await
     }
 
     /// Whether the VM of session `id` runs; false when it is off or does not exist.

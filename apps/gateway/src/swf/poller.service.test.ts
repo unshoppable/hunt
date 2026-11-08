@@ -368,6 +368,7 @@ function createPoller({ github = fakeGitHub({}), vm = fakeVm().vm, compute = fak
   let tokenReads = 0;
   const sessionVmService = new SessionVmService({
     compute,
+    monitoring: { runningSeconds: async () => 0 },
     location: { project: "medconomy-hunt", zone: "europe-west3-a" },
     zones: () => ["europe-west3-a"],
     vm: () => vm,

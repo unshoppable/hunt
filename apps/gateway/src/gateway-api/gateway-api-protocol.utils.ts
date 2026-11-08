@@ -37,6 +37,7 @@ export interface ApiParams {
   hello: Record<string, never>;
   "sessions.list": Record<string, never>;
   "vms.get": SessionParams;
+  "vms.usage": SessionParams;
   "sessions.provision": SessionParams & { title: string; repo: Repository; branch: BranchName; machineType: string | null };
   "vms.start": SessionParams;
   "vms.stop": SessionParams;
@@ -99,6 +100,7 @@ export function parseParams(method: Method, value: unknown): ApiParams[Method] {
     case "secrets.list":
       return {};
     case "vms.get":
+    case "vms.usage":
     case "vms.start":
     case "vms.stop":
     case "vms.delete":

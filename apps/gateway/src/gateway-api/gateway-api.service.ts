@@ -28,7 +28,7 @@ interface GatewayInfo {
 }
 
 interface ApiDeps {
-  sessionVmService: Pick<SessionVmService, "provision" | "start" | "stop" | "delete" | "get" | "listSessions">;
+  sessionVmService: Pick<SessionVmService, "provision" | "start" | "stop" | "delete" | "get" | "usage" | "listSessions">;
   secrets: Pick<RemoteSecretStore, "list" | "set" | "delete">;
   gatewayInfo(): Promise<GatewayInfo>;
   log(message: string, level?: LogLevel): void;
@@ -45,6 +45,8 @@ async function dispatch(deps: ApiDeps, request: ApiRequest, reporter: Reporter):
       return { sessions: await deps.sessionVmService.listSessions() };
     case "vms.get":
       return deps.sessionVmService.get(request.params.sessionId);
+    case "vms.usage":
+      return deps.sessionVmService.usage(request.params.sessionId);
     case "sessions.provision": {
       const { sessionId, title, repo, branch, machineType } = request.params;
       return deps.sessionVmService.provision(

@@ -25,6 +25,10 @@ RuntimeDirectoryMode=0750
 ExecStart=/opt/hunt/node/bin/node /srv/hunt/current/session/swfRunner.mjs
 Restart=always
 RestartSec=5s
+# The memory cap of hunt-agent.slice. When the kernel kills one of the unit's processes for memory, the unit keeps
+# running: the process that died reports it (a test run fails, the agent sees a dev server end).
+Slice=hunt-agent.slice
+OOMPolicy=continue
 
 [Install]
 WantedBy=multi-user.target

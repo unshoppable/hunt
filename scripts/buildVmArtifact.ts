@@ -51,6 +51,8 @@ const ARTIFACTS: Record<string, Artifact> = {
       ["apps/session/vm/agent.env", "vm/agent.env"],
       ["apps/session/vm/profile.sh", "vm/profile.sh"],
       ["apps/session/vm/tmux.conf", "vm/tmux.conf"],
+      ["apps/session/vm/zram-generator.conf", "vm/zram-generator.conf"],
+      ["apps/session/vm/sysctl-zram.conf", "vm/sysctl-zram.conf"],
       ["apps/session/vm/systemd", "vm/systemd/session"],
       ["apps/session/vm/desktop", "vm/desktop"],
       ["apps/session/acp-version", "session/acp-version"],

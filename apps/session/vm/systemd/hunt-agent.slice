@@ -1,15 +1,16 @@
 # The memory of everything the agent runs on a session VM: the relay with the agent and what it starts (dev servers, its
-# tmux, test runs), the services of hunt.json, the gate checks of the swf runner and the desktop's Chromium. The VM has
-# no swap; without this cap a test or build run that fills the memory makes the kernel evict the code pages of every
+# tmux, test runs), the services of hunt.json, the gate checks of the swf runner and the desktop's Chromium. Without
+# this cap a test or build run that fills the memory and the zram swap makes the kernel evict the code pages of every
 # process and read them back from the boot disk at the disk's limit, which stalls the whole VM for hours without an
 # OOM kill: sshd answers no more, so neither Hunt nor the gateway reaches it. Capped, only the agent's processes reclaim
-# and, past MemoryMax, the kernel kills the largest of them; sshd, Docker's databases and the guest agents keep the
-# rest. The percentages are of the machine's memory, so they hold for every machine type a session VM may take.
+# (first to the zram swap of vm/zram-generator.conf) and, past MemoryMax, the kernel kills the largest of them; sshd,
+# Docker's databases, the guest agents and the compressed pages in zram, which no cgroup is charged for, keep the rest.
+# The percentages are of the machine's memory, so they hold for every machine type a session VM may take.
 [Unit]
 Description=Processes of the agent on Hunt's session VM
 Before=slices.target
 
 [Slice]
 MemoryAccounting=yes
-MemoryHigh=80%
-MemoryMax=85%
+MemoryHigh=70%
+MemoryMax=75%

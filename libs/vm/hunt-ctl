@@ -97,6 +97,9 @@ readonly SERVICE_NAME_PATTERN='^[a-z][a-z0-9-]{0,31}$'
 readonly SERVICE_SUDOERS_DROPIN=/etc/sudoers.d/hunt-service
 # The agent's tmux configuration, which logs every window to ~/logs (apps/session/vm/tmux.conf).
 readonly TMUX_CONFIG=/etc/tmux.conf
+# The zram swap of a session VM and its sysctls (install_zram).
+readonly ZRAM_CONFIG=/etc/systemd/zram-generator.conf
+readonly ZRAM_SYSCTL=/etc/sysctl.d/90-hunt-zram.conf
 # A relay whose status.json heartbeat is older than this is gone.
 readonly HEARTBEAT_MAX_AGE_MS=120000
 # Ports preview-status never lists: Caddy's admin API, the Docker API, LLMNR of systemd-resolved, the preview proxy, the
@@ -118,6 +121,8 @@ readonly VOLTA_NPM=11.16.0
 # Debian packages on top of the VM's base: compilers for native npm modules, unzip and bzip2 (`tar -j`) for the agent's
 # builds and tests, rsync for the file sync with the desktop app.
 readonly -a AGENT_PACKAGES=(bzip2 g++ make python3 rsync unzip)
+# The compressed swap in RAM of vm/zram-generator.conf.
+readonly -a MEMORY_PACKAGES=(systemd-zram-generator)
 # The desktop of vm/desktop: sway as headless compositor, FFmpeg for Waymote's H.264 encoder and the fonts of pages in
 # other scripts than Latin; the rest of Chromium's libraries comes with Playwright's browser.
 readonly -a DESKTOP_PACKAGES=(sway ffmpeg fonts-noto-cjk)
@@ -667,6 +672,7 @@ install_agent_tools() {
   local release=$1
   install -d -m 0755 "$AGENT_TOOLS" "$TOOL_STAMPS"
   install_packages
+  install_zram "$release"
   install_gh
   install -m 0755 "$release/vm/hunt-gh" /usr/local/bin/gh
   install_terraform
@@ -686,10 +692,22 @@ install_agent_tools() {
   git config --system push.autoSetupRemote true
 }
 
+# Sets up the compressed swap in RAM of vm/zram-generator.conf with the sysctls of vm/sysctl-zram.conf. A zram swap in
+# use stays as it is: a changed size takes effect at the next boot, since a restart would first move every swapped page
+# back into memory.
+install_zram() {
+  local release=$1
+  install -m 0644 "$release/vm/zram-generator.conf" "$ZRAM_CONFIG"
+  install -m 0644 "$release/vm/sysctl-zram.conf" "$ZRAM_SYSCTL"
+  sysctl -q -p "$ZRAM_SYSCTL"
+  systemctl daemon-reload
+  systemctl start dev-zram0.swap
+}
+
 install_packages() {
   local package
   local -a missing=()
-  for package in "${AGENT_PACKAGES[@]}" "${DESKTOP_PACKAGES[@]}"; do
+  for package in "${AGENT_PACKAGES[@]}" "${DESKTOP_PACKAGES[@]}" "${MEMORY_PACKAGES[@]}"; do
     if [[ $(dpkg-query -W -f '${Status}' "$package" 2>/dev/null) != "install ok installed" ]]; then
       missing+=("$package")
     fi

@@ -1,3 +1,9 @@
+## 0.33.18 (2026-11-08)
+
+### 🚀 Features
+
+- **client:** show the plan limits of the session VM's Claude account and the tokens of each run in the Factory tab ([a6fecd5](https://github.com/unshoppable/hunt/commit/a6fecd5))
+
 ## 0.33.17 (2026-11-08)
 
 ### 🩹 Fixes

@@ -35,13 +35,6 @@ describe("PullRequestState", () => {
     expect(pullRequest({ reviewDecision: null }).isApproved).toBe(false);
   });
 
-  it("has its checks done once they passed or failed, not while they run or before the head has any", () => {
-    expect(pullRequest().areChecksDone).toBe(true);
-    expect(pullRequest({ checks: "failure" }).areChecksDone).toBe(true);
-    expect(pullRequest({ checks: "pending" }).areChecksDone).toBe(false);
-    expect(pullRequest({ checks: "none" }).areChecksDone).toBe(false);
-  });
-
   describe("mergeOutcome", () => {
     it("merges a mergeable pull request once per head and waits while the checks of a new head run", () => {
       expect(pullRequest().mergeOutcome(null)).toEqual({ kind: "merge" });
@@ -64,14 +57,15 @@ describe("PullRequestState", () => {
       });
     });
 
-    it("hands a blocked pull request whose checks passed without an approval to a person, and waits on any other block", () => {
-      expect(pullRequest({ mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }).mergeOutcome(null)).toEqual({ kind: "human" });
-      expect(pullRequest({ mergeState: "BLOCKED", reviewDecision: null }).mergeOutcome(HEAD)).toEqual({ kind: "human" });
-      const blocked = { kind: "wait", reason: "GitHub reports the pull request as blocked (a required check or review is missing)" };
-      expect(pullRequest({ mergeState: "BLOCKED" }).mergeOutcome(null)).toEqual(blocked);
-      expect(pullRequest({ mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", checks: "pending" }).mergeOutcome(null)).toEqual(blocked);
-      expect(pullRequest({ mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", checks: "failure" }).mergeOutcome(null)).toEqual(blocked);
-      expect(pullRequest({ mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", checks: "none" }).mergeOutcome(null)).toEqual(blocked);
+    it("sends a blocked pull request whose checks are done back to its review, and waits while they run", () => {
+      expect(pullRequest({ mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }).mergeOutcome(null)).toEqual({ kind: "review", reason: "it has no approval" });
+      expect(pullRequest({ mergeState: "BLOCKED", reviewDecision: null, checks: "failure" }).mergeOutcome(HEAD)).toEqual({ kind: "review", reason: "it has no approval" });
+      const unmet = { kind: "review", reason: "a required check failed or another rule is unmet" };
+      expect(pullRequest({ mergeState: "BLOCKED" }).mergeOutcome(null)).toEqual(unmet);
+      expect(pullRequest({ mergeState: "BLOCKED", checks: "failure" }).mergeOutcome(null)).toEqual(unmet);
+      const running = { kind: "wait", reason: "GitHub reports the pull request as blocked while its checks run" };
+      expect(pullRequest({ mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED", checks: "pending" }).mergeOutcome(null)).toEqual(running);
+      expect(pullRequest({ mergeState: "BLOCKED", checks: "none" }).mergeOutcome(null)).toEqual(running);
     });
 
     it("waits on an unknown merge state and reports a merged or closed pull request first", () => {

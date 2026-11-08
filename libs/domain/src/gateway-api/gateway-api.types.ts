@@ -64,7 +64,7 @@ export interface SessionSummary {
   issue: number | null;
   /**
    * The state of a poller session's agent as its VM records it: the step of the pipeline the issue is at (`plan`,
-   * `implement`, `verify`, `review`, `pr`, `human-review`, `merge`), `question` (the agent waits for an answer
+   * `implement`, `verify`, `review`, `pr`, `pr-gate`, `merge`), `question` (the agent waits for an answer
    * on the issue), `done` or `failed`; empty for a person's session.
    */
   agent: string;

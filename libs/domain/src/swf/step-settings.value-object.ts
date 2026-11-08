@@ -1,7 +1,7 @@
 import * as z from "zod/mini";
 import { ValueObject } from "../model/value-object.model.ts";
 import { MAX_SEVERITY, MIN_SEVERITY } from "./step-result.utils.ts";
-import { ZodWithoutRetiredSteps } from "./swf-step.rules.ts";
+import { ZodCurrentStepKeys } from "./swf-step.rules.ts";
 import { AGENT_STEPS, SWF_STEPS, type AgentStep, type SwfStep } from "./swf-step.types.ts";
 
 /** The effort levels of Claude Code, the values of its `effort` config option. */
@@ -9,10 +9,10 @@ export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 export type Effort = (typeof EFFORTS)[number];
 
 /** The steps that send the pipeline back to implement, each with a limit of returns (`maxReturns`) after which the agent escalates. */
-export const RETURNING_STEPS = ["verify", "review", "human-review", "merge"] as const;
+export const RETURNING_STEPS = ["verify", "review", "pr-gate", "merge"] as const;
 export type ReturningStep = (typeof RETURNING_STEPS)[number];
 /** Hunt's limit of returns per returning step, for a repository whose hunt.json sets none. */
-export const DEFAULT_MAX_RETURNS: Record<ReturningStep, number> = { verify: 5, review: 3, "human-review": 3, merge: 2 };
+export const DEFAULT_MAX_RETURNS: Record<ReturningStep, number> = { verify: 5, review: 3, "pr-gate": 3, merge: 2 };
 /** Hunt's limit of gate runs of one step result (`swf.maxGateRuns`) after which the agent escalates. */
 export const DEFAULT_MAX_GATE_RUNS = 5;
 /** The steps whose gate is every check of hunt.json unless the repository sets one. */
@@ -48,7 +48,7 @@ export const DEFAULT_PROJECT_STATUS = { inProgress: "In Progress", inReview: "In
 const ZodProjectStatus = z.object({
   /** The status of an issue the poller claimed. */
   inProgress: z.string().check(z.minLength(1)),
-  /** The status of an issue whose pull request waits for its review. */
+  /** The status of an issue whose pull request is open, from the first poll after it opened. */
   inReview: z.string().check(z.minLength(1)),
   /** The status of an issue whose pull request is merged. */
   done: z.string().check(z.minLength(1)),
@@ -86,7 +86,7 @@ const ZodStepSettingsState = z.object({
   projectStatus: z._default(ZodProjectStatus, DEFAULT_PROJECT_STATUS),
   mergeMethod: z._default(z.enum(MERGE_METHODS), DEFAULT_MERGE_METHOD),
   /** Every step's settings, defaults applied; the settings of a retired step that an earlier release reported are dropped. */
-  steps: ZodWithoutRetiredSteps(z.record(z.enum(SWF_STEPS), ZodStepSetting)),
+  steps: ZodCurrentStepKeys(z.record(z.enum(SWF_STEPS), ZodStepSetting)),
 });
 
 export interface StepSettings extends z.infer<typeof ZodStepSettingsState> {}

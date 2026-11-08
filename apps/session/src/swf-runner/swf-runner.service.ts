@@ -1,11 +1,11 @@
 /**
  * The runner of the software factory's agent steps on a session VM (`hunt-swf-runner.service`, `swf-runner.main.ts`):
  * it drives the pipeline (`libs/domain/src/swf/pipeline.domain.ts`) through plan, implement, verify, review and pr, each
- * step one turn of the agent in a fresh conversation, and leaves the steps that wait for GitHub (human-review, merge)
+ * step one turn of the agent in a fresh conversation, and leaves the steps that wait for GitHub (pr-gate, merge)
  * and every wait for a person to the gateway's poller (`apps/gateway/src/swf/poller.service.ts`), so that the VM can
  * sleep meanwhile. `.hunt/swf/pipeline.json` of the worktree is the pipeline's primary copy from the moment the poller
  * started the runner; the record comment on the issue mirrors it after every change, and the poller reads it there to
- * take over at human-review.
+ * take over at pr-gate.
  *
  * `tick` is idempotent and runs whenever the relay's `status.json` or the inbox changed, and every few seconds anyway:
  *

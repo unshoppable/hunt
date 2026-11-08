@@ -3,6 +3,7 @@ import type * as z from "zod/mini";
 import type { Finding, ParsedStepResult, StepResult } from "./step-result.utils.ts";
 import { AGENT_STEPS, POLLER_STEPS, type SwfStep } from "./swf-step.types.ts";
 import { Pipeline, RECORD_VERSION, stepSettings, type PullRequestReview, type Run } from "./pipeline.domain.ts";
+import { PullRequestState } from "./pull-request-state.value-object.ts";
 import { DEFAULT_MAX_GATE_RUNS, DEFAULT_MAX_RETURNS } from "./step-settings.value-object.ts";
 import { IMPLEMENT_GATE, ISSUE, SETTINGS, settingsWith, started } from "./swf.fixtures.ts";
 import { UnusableStepResult } from "./unusable-step-result.error.ts";
@@ -43,6 +44,22 @@ function recordOf(body: string): Pipeline | undefined {
 
 function review(id: number, author: string, state: string, body = ""): PullRequestReview {
   return { id, author, state, body, submittedAt: `2026-10-25T10:0${id}:00Z` };
+}
+
+/** Pull request #31 with passed checks that GitHub reports as approved and mergeable, apart from `overrides`. */
+function pullRequestOf(overrides: Partial<z.input<typeof PullRequestState.schema>> = {}): PullRequestState {
+  return new PullRequestState({
+    number: 31,
+    url: "https://github.com/acme/app/pull/31",
+    title: "feat: thing",
+    headSha: "a".repeat(40),
+    state: "open",
+    mergeState: "CLEAN",
+    reviewDecision: "APPROVED",
+    checks: "success",
+    labels: [],
+    ...overrides,
+  });
 }
 
 describe("Pipeline.start", () => {
@@ -101,16 +118,16 @@ describe("the record comment", () => {
     expect(record?.gateRuns).toBe(1);
   });
 
-  it("says in the status line that the pull request waits for its approval only at human-review and leaves out what is not there yet", () => {
+  it("says in the status line that the pull request waits for its checks and an approval only at pr-gate and leaves out what is not there yet", () => {
     expect(started(NOW).statusLine).toBe("**Hunt:** step `plan`");
-    expect(pipelineAt("human-review", { pullRequest: 31 }).statusLine).toBe("**Hunt:** step `human-review` · pull request #31 · the pull request waits for its approval");
+    expect(pipelineAt("pr-gate", { pullRequest: 31 }).statusLine).toBe("**Hunt:** step `pr-gate` · pull request #31 · the pull request waits for its checks and an approval");
     expect(pipelineAt("merge", { pullRequest: 31, returns: { merge: 1 } }).statusLine).toBe("**Hunt:** step `merge` · return 1 of 2 (merge) · pull request #31");
     const both = pipelineAt("implement", { returns: { merge: 1, verify: 3, review: 0 } });
     expect(both.statusLine).toBe("**Hunt:** step `implement` · return 3 of 5 (verify) · return 1 of 2 (merge)");
   });
 
-  it("reads a record of an earlier release at the retired step checks as human-review and drops what it held for checks", () => {
-    const current = pipelineAt("human-review", { pullRequest: 31, returns: { verify: 1 }, runs: [runOf(1, "pr", { endedAt: new Date(NOW).toISOString(), outcome: "passed" }), runOf(2, "human-review")] });
+  it("reads a record of an earlier release at the retired step checks as pr-gate and drops what it held for checks", () => {
+    const current = pipelineAt("pr-gate", { pullRequest: 31, returns: { verify: 1 }, runs: [runOf(1, "pr", { endedAt: new Date(NOW).toISOString(), outcome: "passed" }), runOf(2, "pr-gate")] });
     const json = current.toJSON();
     const legacy = {
       ...json,
@@ -122,6 +139,24 @@ describe("the record comment", () => {
     const record = recordOf(`<!-- hunt:pipeline ${JSON.stringify(legacy)} -->`);
     expect(record?.toJSON()).toEqual(json);
     expect(Pipeline.schema.safeParse(legacy).data).toEqual(json);
+  });
+
+  it("reads a record of an earlier release at human-review, pr-gate's former name, as pr-gate with its returns and settings", () => {
+    const steps = SETTINGS.toJSON().steps;
+    const settings = { ...SETTINGS.toJSON(), steps: { ...steps, "pr-gate": { ...steps["pr-gate"], maxReturns: 7 } } };
+    const current = pipelineAt("pr-gate", { pullRequest: 31, returns: { "pr-gate": 2 }, settings, runs: [runOf(1, "pr-gate")] });
+    const json = current.toJSON();
+    const { "pr-gate": gate, ...others } = json.settings.steps;
+    const legacy = {
+      ...json,
+      step: "human-review",
+      returns: { "human-review": 2 },
+      settings: { ...json.settings, steps: { ...others, "human-review": gate } },
+      runs: [{ ...json.runs[0], step: "human-review" }],
+    };
+    expect(recordOf(`<!-- hunt:pipeline ${JSON.stringify(legacy)} -->`)?.toJSON()).toEqual(json);
+    const both = { ...legacy, returns: { "human-review": 1, "pr-gate": 2 } };
+    expect(Pipeline.schema.safeParse(both).data?.returns).toEqual({ "pr-gate": 2 });
   });
 
   it("is null for a comment without a record marker", () => {
@@ -207,21 +242,21 @@ describe("the runs of the pipeline", () => {
     merge.sendBackToImplement(["Merge: conflicts"], LATER);
     expect(merge.runs[0]).toEqual(runOf(1, "merge", { ...ENDED, outcome: "returned", findings: 1 }));
     expect(merge.runs[1].cause).toBe(1);
-    const human = pipelineAt("human-review", { pullRequest: 31, runs: [runOf(1, "human-review")] });
+    const human = pipelineAt("pr-gate", { pullRequest: 31, runs: [runOf(1, "pr-gate")] });
     human.handleChangeRequest(503, "Rename it", LATER);
-    expect(human.runs.map((run) => [run.step, run.outcome, run.cause])).toEqual([["human-review", "returned", undefined], ["implement", "running", 1]]);
+    expect(human.runs.map((run) => [run.step, run.outcome, run.cause])).toEqual([["pr-gate", "returned", undefined], ["implement", "running", 1]]);
   });
 
-  it("logs the poller's steps too: approval, the human review required again, the merge completed, and a failure at any step", () => {
-    const pipeline = pipelineAt("human-review", { pullRequest: 31, runs: [runOf(1, "human-review")] });
+  it("logs the poller's steps too: approval, the review required again, the merge completed, and a failure at any step", () => {
+    const pipeline = pipelineAt("pr-gate", { pullRequest: 31, runs: [runOf(1, "pr-gate")] });
     pipeline.approve(LATER);
-    pipeline.requireHumanReview(LATER);
+    pipeline.requireReview(LATER);
     pipeline.approve(LATER);
     pipeline.complete(LATER);
-    expect(pipeline.runs.map((run) => [run.n, run.step, run.outcome])).toEqual([[1, "human-review", "passed"], [2, "merge", "passed"], [3, "human-review", "passed"], [4, "merge", "passed"]]);
+    expect(pipeline.runs.map((run) => [run.n, run.step, run.outcome])).toEqual([[1, "pr-gate", "passed"], [2, "merge", "passed"], [3, "pr-gate", "passed"], [4, "merge", "passed"]]);
     expect(pipeline.currentRun).toBeUndefined();
     expect(pipeline.lastEndedRun?.n).toBe(4);
-    expect(() => pipelineAt("human-review", { runs: [runOf(1, "human-review")] }).complete(LATER)).toThrow("completing the pipeline needs the step merge, but the pipeline is at human-review");
+    expect(() => pipelineAt("pr-gate", { runs: [runOf(1, "pr-gate")] }).complete(LATER)).toThrow("completing the pipeline needs the step merge, but the pipeline is at pr-gate");
     const failed = pipelineAt("implement", { runs: [runOf(1, "implement")] });
     failed.fail(LATER);
     expect(failed.runs).toEqual([runOf(1, "implement", { ...ENDED, outcome: "failed" })]);
@@ -233,7 +268,7 @@ describe("the runs of the pipeline", () => {
     expect(pipeline.runs.slice(1)).toEqual([runOf(2, "implement", { ...ENDED, outcome: "restarted", cause: 1 }), { ...runOf(3, "implement"), startedAt: "2026-10-25T10:05:00.000Z" }]);
     expect(pipeline).toMatchObject({ step: "implement", returns: { verify: 2 }, gateRuns: 0, findings: ["Verify: a"], promptTurn: null, reminded: false });
     expect(pipeline.isPromptPending).toBe(true);
-    expect(() => pipelineAt("human-review", { pullRequest: 31, runs: [runOf(1, "human-review")] }).restart(LATER)).toThrow("the step human-review waits for GitHub, not for the agent; nothing to restart");
+    expect(() => pipelineAt("pr-gate", { pullRequest: 31, runs: [runOf(1, "pr-gate")] }).restart(LATER)).toThrow("the step pr-gate waits for GitHub, not for the agent; nothing to restart");
   });
 
   it("goes on without a log for a bare record and refuses a running run of another step than the current one", () => {
@@ -276,13 +311,13 @@ describe("the pipeline's invariants", () => {
   });
 
   it("refuses a requested merge at another step than merge", () => {
-    expect(() => pipelineAt("human-review", { mergeSha: HEAD_SHA })).toThrow(/a merge is requested only at the step merge/);
+    expect(() => pipelineAt("pr-gate", { mergeSha: HEAD_SHA })).toThrow(/a merge is requested only at the step merge/);
     expect(pipelineAt("merge", { mergeSha: HEAD_SHA }).mergeSha).toBe(HEAD_SHA);
   });
 
   it("refuses notified reviewers without a pull request", () => {
-    expect(() => pipelineAt("human-review", { notified: true })).toThrow(/reviewers are notified only on a pull request/);
-    expect(pipelineAt("human-review", { notified: true, pullRequest: 31 }).notified).toBe(true);
+    expect(() => pipelineAt("pr-gate", { notified: true })).toThrow(/reviewers are notified only on a pull request/);
+    expect(pipelineAt("pr-gate", { notified: true, pullRequest: 31 }).notified).toBe(true);
   });
 });
 
@@ -340,25 +375,52 @@ describe("Pipeline queries", () => {
 
   it("counts each person's latest review, never bots, and hands an unhandled change request back once", () => {
     const bot = "hunt-agent[bot]";
-    const pipeline = pipelineAt("human-review", { pullRequest: 31 });
-    expect(pipeline.humanReviewOutcome([], bot, false)).toEqual({ kind: "wait" });
-    expect(pipeline.humanReviewOutcome([review(1, bot, "APPROVED"), review(2, "dr-claude-bot[bot]", "APPROVED")], bot, false)).toEqual({ kind: "wait" });
-    expect(pipeline.humanReviewOutcome([review(1, "alice", "COMMENTED"), review(2, "alice", "APPROVED")], bot, false)).toEqual({ kind: "approved", by: ["alice"] });
+    const open = pullRequestOf({ reviewDecision: "REVIEW_REQUIRED" });
+    const waiting = { kind: "wait", reason: "waiting for an approval of #31", asksPeople: true };
+    const pipeline = pipelineAt("pr-gate", { pullRequest: 31 });
+    expect(pipeline.prGateOutcome([], bot, open)).toEqual(waiting);
+    expect(pipeline.prGateOutcome([review(1, bot, "APPROVED"), review(2, "dr-claude-bot[bot]", "APPROVED")], bot, open)).toEqual(waiting);
+    expect(pipeline.prGateOutcome([review(1, "alice", "COMMENTED"), review(2, "alice", "APPROVED")], bot, open)).toEqual({ kind: "approved", by: ["alice"] });
     const changes = [review(1, "alice", "APPROVED"), review(2, "bob", "CHANGES_REQUESTED", "Rename it")];
-    expect(pipeline.humanReviewOutcome(changes, bot, false)).toEqual({ kind: "changes", review: changes[1] });
-    const handled = pipelineAt("human-review", { pullRequest: 31, handledReview: 2 });
-    expect(handled.humanReviewOutcome(changes, bot, false)).toEqual({ kind: "wait" });
-    expect(handled.humanReviewOutcome([...changes, review(3, "bob", "APPROVED")], bot, false)).toEqual({ kind: "approved", by: ["alice", "bob"] });
-    expect(pipeline.humanReviewOutcome([review(1, "alice", "APPROVED"), review(2, "alice", "DISMISSED")], bot, false)).toEqual({ kind: "wait" });
+    expect(pipeline.prGateOutcome(changes, bot, open)).toEqual({ kind: "changes", review: changes[1] });
+    const handled = pipelineAt("pr-gate", { pullRequest: 31, handledReview: 2 });
+    expect(handled.prGateOutcome(changes, bot, open)).toEqual({ kind: "wait", reason: "a change request on #31 is open", asksPeople: true });
+    expect(handled.prGateOutcome([...changes, review(3, "bob", "APPROVED")], bot, open)).toEqual({ kind: "approved", by: ["alice", "bob"] });
+    expect(pipeline.prGateOutcome([review(1, "alice", "APPROVED"), review(2, "alice", "DISMISSED")], bot, open)).toEqual(waiting);
   });
 
-  it("approves on GitHub's review decision, which the review workflow sets, unless a person's change request is open", () => {
+  it("approves on GitHub's review decision, which a review workflow may set, unless a person's change request is open", () => {
     const bot = "hunt-agent[bot]";
-    const pipeline = pipelineAt("human-review", { pullRequest: 31 });
-    expect(pipeline.humanReviewOutcome([review(1, "dr-claude-bot[bot]", "APPROVED")], bot, true)).toEqual({ kind: "approved", by: [] });
+    const pipeline = pipelineAt("pr-gate", { pullRequest: 31 });
+    expect(pipeline.prGateOutcome([review(1, "dr-claude-bot[bot]", "APPROVED")], bot, pullRequestOf())).toEqual({ kind: "approved", by: [] });
     const changes = [review(2, "bob", "CHANGES_REQUESTED", "Rename it")];
-    expect(pipeline.humanReviewOutcome(changes, bot, true)).toEqual({ kind: "changes", review: changes[0] });
-    expect(pipelineAt("human-review", { pullRequest: 31, handledReview: 2 }).humanReviewOutcome(changes, bot, true)).toEqual({ kind: "wait" });
+    expect(pipeline.prGateOutcome(changes, bot, pullRequestOf())).toEqual({ kind: "changes", review: changes[0] });
+    const handled = pipelineAt("pr-gate", { pullRequest: 31, handledReview: 2 });
+    expect(handled.prGateOutcome(changes, bot, pullRequestOf())).toEqual({ kind: "wait", reason: "a change request on #31 is open", asksPeople: true });
+  });
+
+  it("waits for the head commit's checks before it asks anyone, and does not let a blocked pull request go on to merge", () => {
+    const bot = "hunt-agent[bot]";
+    const pipeline = pipelineAt("pr-gate", { pullRequest: 31 });
+    const approved = [review(1, "alice", "APPROVED")];
+    expect(pipeline.prGateOutcome(approved, bot, pullRequestOf({ checks: "pending" }))).toEqual({
+      kind: "wait",
+      reason: "the checks of #31 are still running",
+      asksPeople: false,
+    });
+    expect(pipeline.prGateOutcome([], bot, pullRequestOf({ checks: "none", reviewDecision: null }))).toEqual({
+      kind: "wait",
+      reason: "the head commit of #31 has no checks yet",
+      asksPeople: false,
+    });
+    expect(pipeline.prGateOutcome(approved, bot, pullRequestOf({ checks: "failure", reviewDecision: null }))).toEqual({ kind: "approved", by: ["alice"] });
+    expect(pipeline.prGateOutcome(approved, bot, pullRequestOf({ mergeState: "BLOCKED" }))).toEqual({
+      kind: "wait",
+      reason: "#31 is approved, but GitHub reports it as blocked",
+      asksPeople: true,
+    });
+    const changes = [review(2, "bob", "CHANGES_REQUESTED", "Rename it")];
+    expect(pipeline.prGateOutcome(changes, bot, pullRequestOf({ checks: "pending" }))).toEqual({ kind: "changes", review: changes[0] });
   });
 });
 
@@ -371,7 +433,7 @@ describe("Pipeline.acceptResult", () => {
     expect(pipeline.step).toBe("implement");
   });
 
-  it("walks plan → implement → verify → review → pr → human-review and records the result's comment id", () => {
+  it("walks plan → implement → verify → review → pr → pr-gate and records the result's comment id", () => {
     const pipeline = pipelineAt("plan", { promptTurn: 5, reminded: true, returns: { verify: 3 }, gateRuns: 2, findings: ["old"], escalate: true });
     pipeline.acceptResult(reported({ step: "plan", branch: "feat/general/12-fix-login" }), 11, NOW);
     expect(pipeline).toMatchObject({ step: "implement", lastResultId: 11, promptTurn: null, reminded: false, returns: {}, gateRuns: 0, findings: [], escalate: false });
@@ -383,7 +445,7 @@ describe("Pipeline.acceptResult", () => {
     pipeline.acceptResult(reported({ step: "review", findings: [] }), 14, NOW);
     expect(pipeline).toMatchObject({ step: "pr", pullRequest: null });
     pipeline.acceptResult(reported({ step: "pr", pullRequest: 42 }), 15, NOW);
-    expect(pipeline).toMatchObject({ step: "human-review", pullRequest: 42, lastResultId: 15 });
+    expect(pipeline).toMatchObject({ step: "pr-gate", pullRequest: 42, lastResultId: 15 });
   });
 
   it("sends unscored verify findings back to implement, prefixed, and counts the return of verify", () => {
@@ -438,7 +500,7 @@ describe("Pipeline.acceptResult", () => {
   it("skips the pr step when the pull request exists", () => {
     const pipeline = pipelineAt("review", { pullRequest: 42, inReview: true });
     pipeline.acceptResult(reported({ step: "review", findings: [] }), 21, NOW);
-    expect(pipeline).toMatchObject({ step: "human-review", pullRequest: 42, inReview: true });
+    expect(pipeline).toMatchObject({ step: "pr-gate", pullRequest: 42, inReview: true });
   });
 
   it("refuses a result for another step than the current one and changes nothing", () => {
@@ -516,8 +578,8 @@ describe("Pipeline.noteGateFailure", () => {
   });
 
   it("refuses a step of the poller, which has no gate", () => {
-    const pipeline = pipelineAt("human-review", { pullRequest: 31 });
-    expect(() => pipeline.noteGateFailure(1_000)).toThrow("the step human-review waits for GitHub and has no gate");
+    const pipeline = pipelineAt("pr-gate", { pullRequest: 31 });
+    expect(() => pipeline.noteGateFailure(1_000)).toThrow("the step pr-gate waits for GitHub and has no gate");
     expect(pipeline.gateRuns).toBe(0);
   });
 });
@@ -544,9 +606,9 @@ describe("Pipeline.recordPrompt", () => {
   });
 
   it("refuses a prompt at a step of the poller, which has none", () => {
-    const pipeline = pipelineAt("human-review", { pullRequest: 31 });
+    const pipeline = pipelineAt("pr-gate", { pullRequest: 31 });
     expect(pipeline.isPromptPending).toBe(false);
-    expect(() => pipeline.recordPrompt(0, "acp-1")).toThrow("the step human-review has no prompt for the agent");
+    expect(() => pipeline.recordPrompt(0, "acp-1")).toThrow("the step pr-gate has no prompt for the agent");
   });
 });
 
@@ -649,9 +711,9 @@ describe("Pipeline.sendBackToImplement", () => {
     const pipeline = pipelineAt("merge", { pullRequest: 31, returns: { verify: 4, merge: DEFAULT_MAX_RETURNS.merge } });
     pipeline.sendBackToImplement(["Merge: conflicts"], NOW);
     expect(pipeline).toMatchObject({ returns: { verify: 4, merge: 0 }, escalate: true });
-    const merge = pipelineAt("merge", { pullRequest: 31, returns: { "human-review": 2 } });
+    const merge = pipelineAt("merge", { pullRequest: 31, returns: { "pr-gate": 2 } });
     merge.sendBackToImplement(["Merge: conflicts"], NOW);
-    expect(merge).toMatchObject({ returns: { "human-review": 2, merge: 1 }, escalate: false });
+    expect(merge).toMatchObject({ returns: { "pr-gate": 2, merge: 1 }, escalate: false });
     const strict = pipelineAt("review", { settings: settingsWith({ review: { maxReturns: 1 } }), returns: { review: 1 } });
     strict.sendBackToImplement(["Review: a"], NOW);
     expect(strict).toMatchObject({ returns: { review: 0 }, escalate: true });
@@ -679,18 +741,18 @@ describe("Pipeline.sendBackToImplement", () => {
   });
 });
 
-describe("Pipeline.requireHumanReview", () => {
-  it("goes back to human-review from a merge the review workflow withdrew its approval from", () => {
+describe("Pipeline.requireReview", () => {
+  it("goes back to pr-gate from a merge the review workflow withdrew its approval from", () => {
     const merge = pipelineAt("merge", { pullRequest: 31, mergeSha: HEAD_SHA });
-    merge.requireHumanReview(NOW);
-    expect(merge).toMatchObject({ step: "human-review", pullRequest: 31, mergeSha: null });
-    expect(merge.runs.map((run) => [run.step, run.outcome])).toEqual([["merge", "passed"], ["human-review", "running"]]);
+    merge.requireReview(NOW);
+    expect(merge).toMatchObject({ step: "pr-gate", pullRequest: 31, mergeSha: null });
+    expect(merge.runs.map((run) => [run.step, run.outcome])).toEqual([["merge", "passed"], ["pr-gate", "running"]]);
   });
 
   it("refuses every other step and names it", () => {
-    for (const step of ["plan", "implement", "verify", "review", "pr", "human-review"] as const) {
+    for (const step of ["plan", "implement", "verify", "review", "pr", "pr-gate"] as const) {
       const pipeline = pipelineAt(step, { pullRequest: 31 });
-      expect(() => pipeline.requireHumanReview(NOW), step).toThrow(`a human review needs the step merge, but the pipeline is at ${step}`);
+      expect(() => pipeline.requireReview(NOW), step).toThrow(`a review needs the step merge, but the pipeline is at ${step}`);
       expect(pipeline.step).toBe(step);
     }
   });
@@ -698,45 +760,45 @@ describe("Pipeline.requireHumanReview", () => {
 
 describe("Pipeline.approve", () => {
   it("goes on from the approval of the review workflow or a person to merge", () => {
-    const pipeline = pipelineAt("human-review", { pullRequest: 31, notified: true });
+    const pipeline = pipelineAt("pr-gate", { pullRequest: 31, notified: true });
     pipeline.approve(NOW);
-    const runs = [runOf(1, "human-review", { endedAt: new Date(NOW).toISOString(), outcome: "passed" }), runOf(2, "merge")];
+    const runs = [runOf(1, "pr-gate", { endedAt: new Date(NOW).toISOString(), outcome: "passed" }), runOf(2, "merge")];
     expect(pipeline.toJSON()).toEqual(pipelineAt("merge", { pullRequest: 31, notified: true, runs }).toJSON());
   });
 
-  it("refuses another step than human-review", () => {
-    expect(() => pipelineAt("merge").approve(NOW)).toThrow("an approval needs the step human-review, but the pipeline is at merge");
+  it("refuses another step than pr-gate", () => {
+    expect(() => pipelineAt("merge").approve(NOW)).toThrow("an approval needs the step pr-gate, but the pipeline is at merge");
   });
 });
 
 describe("Pipeline.handleChangeRequest", () => {
   it("sends a person's change request back to implement and counts the review as handled", () => {
-    const pipeline = pipelineAt("human-review", { pullRequest: 31, returns: { "human-review": 1 } });
+    const pipeline = pipelineAt("pr-gate", { pullRequest: 31, returns: { "pr-gate": 1 } });
     pipeline.handleChangeRequest(503, "@carol requested changes on #31:\nRename the index.", NOW);
-    expect(pipeline).toMatchObject({ step: "implement", returns: { "human-review": 2 }, findings: ["@carol requested changes on #31:\nRename the index."], handledReview: 503 });
+    expect(pipeline).toMatchObject({ step: "implement", returns: { "pr-gate": 2 }, findings: ["@carol requested changes on #31:\nRename the index."], handledReview: 503 });
   });
 
-  it("refuses another step than human-review", () => {
+  it("refuses another step than pr-gate", () => {
     const pipeline = pipelineAt("merge");
-    expect(() => pipeline.handleChangeRequest(503, "Rename it", NOW)).toThrow("a change request needs the step human-review, but the pipeline is at merge");
+    expect(() => pipeline.handleChangeRequest(503, "Rename it", NOW)).toThrow("a change request needs the step pr-gate, but the pipeline is at merge");
   });
 
   it("refuses a review that was handled already", () => {
-    const pipeline = pipelineAt("human-review", { handledReview: 503 });
+    const pipeline = pipelineAt("pr-gate", { handledReview: 503 });
     expect(() => pipeline.handleChangeRequest(503, "Rename it", NOW)).toThrow("the review 503 was handled already");
-    expect(pipeline.step).toBe("human-review");
+    expect(pipeline.step).toBe("pr-gate");
   });
 });
 
 describe("Pipeline.noteReviewersNotified", () => {
   it("remembers that the people who review were asked", () => {
-    const pipeline = pipelineAt("human-review", { pullRequest: 31 });
+    const pipeline = pipelineAt("pr-gate", { pullRequest: 31 });
     pipeline.noteReviewersNotified();
     expect(pipeline.notified).toBe(true);
   });
 
   it("refuses notified reviewers without a pull request, and rolls the change back", () => {
-    const pipeline = pipelineAt("human-review");
+    const pipeline = pipelineAt("pr-gate");
     expect(() => pipeline.noteReviewersNotified()).toThrow(/reviewers are notified only on a pull request/);
     expect(pipeline.notified).toBe(false);
   });
@@ -744,7 +806,7 @@ describe("Pipeline.noteReviewersNotified", () => {
 
 describe("Pipeline.noteInReview", () => {
   it("remembers that the issue was moved to In Review, at any step, and keeps it through every later step", () => {
-    const pipeline = pipelineAt("human-review", { pullRequest: 31 });
+    const pipeline = pipelineAt("pr-gate", { pullRequest: 31 });
     pipeline.noteInReview();
     expect(pipeline.inReview).toBe(true);
     pipeline.handleChangeRequest(503, "Rename it", NOW);
@@ -763,6 +825,6 @@ describe("Pipeline.noteMergeRequested", () => {
   });
 
   it("refuses another step than merge", () => {
-    expect(() => pipelineAt("human-review").noteMergeRequested(HEAD_SHA)).toThrow("a merge request needs the step merge, but the pipeline is at human-review");
+    expect(() => pipelineAt("pr-gate").noteMergeRequested(HEAD_SHA)).toThrow("a merge request needs the step merge, but the pipeline is at pr-gate");
   });
 });

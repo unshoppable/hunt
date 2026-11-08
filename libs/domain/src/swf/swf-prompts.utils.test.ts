@@ -110,8 +110,8 @@ describe("session files", () => {
       ),
     ).toBe(true);
     expect(unwrapped).toContain(
-      "The work runs as a pipeline of steps that Hunt drives: plan, implement, verify, review, pr, then human-review (the approval of the repository's " +
-        "review workflow, or of a person when that workflow does not approve) and merge.",
+      "The work runs as a pipeline of steps that Hunt drives: plan, implement, verify, review, pr, then pr-gate (Hunt waits for the pull " +
+        "request's checks and an approval, by a person or by a review workflow of the repository) and merge.",
     );
     expect(prompt).not.toContain("scorer");
     expect(unwrapped).toContain(
@@ -285,7 +285,7 @@ describe("stepPrompt", () => {
     expect(unwrap(pr)).toContain("contains `Closes #12`");
     expect(unwrap(pr)).toContain("The plan in `.hunt/swf/steps/01-plan.md`, the results of the implement and verify runs beside it");
     expect(pr).toContain("`<!-- hunt:step {\"step\":\"pr\",\"pullRequest\":<number>} -->`");
-    expect(unwrap(pr)).toContain("its checks and the repository's review workflow run on GitHub; that workflow decides whether a person reviews before Hunt merges it.");
+    expect(unwrap(pr)).toContain("once its checks on GitHub are done and it is approved, by a person or by a review workflow of the repository, Hunt merges it.");
     expect(pr).not.toContain("scorer");
     expect(pr).not.toContain("conventional commit");
     expect(pr).not.toContain("a person reviews before the merge:");
@@ -296,7 +296,7 @@ describe("stepPrompt", () => {
   });
 
   it("has no prompt for the steps the poller carries out itself", () => {
-    for (const step of ["human-review", "merge"] as const) {
+    for (const step of ["pr-gate", "merge"] as const) {
       expect(() => stepPrompt(prompts, REPO, fixLogin, [], labels, pipelineAt(step))).toThrow(`the step ${step} has no prompt for the agent`);
     }
   });
@@ -378,7 +378,7 @@ describe("gatePrompt", () => {
   });
 
   it("has no gate at the steps of the poller", () => {
-    expect(() => gatePrompt(prompts, labels, pipelineAt("human-review", { pullRequest: 31 }), [lint])).toThrow("the step human-review has no gate");
+    expect(() => gatePrompt(prompts, labels, pipelineAt("pr-gate", { pullRequest: 31 }), [lint])).toThrow("the step pr-gate has no gate");
   });
 });
 

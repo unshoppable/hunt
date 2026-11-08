@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { changeRequestFinding, failureComment, humanReviewComment, missingPullRequestComment, noPullRequestComment, replacedVmComment, stepSettingsError } from "./swf-comments.utils.ts";
+import { changeRequestFinding, failureComment, reviewRequestComment, missingPullRequestComment, noPullRequestComment, replacedVmComment, stepSettingsError } from "./swf-comments.utils.ts";
 
 describe("issue comments", () => {
   it("reports a failure in a code block and names the VM that stays", () => {
@@ -23,13 +23,13 @@ describe("issue comments", () => {
   });
 });
 
-describe("humanReviewComment", () => {
-  it("mentions the people and points them to the review workflow's comment on the pull request", () => {
-    expect(humanReviewComment(["alice", "bob"], 12)).toBe(
-      "**👀 REVIEW** @alice @bob\n\nThe repository's review workflow asks for a human review of this pull request for #12 before Hunt merges it; its comment on the pull request says why. " +
+describe("reviewRequestComment", () => {
+  it("mentions the people and asks them for an approval or a change request", () => {
+    expect(reviewRequestComment(["alice", "bob"], 12)).toBe(
+      "**👀 REVIEW** @alice @bob\n\nThis pull request for #12 waits for an approval before Hunt merges it. " +
         "Approve it to let Hunt merge it, or request changes and Hunt's agent will work them in.",
     );
-    expect(humanReviewComment([], 12)).toContain("**👀 REVIEW** \n\n");
+    expect(reviewRequestComment([], 12)).toContain("**👀 REVIEW** \n\n");
   });
 });
 

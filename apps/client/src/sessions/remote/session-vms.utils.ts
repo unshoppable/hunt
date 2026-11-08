@@ -95,8 +95,8 @@ export function sessionVmMarkState(vm: SessionVm): MarkState {
  */
 export function sessionVmAgentLabel(vm: SessionVm): { label: string; tone: "question" | "done" | "failed" | "neutral"; title: string } | null {
   switch (vm.agent) {
-    case "human-review":
-      return { label: "Human review", tone: "neutral", title: "The pull request waits for the approval of the repository's review workflow or a person" };
+    case "pr-gate":
+      return { label: "PR Gate", tone: "neutral", title: "The pull request waits for its checks and an approval" };
     case "merge":
       return { label: "Merging", tone: "neutral", title: "Hunt merges the pull request" };
     case "question":

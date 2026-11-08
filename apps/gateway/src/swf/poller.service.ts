@@ -29,16 +29,17 @@
  * metadata `hunt-agent` records for Hunt's lists, and the record comment holds the pipeline's state. The runner on the
  * VM drives the agent steps (plan, implement, verify, review, pr) and edits the record comment itself; a record of an
  * older version (`Pipeline.RECORD_VERSION`), whose steps meant something else, is left alone with a warning. The poller
- * steps are the poller's; none of them waits for the pull request's CI, which runs on GitHub, nor sends a failing check
- * back. `human-review` reads GitHub's review decision, which the repository's review workflow sets: it reviews every
- * pull request and approves it as its own GitHub App when no person has to review, and the ruleset requires one
- * approval, so an approved pull request goes on to `merge`; otherwise, once the head commit's checks are done (the
- * workflow's run among them), it asks the issue's people once (`askForHumanReview`) and waits for a person's approval
- * (a change request goes back to implement). `merge` updates the branch when it is behind and merges it the way the
- * settings' `mergeMethod` says once GitHub reports it as mergeable, and sends a pull request that lost its approval with
- * a new head back to `human-review`; then the issue gets `swf:done` and moves to the settings' `projectStatus.done` in
- * its projects. The first poll at `human-review` moves the issue to `projectStatus.inReview`. An issue still labelled
- * with the retired step `checks` reads as `human-review` (`WorkflowLabels`) until its next step replaces the label.
+ * steps are the poller's, and they decide from GitHub's state alone (the people's reviews, the review decision, the
+ * merge state, the head commit's checks), never from a particular reviewer or workflow; a failing check sends nothing
+ * back. `pr-gate` (`Pipeline.prGateOutcome`) waits until the head commit's checks are done, goes on to `merge` once a
+ * person or GitHub's review decision approved the pull request (a review workflow of the repository, such as a scoring
+ * GitHub Action, may approve it as its own GitHub App), and otherwise asks the issue's people once (`askForReview`) and
+ * waits; a person's change request goes back to implement. `merge` updates the branch when it is behind, merges it the
+ * way the settings' `mergeMethod` says once GitHub reports it as mergeable, and sends a pull request GitHub reports as
+ * blocked once its checks are done back to `pr-gate`; then the issue gets `swf:done` and moves to the settings'
+ * `projectStatus.done` in its projects. The first poll at a poller step moves the issue to `projectStatus.inReview`. An
+ * issue still labelled with a retired step (`swf:human-review`, `swf:checks`) reads as `pr-gate` (`WorkflowLabels`)
+ * until its next step replaces the label.
  * These steps need GitHub only, so they go on while the idle
  * sweeper keeps the session's VM suspended. While the issue is labelled `swf:question`, the poller watches it for the
  * answer: a comment by someone other than the app's bot user after the agent's question (`newAnswers` in
@@ -94,7 +95,7 @@ import {
   changeRequestFinding,
   closedComment,
   failureComment,
-  humanReviewComment,
+  reviewRequestComment,
   mergedComment,
   missingPullRequestComment,
   noPullRequestComment,
@@ -446,9 +447,9 @@ export class Poller {
   }
 
   /**
-   * A poller step, from the state of the pull request: `human-review` follows the decision of the repository's review
-   * workflow or a person's, `merge` GitHub's merge state. The first poll at `human-review` moves the issue to the
-   * settings' `projectStatus.inReview`, since the runner, not the poller, moved the pipeline into human-review.
+   * A poller step, from the state of the pull request: `pr-gate` follows the people's reviews, the head commit's checks
+   * and GitHub's review decision, `merge` GitHub's merge state. The first poll at a poller step moves the issue to the
+   * settings' `projectStatus.inReview`, since the runner, not the poller, moved the pipeline into pr-gate.
    */
   private async drivePollerStep(context: SessionContext): Promise<void> {
     const { key, github, repo, recordId, issue, labels, pipeline, watched, bot } = context;
@@ -470,25 +471,23 @@ export class Poller {
       await this.failIssue(key, github, repo, issue.number, labels, step, closedComment(pullRequest.number));
       return;
     }
-    if (step === "human-review" && !pipeline.inReview) {
+    if (!pipeline.inReview) {
       await this.moveToStatus(github, key, repo, issue.number, pipeline.settings.projectStatus.inReview);
       pipeline.noteInReview();
       await this.records.save(repo, recordId, pipeline);
       await this.recordOnVm(context);
     }
     switch (step) {
-      case "human-review": {
-        const outcome = pipeline.humanReviewOutcome(await github.reviews(repo, pullRequest.number), bot, pullRequest.isApproved);
-        if (outcome.kind === "wait" && !pullRequest.areChecksDone) {
-          this.waitOnce(watched, key, `human-review: waiting for the checks of #${pullRequest.number}, the repository's review workflow among them`);
-        } else if (outcome.kind === "wait") {
-          if (!pipeline.notified) {
-            await this.askForHumanReview(context, pullRequest.number);
+      case "pr-gate": {
+        const outcome = pipeline.prGateOutcome(await github.reviews(repo, pullRequest.number), bot, pullRequest);
+        if (outcome.kind === "wait") {
+          if (outcome.asksPeople && !pipeline.notified) {
+            await this.askForReview(context, pullRequest.number);
             pipeline.noteReviewersNotified();
             await this.records.save(repo, recordId, pipeline);
             await this.recordOnVm(context);
           }
-          this.waitOnce(watched, key, `human-review: waiting for a person to approve #${pullRequest.number}`);
+          this.waitOnce(watched, key, `pr-gate: ${outcome.reason}`);
         } else if (outcome.kind === "changes") {
           const inline = await github.reviewComments(repo, pullRequest.number, outcome.review.id);
           const finding = changeRequestFinding(pullRequest.number, outcome.review, inline);
@@ -496,7 +495,7 @@ export class Poller {
           pipeline.handleChangeRequest(outcome.review.id, finding, this.deps.now());
           await this.enterStep(context);
         } else {
-          const approvers = outcome.by.length > 0 ? outcome.by.join(", ") : "the repository's review workflow";
+          const approvers = outcome.by.length > 0 ? outcome.by.join(", ") : "GitHub's review decision";
           this.deps.log(`${key}: #${pullRequest.number} was approved by ${approvers}; the pipeline goes on with merge`);
           pipeline.approve(this.deps.now());
           await this.enterStep(context);
@@ -521,9 +520,9 @@ export class Poller {
           this.deps.log(`${key}: #${pullRequest.number} conflicts with its base; back to implement`);
           pipeline.sendBackToImplement(outcome.findings, this.deps.now());
           await this.enterStep(context);
-        } else if (outcome.kind === "human") {
-          pipeline.requireHumanReview(this.deps.now());
-          this.deps.log(`${key}: #${pullRequest.number} is blocked without an approval; a person reviews it`);
+        } else if (outcome.kind === "review") {
+          pipeline.requireReview(this.deps.now());
+          this.deps.log(`${key}: #${pullRequest.number} is blocked (${outcome.reason}); back to pr-gate`);
           await this.enterStep(context);
         }
         return;
@@ -564,11 +563,11 @@ export class Poller {
   }
 
   /** Asks the issue's people (`mentionsOf`) to review the pull request and mentions them in a comment on it. */
-  private async askForHumanReview(context: SessionContext, pullRequest: number): Promise<void> {
+  private async askForReview(context: SessionContext, pullRequest: number): Promise<void> {
     const { key, github, repo, issue } = context;
     const people = mentionsOf(issue);
     await github.requestReviewers(repo, pullRequest, people);
-    await github.comment(repo, pullRequest, humanReviewComment(people, issue.number));
+    await github.comment(repo, pullRequest, reviewRequestComment(people, issue.number));
     this.deps.log(`${key}: asked ${people.map((login) => `@${login}`).join(", ") || "nobody (no assignee or author)"} to review #${pullRequest}`);
   }
 

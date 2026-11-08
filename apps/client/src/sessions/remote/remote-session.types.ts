@@ -32,7 +32,7 @@ export type SessionVm = {
   createdAt: string | null;
   /**
    * The state of the session's agent as the gateway recorded it: the step of the poller's pipeline (`plan`,
-   * `implement`, `verify`, `review`, `pr`, `human-review`, `merge`), `question` (waits for an answer), `done` or
+   * `implement`, `verify`, `review`, `pr`, `pr-gate`, `merge`), `question` (waits for an answer), `done` or
    * `failed`; empty when unknown.
    */
   agent: string;
@@ -87,7 +87,7 @@ export type RemoteTarget = {
   issue: number | null;
   /**
    * The state of the session's agent as the gateway recorded it: the step of the poller's pipeline (`plan`,
-   * `implement`, `verify`, `review`, `pr`, `human-review`, `merge`), `question` (waits for an answer), `done` or
+   * `implement`, `verify`, `review`, `pr`, `pr-gate`, `merge`), `question` (waits for an answer), `done` or
    * `failed`; empty when unknown.
    */
   agent: string;

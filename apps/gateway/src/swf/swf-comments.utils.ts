@@ -25,12 +25,12 @@ export function stepSettingsError(problem: string): string {
   );
 }
 
-/** The comment that asks the people to review the pull request, which the repository's review workflow did not approve. */
-export function humanReviewComment(mentions: string[], issue: number): string {
+/** The comment that asks the people to review the pull request, which waits for an approval before Hunt merges it. */
+export function reviewRequestComment(mentions: string[], issue: number): string {
   const who = mentions.map((login) => `@${login}`).join(" ");
   return (
-    `**👀 REVIEW** ${who}\n\nThe repository's review workflow asks for a human review of this pull request for #${issue} before Hunt merges it; its comment on the ` +
-    "pull request says why. Approve it to let Hunt merge it, or request changes and Hunt's agent will work them in."
+    `**👀 REVIEW** ${who}\n\nThis pull request for #${issue} waits for an approval before Hunt merges it. ` +
+    "Approve it to let Hunt merge it, or request changes and Hunt's agent will work them in."
   );
 }
 

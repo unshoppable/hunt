@@ -22,7 +22,7 @@ describe("StepSettings", () => {
     expect(JSON.parse(JSON.stringify(settings))).toEqual(plain);
     expect(settings.isEqualTo(SETTINGS)).toBe(true);
     expect(settings.of("implement")).toEqual({ skill: SKILLS.implement, model: null, effort: null, maxReturns: null, minSeverity: null, gate: IMPLEMENT_GATE });
-    expect(settings.of("human-review")).toEqual({ skill: null, model: null, effort: null, maxReturns: DEFAULT_MAX_RETURNS["human-review"], minSeverity: null, gate: [] });
+    expect(settings.of("pr-gate")).toEqual({ skill: null, model: null, effort: null, maxReturns: DEFAULT_MAX_RETURNS["pr-gate"], minSeverity: null, gate: [] });
     expect(settings.of("review")).toEqual({ skill: SKILLS.review, model: null, effort: null, maxReturns: DEFAULT_MAX_RETURNS.review, minSeverity: DEFAULT_MIN_SEVERITY, gate: [] });
   });
 

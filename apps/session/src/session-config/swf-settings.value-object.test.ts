@@ -23,7 +23,7 @@ describe("SwfSettings", () => {
       verify: { skill: "swf-verify", ...UNSET, maxReturns: 5, minSeverity: 3, gate: [] },
       review: { skill: "swf-review", ...UNSET, maxReturns: 3, minSeverity: 3, gate: [] },
       pr: { skill: "swf-pr", ...UNSET, maxReturns: null, minSeverity: null, gate: [] },
-      "human-review": { skill: null, ...UNSET, maxReturns: 3, minSeverity: null, gate: [] },
+      "pr-gate": { skill: null, ...UNSET, maxReturns: 3, minSeverity: null, gate: [] },
       merge: { skill: null, ...UNSET, maxReturns: 2, minSeverity: null, gate: [] },
     });
   });
@@ -69,7 +69,7 @@ describe("SwfSettings", () => {
       expect(() => new SwfSettings({ steps: { ...STEPS, merge } })).toThrow(/only an agent step/);
     }
     expect(() => new SwfSettings({ steps: { ...STEPS, implement: { skill: "swf-implement", maxReturns: 2 } } })).toThrow(/only a returning step has maxReturns/);
-    expect(() => new SwfSettings({ steps: { ...STEPS, "human-review": { minSeverity: 2 } } })).toThrow(/only a scoring step has minSeverity/);
+    expect(() => new SwfSettings({ steps: { ...STEPS, "pr-gate": { minSeverity: 2 } } })).toThrow(/only a scoring step has minSeverity/);
     expect(() => new SwfSettings({ steps: { ...STEPS, plan: { skill: "swf-plan", minSeverity: 2 } } })).toThrow(/only a scoring step has minSeverity/);
   });
 

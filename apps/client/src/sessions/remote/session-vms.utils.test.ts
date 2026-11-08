@@ -62,10 +62,10 @@ describe("sessionVmAgentLabel", () => {
   });
 
   it("names the steps in which the pull request waits for others in a neutral tone", () => {
-    expect(sessionVmAgentLabel(sessionVm({ agent: "human-review" }))).toEqual({
-      label: "Human review",
+    expect(sessionVmAgentLabel(sessionVm({ agent: "pr-gate" }))).toEqual({
+      label: "PR Gate",
       tone: "neutral",
-      title: "The pull request waits for the approval of the repository's review workflow or a person",
+      title: "The pull request waits for its checks and an approval",
     });
     expect(sessionVmAgentLabel(sessionVm({ agent: "merge" }))).toEqual({ label: "Merging", tone: "neutral", title: "Hunt merges the pull request" });
   });
@@ -125,7 +125,7 @@ describe("vmUptimeLabel", () => {
 
 describe("sessionVmMarkState", () => {
   it("is busy only while the pipeline is at a step on a running VM and asks while the agent waits for an answer", () => {
-    for (const agent of ["plan", "implement", "verify", "review", "pr", "human-review", "merge", "running"]) {
+    for (const agent of ["plan", "implement", "verify", "review", "pr", "pr-gate", "merge", "running"]) {
       expect(sessionVmMarkState(sessionVm({ agent })), agent).toEqual({ isBusy: true, hasQuestion: false });
     }
     expect(sessionVmMarkState(sessionVm({ isRunning: false, status: "TERMINATED" }))).toEqual({ isBusy: false, hasQuestion: false });

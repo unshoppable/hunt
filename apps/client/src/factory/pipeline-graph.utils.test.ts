@@ -46,8 +46,8 @@ describe("pipelineGraph", () => {
       "implement->verify",
       "verify->review",
       "review->pr",
-      "pr->human-review",
-      "human-review->merge",
+      "pr->pr-gate",
+      "pr-gate->merge",
     ]);
     const returns = edges.filter((edge): edge is ReturnEdge => edge.kind === "return");
     expect(returns).toEqual([{ id: "return:3->4", kind: "return", source: "verify", target: "implement", cause: 3, n: 4, index: 1, findings: 2, label: "#1 · 2 findings" }]);
@@ -81,10 +81,10 @@ describe("pipelineGraph", () => {
   });
 
   it("adds a jump edge for a last transition that no edge connects, and marks none for a step that started over", () => {
-    const withdrawn = [run(1, "human-review", "passed"), run(2, "merge", "passed"), run(3, "human-review", "running")];
-    const graph = pipelineGraph({ step: "human-review", runs: withdrawn });
-    expect(graph.lastEdgeId).toBe("jump:merge->human-review");
-    expect(graph.edges.filter((edge) => edge.kind === "jump")).toEqual([{ id: "jump:merge->human-review", kind: "jump", source: "merge", target: "human-review" }]);
+    const withdrawn = [run(1, "pr-gate", "passed"), run(2, "merge", "passed"), run(3, "pr-gate", "running")];
+    const graph = pipelineGraph({ step: "pr-gate", runs: withdrawn });
+    expect(graph.lastEdgeId).toBe("jump:merge->pr-gate");
+    expect(graph.edges.filter((edge) => edge.kind === "jump")).toEqual([{ id: "jump:merge->pr-gate", kind: "jump", source: "merge", target: "pr-gate" }]);
     const restarted = pipelineGraph({ step: "implement", runs: [run(1, "implement", "restarted"), run(2, "implement", "running")] });
     expect(restarted.lastTransition).toEqual({ source: "implement", target: "implement", n: 2 });
     expect(restarted.lastEdgeId).toBeNull();
@@ -111,8 +111,8 @@ describe("pipelineLayoutInput", () => {
   });
 
   it("routes a jump edge between the tops of its steps, without a label", () => {
-    const input = pipelineLayoutInput(pipelineGraph({ step: "human-review", runs: [run(1, "review", "passed"), run(2, "human-review", "running")] }));
-    expect(input.edges.find((edge) => edge.id === "jump:review->human-review")).toEqual({ id: "jump:review->human-review", source: "review:top", target: "human-review:top" });
+    const input = pipelineLayoutInput(pipelineGraph({ step: "pr-gate", runs: [run(1, "review", "passed"), run(2, "pr-gate", "running")] }));
+    expect(input.edges.find((edge) => edge.id === "jump:review->pr-gate")).toEqual({ id: "jump:review->pr-gate", source: "review:top", target: "pr-gate:top" });
   });
 });
 

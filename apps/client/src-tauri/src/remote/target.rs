@@ -45,7 +45,7 @@ pub struct RemoteTarget {
     #[serde(default)]
     pub issue: Option<u64>,
     /// The state of the session's agent as the gateway recorded it: the step of the poller's pipeline (`plan`,
-    /// `implement`, `verify`, `review`, `pr`, `checks`, `human-review`, `merge`), `question` (waits for an answer), `done`
+    /// `implement`, `verify`, `review`, `pr`, `pr-gate`, `merge`), `question` (waits for an answer), `done`
     /// or `failed`; empty when unknown.
     #[serde(default)]
     pub agent: String,

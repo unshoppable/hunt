@@ -38,7 +38,7 @@ pub struct AdoptableSession {
     pub is_running: bool,
     pub created_at: Option<chrono::DateTime<chrono::Utc>>,
     /// The state of the session's agent as the gateway recorded it: the step of the poller's pipeline (`plan`,
-    /// `implement`, `verify`, `review`, `pr`, `checks`, `human-review`, `merge`), `question` (waits for an answer), `done`
+    /// `implement`, `verify`, `review`, `pr`, `pr-gate`, `merge`), `question` (waits for an answer), `done`
     /// or `failed`; empty when unknown.
     pub agent: String,
 }

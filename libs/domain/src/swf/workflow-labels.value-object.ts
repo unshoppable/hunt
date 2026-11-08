@@ -11,7 +11,7 @@ const STEP_DESCRIPTIONS: Record<SwfStep, string> = {
   verify: "Hunt's agent checks its change against the issue",
   review: "Hunt's agent reviews the change by the repository's review criteria",
   pr: "Hunt's agent opens the pull request",
-  "human-review": "The pull request waits for the approval of the repository's review workflow or a person",
+  "pr-gate": "The pull request waits for its checks and an approval",
   merge: "Hunt merges the pull request",
 };
 
@@ -68,7 +68,7 @@ export class WorkflowLabels extends ValueObject<typeof ZodWorkflowLabelsState> {
     return `${this.label}:failed`;
   }
 
-  /** The labels of an issue the pipeline works on: every step's, every retired step's and the question's. */
+  /** The labels of an issue the pipeline works on: every step's, every former step's and the question's. */
   get inProgress(): string[] {
     return [...SWF_STEPS.map((step) => this.step(step)), ...[...RETIRED_STEPS.keys()].map((step) => `${this.label}:${step}`), this.question];
   }
@@ -78,7 +78,7 @@ export class WorkflowLabels extends ValueObject<typeof ZodWorkflowLabelsState> {
     return `${this.label}:${step}`;
   }
 
-  /** The step `name` labels, the successor for the label of a retired step; null for any other label. */
+  /** The step `name` labels, the successor for the label of a former step; null for any other label. */
   stepOf(name: string): SwfStep | null {
     const prefix = `${this.label}:`;
     if (!name.startsWith(prefix)) return null;
@@ -86,10 +86,10 @@ export class WorkflowLabels extends ValueObject<typeof ZodWorkflowLabelsState> {
     return isSwfStep(step) ? step : null;
   }
 
-  /** The repository labels the poller creates when they are missing; the human review in red. */
+  /** The repository labels the poller creates when they are missing; the pull request's review in red. */
   specs(): LabelSpec[] {
     return [
-      ...SWF_STEPS.map((step) => ({ name: this.step(step), color: step === "human-review" ? "e99695" : "fbca04", description: STEP_DESCRIPTIONS[step] })),
+      ...SWF_STEPS.map((step) => ({ name: this.step(step), color: step === "pr-gate" ? "e99695" : "fbca04", description: STEP_DESCRIPTIONS[step] })),
       { name: this.question, color: "d876e3", description: "Hunt's agent asked a question on this issue and waits for the answer" },
       { name: this.done, color: "0e8a16", description: "Hunt merged the pull request for this issue" },
       { name: this.failed, color: "d93f0b", description: "Hunt could not complete this issue" },

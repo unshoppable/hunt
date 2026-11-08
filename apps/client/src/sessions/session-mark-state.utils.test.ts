@@ -58,7 +58,7 @@ describe("sessionMarkState", () => {
     expect(sessionMarkState(session({ agent: "running" }), chat({ items: [question] }))).toEqual({ isBusy: false, hasQuestion: true });
     expect(sessionMarkState(session({ agent: "running" }), undefined)).toEqual({ isBusy: true, hasQuestion: false });
     expect(sessionMarkState(session({ agent: "implement" }), undefined)).toEqual({ isBusy: true, hasQuestion: false });
-    expect(sessionMarkState(session({ agent: "human-review" }), undefined)).toEqual({ isBusy: true, hasQuestion: false });
+    expect(sessionMarkState(session({ agent: "pr-gate" }), undefined)).toEqual({ isBusy: true, hasQuestion: false });
     expect(sessionMarkState(session({ agent: "done" }), undefined)).toEqual({ isBusy: false, hasQuestion: false });
     expect(sessionMarkState(session({ agent: "question" }), chat())).toEqual({ isBusy: false, hasQuestion: true });
     expect(sessionMarkState(session({ agent: "" }), undefined)).toEqual({ isBusy: false, hasQuestion: false });
@@ -77,7 +77,7 @@ describe("sessionStepLabel", () => {
   it("names the pipeline's step, else the gateway's, and nothing while no step is under way", () => {
     expect(sessionStepLabel("implement", null)).toBe("implement");
     expect(sessionStepLabel("implement", "verify")).toBe("verify");
-    expect(sessionStepLabel("", "human-review")).toBe("human-review");
+    expect(sessionStepLabel("", "pr-gate")).toBe("pr-gate");
     expect(sessionStepLabel("merge", "done")).toBeNull();
     expect(sessionStepLabel("question", null)).toBeNull();
     expect(sessionStepLabel("failed", null)).toBeNull();

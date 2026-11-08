@@ -59,7 +59,7 @@ const OUTCOME_CHIP: Record<Run["outcome"], string> = {
  * The Factory tab of a session of the swf poller: the pipeline of its issue as the record in `.hunt/swf/pipeline.json` of
  * the worktree tells it, pulled from the VM whenever the runner wrote it, so it follows the pipeline live and reads
  * without the VM too. On top the steps plan →
- * implement → verify → review → pr → human-review → merge as a graph, each with its run count, the current step
+ * implement → verify → review → pr → pr-gate → merge as a graph, each with its run count, the current step
  * marked and every return to implement as an amber edge labelled with its findings; below the runs in order with their
  * outcome and duration, and under them the step result and the conversation of the selected run (by default the latest
  * one that has either; the selection is stored per session, where `hunt-client factory` reads and sets it).
@@ -310,7 +310,7 @@ function PlanUsageOverlay({ sessionId, pipeline, isTurnRunning }: { sessionId: s
 
 /**
  * One line on where the pipeline stands, for the header: the step, the last transition, the returns of each step that
- * sent the issue back and whether a person reviews.
+ * sent the issue back and, at pr-gate, what the pull request waits for.
  */
 function statusText(pipeline: Pipeline, lastTransition: Transition | null): string {
   const parts = [`At ${STEP_LABELS[pipeline.step]}`];
@@ -322,8 +322,8 @@ function statusText(pipeline: Pipeline, lastTransition: Transition | null): stri
       parts.push(`${pipeline.returnCountOf(step)} (${STEP_LABELS[step]})`);
     }
   }
-  if (pipeline.step === "human-review") {
-    parts.push("a person reviews");
+  if (pipeline.step === "pr-gate") {
+    parts.push("waits for its checks and an approval");
   }
   return parts.join(" · ");
 }

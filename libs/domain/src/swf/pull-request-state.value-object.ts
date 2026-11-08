@@ -28,7 +28,7 @@ export type MergeOutcome =
   | { kind: "update" }
   | { kind: "wait"; reason: string }
   | { kind: "fix"; findings: string[] }
-  | { kind: "human" }
+  | { kind: "review"; reason: string }
   | { kind: "merged" }
   | { kind: "closed" };
 
@@ -61,19 +61,11 @@ export class PullRequestState extends ValueObject<typeof ZodPullRequestState> {
   }
 
   /**
-   * Whether the checks of the head commit ended, passed or failed, and with them the run of the repository's review
-   * workflow, which is one of them: until then the workflow may still approve, so human-review asks no person yet. A
-   * failing check sends nothing back; the people see it on GitHub.
-   */
-  get areChecksDone(): boolean {
-    return this.checks === "success" || this.checks === "failure";
-  }
-
-  /**
-   * What the merge step does with the pull request, from GitHub's merge state; `requestedSha` is the head the poller
-   * already asked GitHub to merge or update, null without such a request. A branch update gives the pull request a new
-   * head, which the review workflow judges again: a mergeable pull request waits while its checks run, and a blocked one whose
-   * checks passed without an approval goes to a person.
+   * What the merge step does with the pull request, from GitHub's state; `requestedSha` is the head the poller already
+   * asked GitHub to merge or update, null without such a request. A mergeable pull request is merged once its checks
+   * ran, one behind its base updated (its new head runs its checks and gets reviewed again), one with conflicts goes back
+   * to the agent; one GitHub reports as blocked goes back to pr-gate once its checks are done (its approval was
+   * withdrawn, or a required check failed) and waits while they run.
    */
   mergeOutcome(requestedSha: string | null): MergeOutcome {
     if (this.isMerged) return { kind: "merged" };
@@ -93,8 +85,8 @@ export class PullRequestState extends ValueObject<typeof ZodPullRequestState> {
           findings: [`Merge: the branch conflicts with the base branch; merge the base branch into ${this.shortSha}'s branch, resolve the conflicts and push`],
         };
       case "BLOCKED":
-        if (this.checks === "success" && !this.isApproved) return { kind: "human" };
-        return { kind: "wait", reason: `GitHub reports the pull request as blocked (a required check or review is missing)` };
+        if (this.checks === "pending" || this.checks === "none") return { kind: "wait", reason: "GitHub reports the pull request as blocked while its checks run" };
+        return { kind: "review", reason: this.isApproved ? "a required check failed or another rule is unmet" : "it has no approval" };
       default:
         return { kind: "wait", reason: `GitHub reports the merge state ${this.mergeState}` };
     }

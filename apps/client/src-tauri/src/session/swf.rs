@@ -10,10 +10,11 @@
 //! session run one after the other.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 use std::sync::{Arc, LazyLock, Mutex};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
 use uuid::Uuid;
 
@@ -55,6 +56,20 @@ pub struct SwfPipelineFiles {
     pub steps: Vec<SwfStepFile>,
     /// The transcript files of the runs' conversations, ascending by run.
     pub transcripts: Vec<SwfStepFile>,
+    /// The tokens each run with a transcript used, ascending by run.
+    pub tokens: Vec<RunTokens>,
+}
+
+/// The tokens the conversation of the run `n` used, summed over the model responses its transcript records; mirror of
+/// `RunTokens` in src/sessions/swf-pipeline.types.ts.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunTokens {
+    pub n: u32,
+    pub input: u64,
+    pub cache_write: u64,
+    pub cache_read: u64,
+    pub output: u64,
 }
 
 /// A file `steps/<nn>-<step>.md` or `transcripts/<nn>-<step>.jsonl` of the run `n` of `step`: the body of the result it
@@ -124,8 +139,77 @@ pub fn read_pipeline(worktree: &Path) -> Result<Option<SwfPipelineFiles>, String
     let pipeline =
         serde_json::from_str(&content).map_err(|error| format!("failed to read {}: it is not valid JSON: {error}", path.display()))?;
     let steps = run_files(&dir.join(STEPS_DIR), STEP_EXTENSION)?.into_iter().map(|(_, file)| file).collect();
-    let transcripts = run_files(&dir.join(TRANSCRIPTS_DIR), TRANSCRIPT_EXTENSION)?.into_iter().map(|(_, file)| file).collect();
-    Ok(Some(SwfPipelineFiles { pipeline, steps, transcripts }))
+    let transcript_files = run_files(&dir.join(TRANSCRIPTS_DIR), TRANSCRIPT_EXTENSION)?;
+    let tokens = transcript_files.iter().map(|(name, file)| cached_transcript_tokens(&dir.join(TRANSCRIPTS_DIR).join(name), file.n)).collect::<Result<_, _>>()?;
+    let transcripts = transcript_files.into_iter().map(|(_, file)| file).collect();
+    Ok(Some(SwfPipelineFiles { pipeline, steps, transcripts, tokens }))
+}
+
+/// The token counts of each transcript read so far, with the size and modification time they were counted at: a
+/// finished run's transcript never changes, so only the running one is counted again.
+static TRANSCRIPT_TOKENS: LazyLock<Mutex<HashMap<PathBuf, (u64, SystemTime, RunTokens)>>> = LazyLock::new(Default::default);
+
+/// The tokens of the run `n` whose transcript is `path`, from `TRANSCRIPT_TOKENS` while the file is unchanged.
+fn cached_transcript_tokens(path: &Path, n: u32) -> Result<RunTokens, String> {
+    let metadata = std::fs::metadata(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let stamp = (metadata.len(), metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH));
+    if let Some((len, modified, tokens)) = TRANSCRIPT_TOKENS.lock().unwrap().get(path) {
+        if (*len, *modified) == stamp {
+            return Ok(*tokens);
+        }
+    }
+    let content = std::fs::read_to_string(path).map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+    let tokens = transcript_tokens(&content, n);
+    TRANSCRIPT_TOKENS.lock().unwrap().insert(path.to_path_buf(), (stamp.0, stamp.1, tokens));
+    Ok(tokens)
+}
+
+/// A line of a Claude Code transcript, as far as its token usage goes.
+#[derive(Deserialize)]
+struct TranscriptLine {
+    #[serde(rename = "type")]
+    kind: String,
+    message: Option<TranscriptMessage>,
+}
+
+#[derive(Deserialize)]
+struct TranscriptMessage {
+    id: Option<String>,
+    usage: Option<TranscriptUsage>,
+}
+
+#[derive(Deserialize, Clone, Copy)]
+struct TranscriptUsage {
+    input_tokens: Option<u64>,
+    cache_creation_input_tokens: Option<u64>,
+    cache_read_input_tokens: Option<u64>,
+    output_tokens: Option<u64>,
+}
+
+/// The tokens the transcript `jsonl` of the run `n` records. Claude Code writes a line per content block of a model
+/// response, each with the response's usage, so every response counts once, by its id, with the usage its last line
+/// gives; lines that are not JSON or carry no usage are left out.
+fn transcript_tokens(jsonl: &str, n: u32) -> RunTokens {
+    let mut responses: HashMap<String, TranscriptUsage> = HashMap::new();
+    for line in jsonl.lines() {
+        if !line.contains("\"usage\"") {
+            continue;
+        }
+        let Ok(TranscriptLine { kind, message: Some(TranscriptMessage { id: Some(id), usage: Some(usage) }) }) = serde_json::from_str(line) else {
+            continue;
+        };
+        if kind == "assistant" {
+            responses.insert(id, usage);
+        }
+    }
+    let mut tokens = RunTokens { n, ..RunTokens::default() };
+    for usage in responses.values() {
+        tokens.input += usage.input_tokens.unwrap_or(0);
+        tokens.cache_write += usage.cache_creation_input_tokens.unwrap_or(0);
+        tokens.cache_read += usage.cache_read_input_tokens.unwrap_or(0);
+        tokens.output += usage.output_tokens.unwrap_or(0);
+    }
+    tokens
 }
 
 /// The body of the step result the run `n` in `worktree` ended with; `None` without one.
@@ -235,6 +319,39 @@ mod tests {
         assert_eq!(read_step(dir.path(), 2).unwrap().as_deref(), Some("implement"));
         assert_eq!(read_step(dir.path(), 10).unwrap().as_deref(), Some("verify"));
         assert_eq!(read_step(dir.path(), 3).unwrap(), None);
+    }
+
+    #[test]
+    fn a_transcript_counts_every_model_response_once() {
+        let response = |id: &str, block: &str, output: u64| {
+            format!(
+                r#"{{"type":"assistant","message":{{"id":"{id}","content":[{block}],"usage":{{"input_tokens":2,"cache_creation_input_tokens":100,"cache_read_input_tokens":1000,"output_tokens":{output}}}}}}}"#
+            )
+        };
+        let jsonl = [
+            r#"{"type":"user","message":{"content":"Go"}}"#.to_string(),
+            response("msg_1", r#"{"type":"thinking"}"#, 5),
+            response("msg_1", r#"{"type":"text"}"#, 7),
+            response("msg_2", r#"{"type":"text"}"#, 3),
+            r#"{"type":"user","message":{"id":"msg_3","usage":{"input_tokens":50}}}"#.to_string(),
+            "not json \"usage\"".to_string(),
+        ]
+        .join("\n");
+        assert_eq!(transcript_tokens(&jsonl, 4), RunTokens { n: 4, input: 4, cache_write: 200, cache_read: 2000, output: 10 });
+        assert_eq!(transcript_tokens("", 1), RunTokens { n: 1, ..RunTokens::default() });
+    }
+
+    #[test]
+    fn the_pipeline_counts_the_tokens_of_each_transcript_again_once_it_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = |output: u64| format!(r#"{{"type":"assistant","message":{{"id":"m{output}","usage":{{"output_tokens":{output}}}}}}}"#);
+        write(dir.path(), ".hunt/swf/pipeline.json", r#"{"step": "implement"}"#);
+        write(dir.path(), ".hunt/swf/transcripts/01-plan.jsonl", &line(3));
+        let tokens = |dir: &Path| read_pipeline(dir).unwrap().unwrap().tokens.iter().map(|tokens| (tokens.n, tokens.output)).collect::<Vec<_>>();
+        assert_eq!(tokens(dir.path()), vec![(1, 3)]);
+
+        write(dir.path(), ".hunt/swf/transcripts/01-plan.jsonl", &format!("{}\n{}", line(3), line(40)));
+        assert_eq!(tokens(dir.path()), vec![(1, 43)]);
     }
 
     #[test]

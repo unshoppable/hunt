@@ -1,30 +1,49 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { Background, ReactFlow, ReactFlowProvider } from "@xyflow/react";
+import { Background, getViewportForBounds, ReactFlow, ReactFlowProvider, useReactFlow, useStore, type Rect } from "@xyflow/react";
 import type { Pipeline, Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { RETURNING_STEPS } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
+import { isAgentStep, type SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
+import { PlanUsageWindows, useMinuteClock } from "../accounts/PlanUsageBar";
+import type { UsageWindow } from "../accounts/plan-usage.types";
+import { formatTokens } from "../chat/ContextMeter";
 import { MarkdownText, MessageList } from "../chat/messages/MessageList";
 import { commands } from "../ipc/commands";
 import { useHuntStore } from "../sessions/hunt.store";
 import { useSessionViewStore } from "../sessions/inspector.store";
 import { EMPTY_PIPELINE, useFactoryStore } from "../sessions/swf-pipeline.store";
-import type { SwfStepFile } from "../sessions/swf-pipeline.types";
+import type { RunTokens, SwfStepFile } from "../sessions/swf-pipeline.types";
 import { HEADER_BAR } from "../ui/bars.constants";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
 import { AGENT_CHIP, Chip } from "../ui/Chip";
 import { errorText } from "../ui/error-text.utils";
 import { ExternalIcon, GitHubIcon, Spinner } from "../ui/Icons";
 import { useLoad } from "../ui/load.hook";
-import { openableRuns, shownRun } from "./factory-runs.utils";
-import { FACTORY_EDGE_TYPES, FACTORY_NODE_TYPES } from "./FactoryNodes";
-import { formatRunDuration, OUTCOME_LABELS, pipelineGraph, pipelineLinks, runDuration, STEP_LABELS, transitionText, type Transition } from "./pipeline-graph.utils";
-import { layoutPipeline, type PipelineFlowEdge, type StepFlowNode } from "./pipeline-layout.utils";
+import { PaneSeparator, Panel, PersistentGroup } from "../ui/ResizablePanes";
+import { modelText, openableRuns, runModelWindows, shownRun, sumTokens, tokensTitle, totalTokens, type TokenCounts } from "./factory-runs.utils";
+import { FACTORY_EDGE_TYPES, FACTORY_NODE_TYPES, PipelineFocusContext } from "./FactoryNodes";
+import {
+  formatRunDuration,
+  OUTCOME_LABELS,
+  pipelineGraph,
+  pipelineLinks,
+  runDuration,
+  STEP_LABELS,
+  transitionText,
+  type PipelineFocus,
+  type Transition,
+} from "./pipeline-graph.utils";
+import { layoutPipeline, pipelineBounds, type PipelineFlowEdge, type StepFlowNode } from "./pipeline-layout.utils";
 import { runConversation, type RunConversation } from "./run-transcript.utils";
 
 /** How often the duration of a running run counts up. */
 const CLOCK_TICK_MS = 1000;
 const FIT_VIEW_OPTIONS = { padding: 0.1, minZoom: 0.3, maxZoom: 1 };
 const HINT = "px-4 py-3 text-[13px] leading-snug text-neutral-500";
+/** Smallest heights of the graph, the run list and the run details, in pixels. */
+const MIN_GRAPH_HEIGHT = 80;
+const MIN_RUNS_HEIGHT = 60;
+const MIN_DETAILS_HEIGHT = 120;
 
 /** Colour of a run's outcome chip in the timeline. */
 const OUTCOME_CHIP: Record<Run["outcome"], string> = {
@@ -56,7 +75,7 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
   /** The relay's report of a running turn; its end means the pipeline moved on and the pull of `.hunt/swf/` followed. */
   const isTurnRunning = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.remote?.relayActivity?.isTurnRunning ?? false);
   const lastActiveAt = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.remote?.lastActiveAt ?? null);
-  const { pipeline, steps, transcripts } = record;
+  const { pipeline, steps, transcripts, tokens } = record;
   const selectedN = useSessionViewStore((state) => state.views[sessionId]?.factoryRun ?? null);
   const updateView = useSessionViewStore((state) => state.updateView);
   const [flow, setFlow] = useState<{ nodes: StepFlowNode[]; edges: PipelineFlowEdge[] } | null>(null);
@@ -64,6 +83,22 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
   /** Bumped when a layout lands so React Flow remounts and fits the graph into view. */
   const [layoutVersion, setLayoutVersion] = useState(0);
   const now = useClock(Boolean(pipeline?.currentRun));
+  const [hover, setHover] = useState<PipelineFocus>(null);
+  /** The step clicked in the graph, whose runs the list marks; it belongs to the session it was clicked in. */
+  const [selection, setSelection] = useState<{ sessionId: string; step: SwfStep } | null>(null);
+  const selectedStep = selection?.sessionId === sessionId ? selection.step : null;
+  /** Shows the run `n` below the list; a clicked step would fade it, so its selection ends. */
+  const showRun = useCallback(
+    (n: number) => {
+      setSelection(null);
+      updateView(sessionId, { factoryRun: n });
+    },
+    [sessionId, updateView],
+  );
+  const focusContext = useMemo(
+    () => ({ focus: hover ?? (selectedStep ? { stepId: selectedStep } : null), selectedStep, setHover, showRun }),
+    [hover, selectedStep, showRun],
+  );
 
   useEffect(() => {
     void refresh(sessionId);
@@ -91,7 +126,8 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
 
   const runs = pipeline?.runs ?? [];
   const openableNs = useMemo(() => openableRuns(steps, transcripts), [steps, transcripts]);
-  const shownN = shownRun(selectedN, openableNs);
+  const runningN = pipeline?.currentRun?.n ?? null;
+  const shownN = shownRun(selectedN, openableNs, runningN);
   const links = pipelineLinks(repo, issue, pipeline?.pullRequest ?? null);
 
   return (
@@ -123,49 +159,66 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
       ) : null}
 
       {pipeline ? (
-        <>
-          <div className="relative h-[180px] shrink-0 border-b border-(--line)">
+        <PersistentGroup id="factory-panes" fillPane="details" orientation="vertical" className="flex min-h-0 flex-1 flex-col">
+          <Panel id="graph" defaultSize={180} minSize={MIN_GRAPH_HEIGHT} className="relative min-h-0">
+            <PlanUsageOverlay key={sessionId} sessionId={sessionId} pipeline={pipeline} isTurnRunning={isTurnRunning} />
             {layoutError ? <p className="absolute inset-x-3 top-3 z-10 rounded-md border border-red-500/30 bg-red-500/10 p-2 text-[13px] text-red-300">{layoutError}</p> : null}
             {flow ? (
               <ReactFlowProvider key={layoutVersion}>
-                <ReactFlow
-                  nodes={flow.nodes}
-                  edges={flow.edges}
-                  nodeTypes={FACTORY_NODE_TYPES}
-                  edgeTypes={FACTORY_EDGE_TYPES}
-                  fitView
-                  fitViewOptions={FIT_VIEW_OPTIONS}
-                  minZoom={0.2}
-                  maxZoom={1.5}
-                  colorMode="dark"
-                  nodesDraggable={false}
-                  nodesConnectable={false}
-                  elementsSelectable={false}
-                  zIndexMode="manual"
-                  proOptions={{ hideAttribution: true }}
-                >
-                  <Background gap={24} color="#2f343d" />
-                </ReactFlow>
+                <PipelineFocusContext.Provider value={focusContext}>
+                  <ReactFlow
+                    nodes={flow.nodes}
+                    edges={flow.edges}
+                    nodeTypes={FACTORY_NODE_TYPES}
+                    edgeTypes={FACTORY_EDGE_TYPES}
+                    minZoom={0.2}
+                    maxZoom={1.5}
+                    colorMode="dark"
+                    nodesDraggable={false}
+                    nodesConnectable={false}
+                    elementsSelectable={false}
+                    zIndexMode="manual"
+                    proOptions={{ hideAttribution: true }}
+                    onNodeMouseEnter={(_, node) => setHover({ stepId: node.id })}
+                    onNodeMouseLeave={() => setHover(null)}
+                    onEdgeMouseEnter={(_, edge) => setHover({ edgeId: edge.id })}
+                    onEdgeMouseLeave={() => setHover(null)}
+                    onEdgeClick={(_, edge) => edge.data?.cause !== undefined && showRun(edge.data.cause)}
+                    onNodeClick={(_, node) => setSelection(selectedStep === node.data.id ? null : { sessionId, step: node.data.id })}
+                    onPaneClick={() => setSelection(null)}
+                  >
+                    <Background gap={24} color="#2f343d" />
+                    <FitViewOnResize nodes={flow.nodes} edges={flow.edges} />
+                  </ReactFlow>
+                </PipelineFocusContext.Provider>
               </ReactFlowProvider>
             ) : null}
-          </div>
-          <div className={`flex max-h-[40%] shrink-0 flex-col overflow-y-auto py-1.5 ${FACTORY_TEXT}`}>
-            {runs.length ? (
-              runs.map((run) => (
-                <RunRow
-                  key={run.n}
-                  run={run}
-                  now={now}
-                  isOpenable={openableNs.has(run.n)}
-                  isSelected={run.n === shownN}
-                  onSelect={() => updateView(sessionId, { factoryRun: run.n })}
-                />
-              ))
-            ) : (
-              <p className={HINT}>The record lists no runs yet.</p>
-            )}
-          </div>
-          <div className="flex min-h-0 flex-1 flex-col border-t border-(--line)">
+          </Panel>
+          <PaneSeparator orientation="vertical" />
+          <Panel id="runs" defaultSize="25" minSize={MIN_RUNS_HEIGHT} className={`flex min-h-0 flex-col ${FACTORY_TEXT}`}>
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto py-1.5">
+              {runs.length ? (
+                runs.map((run) => (
+                  <RunRow
+                    key={run.n}
+                    run={run}
+                    now={now}
+                    model={modelText(pipeline.settings.steps[run.step])}
+                    tokens={tokens.find((entry) => entry.n === run.n)}
+                    isOpenable={openableNs.has(run.n) || run.n === runningN}
+                    isSelected={run.n === shownN}
+                    stepMark={selectedStep ? (run.step === selectedStep ? "marked" : "dimmed") : null}
+                    onSelect={() => updateView(sessionId, { factoryRun: run.n })}
+                  />
+                ))
+              ) : (
+                <p className={HINT}>The record lists no runs yet.</p>
+              )}
+            </div>
+            {runs.length ? <TotalRow runCount={runs.length} tokens={tokens.length ? sumTokens(tokens) : null} duration={runs.reduce((sum, run) => sum + runDuration(run, now), 0)} /> : null}
+          </Panel>
+          <PaneSeparator orientation="vertical" />
+          <Panel id="details" minSize={MIN_DETAILS_HEIGHT} className="flex min-h-0 flex-col">
             {shownN !== null ? (
               <RunDetails
                 key={`${sessionId}:${shownN}`}
@@ -178,9 +231,50 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
             ) : (
               <p className={HINT}>No run has a step result or a conversation yet. A run with one opens it here.</p>
             )}
-          </div>
-        </>
+          </Panel>
+        </PersistentGroup>
       ) : null}
+    </div>
+  );
+}
+
+/**
+ * The plan limits in the top left corner of the graph for the models the pipeline's runs used, as the session list shows
+ * them: how much of each window the Claude account the session runs with on its VM used (a poller session's is the
+ * poller's, not the one picked on this Mac) and when it resets. Read on the VM when the tab opens, when the VM comes up
+ * and whenever a turn starts or ends; the last limits stay while the VM is off or the read fails, with the reason in the
+ * tooltip. Nothing before the first agent run.
+ */
+function PlanUsageOverlay({ sessionId, pipeline, isTurnRunning }: { sessionId: string; pipeline: Pipeline; isTurnRunning: boolean }) {
+  const link = useHuntStore((state) => state.remoteLinks[sessionId]?.state ?? null);
+  const isVmReachable = useHuntStore((state) => {
+    const remoteLink = state.remoteLinks[sessionId];
+    return remoteLink?.state !== "vmStopped" && !(remoteLink?.state === "locked" && remoteLink.reason === "unreachable");
+  });
+  const [windows, setWindows] = useState<UsageWindow[]>([]);
+  const [note, setNote] = useState<string | null>(null);
+  const now = useMinuteClock();
+  useLoad(
+    () => commands.readSessionPlanUsage(sessionId),
+    {
+      onValue: (usage) => {
+        if (usage?.windows.length) setWindows(usage.windows);
+        setNote(usage?.retryAfterSeconds ? `Claude refuses usage reads for too many requests; retry in ${usage.retryAfterSeconds} s` : null);
+      },
+      onError: (reason) => setNote(`Reading the plan usage on the VM failed: ${errorText(reason)}`),
+    },
+    [sessionId, link, isTurnRunning],
+    { isEnabled: isVmReachable },
+  );
+  const models = pipeline.runs.filter((run) => isAgentStep(run.step)).map((run) => pipeline.settings.steps[run.step].model);
+  const shown = runModelWindows(windows, models);
+  if (!models.length || (!shown.length && !note)) return null;
+  return (
+    <div
+      title={note ?? undefined}
+      className="absolute top-3 left-3 z-10 flex w-72 gap-3 rounded-md border border-(--line) bg-black/50 px-3 py-2 backdrop-blur-md text-[13px] whitespace-nowrap text-neutral-500"
+    >
+      {shown.length ? <PlanUsageWindows windows={shown} now={now} /> : <span className="min-w-0 truncate">Plan usage unavailable</span>}
     </div>
   );
 }
@@ -205,11 +299,41 @@ function statusText(pipeline: Pipeline, lastTransition: Transition | null): stri
   return parts.join(" · ");
 }
 
+/** How a run row shows while a step is clicked in the graph: a run of that step is marked, any other one faded. */
+const STEP_MARK: Record<"marked" | "dimmed", string> = {
+  marked: "relative before:absolute before:inset-y-1 before:left-0 before:w-[3px] before:rounded-full before:bg-white/70 before:content-['']",
+  dimmed: "opacity-35",
+};
+
 /**
- * A run of the timeline: its number, step, outcome, start and duration (counting up while it runs); a run with a step
- * result or a transcript is a button that shows them below, the shown one is highlighted.
+ * A run of the timeline: its number, step, outcome, the model and effort of its step, the tokens its conversation used so
+ * far, start and duration (counting up while it runs); the running run and a
+ * run with a step result or a transcript are a button that shows them below, the shown one is highlighted and scrolled into view.
+ * `stepMark` marks or fades the row while a step is clicked in the graph.
  */
-function RunRow({ run, now, isOpenable, isSelected, onSelect }: { run: Run; now: number; isOpenable: boolean; isSelected: boolean; onSelect: () => void }) {
+function RunRow({
+  run,
+  now,
+  model,
+  tokens,
+  isOpenable,
+  isSelected,
+  stepMark,
+  onSelect,
+}: {
+  run: Run;
+  now: number;
+  model: string | null;
+  tokens: RunTokens | undefined;
+  isOpenable: boolean;
+  isSelected: boolean;
+  stepMark: "marked" | "dimmed" | null;
+  onSelect: () => void;
+}) {
+  const rowRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (isSelected) rowRef.current?.scrollIntoView({ block: "nearest" });
+  }, [isSelected]);
   const started = Date.parse(run.startedAt);
   const startedText = Number.isNaN(started) ? run.startedAt : new Date(started).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
   const content = (
@@ -222,18 +346,55 @@ function RunRow({ run, now, isOpenable, isSelected, onSelect }: { run: Run; now:
         {run.outcome === "returned" && run.findings !== undefined ? ` · ${run.findings}` : ""}
       </Chip>
       <span className="flex-1" />
-      <span className="shrink-0 text-neutral-400" title={run.startedAt}>
+      <span className={`${MODEL_COLUMN} text-neutral-500`} title="Model and effort of the step's conversation">
+        {model ?? ""}
+      </span>
+      <TokensCell tokens={tokens ?? null} />
+      <span className={`${DATE_COLUMN} text-neutral-400`} title={run.startedAt}>
         {startedText}
       </span>
-      <span className="w-16 shrink-0 text-right text-neutral-400 tabular-nums">{formatRunDuration(runDuration(run, now))}</span>
+      <span className={`${DURATION_COLUMN} text-neutral-400`}>{formatRunDuration(runDuration(run, now))}</span>
     </>
   );
-  const row = `flex min-h-7 w-full items-center gap-3 px-4 ${isSelected ? "bg-(--row-selected)" : ""}`;
-  if (!isOpenable) return <div className={`${row} ${run.outcome === "running" ? "" : "opacity-80"}`}>{content}</div>;
+  const row = `flex min-h-7 w-full items-center gap-3 px-4 transition-opacity ${isSelected ? "bg-(--row-selected)" : ""} ${stepMark ? STEP_MARK[stepMark] : ""}`;
+  if (!isOpenable) return <div className={`${row} ${run.outcome === "running" || stepMark === "dimmed" ? "" : "opacity-80"}`}>{content}</div>;
   return (
-    <button type="button" onClick={onSelect} className={`${row} rounded text-left hover:bg-(--row-hover)`} title="Show the step result and the conversation of this run">
+    <button ref={rowRef} type="button" onClick={onSelect} className={`${row} rounded text-left hover:bg-(--row-hover)`} title="Show the step result and the conversation of this run">
       {content}
     </button>
+  );
+}
+
+/** The columns the run rows and the total row share, so that their values line up. */
+const MODEL_COLUMN = "w-40 shrink-0 truncate text-right";
+const TOKENS_COLUMN = "w-28 shrink-0 text-right whitespace-nowrap tabular-nums";
+const DATE_COLUMN = "w-36 shrink-0 text-right whitespace-nowrap";
+const DURATION_COLUMN = "w-16 shrink-0 text-right tabular-nums";
+
+/** A count of tokens with its kinds in the tooltip; empty without counts. */
+function TokensCell({ tokens, className = "text-neutral-400" }: { tokens: TokenCounts | null; className?: string }) {
+  return (
+    <span className={`${TOKENS_COLUMN} ${className}`} title={tokens ? tokensTitle(tokens) : undefined}>
+      {tokens ? `${formatTokens(totalTokens(tokens))} tokens` : ""}
+    </span>
+  );
+}
+
+/** The last row of the run list: how many runs there were, the tokens they used and how long they took, all summed up. */
+function TotalRow({ runCount, tokens, duration }: { runCount: number; tokens: TokenCounts | null; duration: number }) {
+  return (
+    <div className="flex min-h-7 shrink-0 items-center gap-3 border-t border-(--line) px-4 font-medium">
+      <span className="w-7 shrink-0" />
+      <span className="w-28 shrink-0 text-neutral-100">Total</span>
+      <span className="text-neutral-400">
+        {runCount} {runCount === 1 ? "run" : "runs"}
+      </span>
+      <span className="flex-1" />
+      <span className={MODEL_COLUMN} />
+      <TokensCell tokens={tokens} className="text-neutral-100" />
+      <span className={DATE_COLUMN} />
+      <span className={`${DURATION_COLUMN} text-neutral-100`}>{formatRunDuration(duration)}</span>
+    </div>
   );
 }
 
@@ -304,6 +465,21 @@ function RunConversationSection({ sessionId, n, transcripts }: { sessionId: stri
       )}
     </section>
   );
+}
+
+/**
+ * Fits the whole graph, the returns arcing above the steps included, into view once it is measured and again whenever
+ * its pane changes size.
+ */
+function FitViewOnResize({ nodes, edges }: { nodes: StepFlowNode[]; edges: PipelineFlowEdge[] }) {
+  const width = useStore((state) => state.width);
+  const height = useStore((state) => state.height);
+  const { setViewport } = useReactFlow();
+  const bounds: Rect = useMemo(() => pipelineBounds(nodes, edges), [nodes, edges]);
+  useEffect(() => {
+    if (width && height) void setViewport(getViewportForBounds(bounds, width, height, FIT_VIEW_OPTIONS.minZoom, FIT_VIEW_OPTIONS.maxZoom, FIT_VIEW_OPTIONS.padding));
+  }, [width, height, bounds, setViewport]);
+  return null;
 }
 
 /** The current time, every second while `isTicking`; otherwise the time of the last render that changed it. */

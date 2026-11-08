@@ -59,7 +59,7 @@ export function factoryState(
     runs,
     currentRun: pipeline?.currentRun?.n ?? null,
     selectedRun: selected,
-    shownRun: shownRun(selected, openableRuns(record.steps, record.transcripts)),
+    shownRun: shownRun(selected, openableRuns(record.steps, record.transcripts), pipeline?.currentRun?.n ?? null),
     isLoaded: record.isLoaded,
     error: record.error,
   };

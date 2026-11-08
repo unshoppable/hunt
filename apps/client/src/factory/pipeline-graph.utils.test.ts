@@ -1,7 +1,17 @@
 import { describe, expect, it } from "vitest";
 import type { Run } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { SWF_STEPS } from "../../../../libs/domain/src/swf/swf-step.types.ts";
-import { formatRunDuration, pipelineGraph, pipelineLayoutInput, pipelineLinks, runDuration, transitionText, type ReturnEdge } from "./pipeline-graph.utils";
+import {
+  edgeEmphasis,
+  formatRunDuration,
+  pipelineGraph,
+  pipelineLayoutInput,
+  pipelineLinks,
+  returnEdgeTitle,
+  runDuration,
+  transitionText,
+  type ReturnEdge,
+} from "./pipeline-graph.utils";
 
 function run(n: number, step: Run["step"], outcome: Run["outcome"], extra: Partial<Run> = {}): Run {
   const startedAt = `2026-10-31T10:${String(n).padStart(2, "0")}:00.000Z`;
@@ -41,13 +51,13 @@ describe("pipelineGraph", () => {
       "human-review->merge",
     ]);
     const returns = edges.filter((edge): edge is ReturnEdge => edge.kind === "return");
-    expect(returns).toEqual([{ id: "return:3->4", kind: "return", source: "verify", target: "implement", cause: 3, n: 4, findings: 2, label: "2 findings" }]);
+    expect(returns).toEqual([{ id: "return:3->4", kind: "return", source: "verify", target: "implement", cause: 3, n: 4, index: 1, findings: 2, label: "#1 · 2 findings" }]);
   });
 
-  it("words one finding in the singular and counts a return without findings as none", () => {
+  it("numbers the returns in their order, words one finding in the singular and counts a return without findings as none", () => {
     const runs = [run(1, "review", "returned", { findings: 1 }), run(2, "implement", "running", { cause: 1 }), run(3, "merge", "returned"), run(4, "implement", "running", { cause: 3 })];
     const labels = pipelineGraph({ step: "implement", runs }).edges.filter((edge) => edge.kind === "return").map((edge) => edge.label);
-    expect(labels).toEqual(["1 finding", "0 findings"]);
+    expect(labels).toEqual(["#1 · 1 finding", "#2 · 0 findings"]);
   });
 
   it("draws no return edge for a cause that names no run, and a plain graph for a record without runs", () => {
@@ -98,7 +108,7 @@ describe("pipelineLayoutInput", () => {
     expect(new Set(input.nodes.map((node) => `${node.width}x${node.height}`)).size).toBe(1);
     expect(input.nodes[0].ports?.map((port) => port.id)).toEqual(["plan:in", "plan:out", "plan:top"]);
     expect(input.edges.find((edge) => edge.id === "flow:plan->implement")).toEqual({ id: "flow:plan->implement", source: "plan:out", target: "implement:in", priority: 10 });
-    expect(input.edges.find((edge) => edge.id === "return:3->4")).toEqual({ id: "return:3->4", source: "verify:top", target: "implement:top", label: "2 findings" });
+    expect(input.edges.find((edge) => edge.id === "return:3->4")).toEqual({ id: "return:3->4", source: "verify:top", target: "implement:top", label: "#1 · 2 findings" });
   });
 
   it("routes a jump edge between the tops of its steps, without a label", () => {
@@ -137,5 +147,31 @@ describe("pipelineLinks", () => {
     ]);
     expect(pipelineLinks("acme/app", 123, null)).toEqual([{ label: "Issue #123", url: "https://github.com/acme/app/issues/123" }]);
     expect(pipelineLinks(null, 123, 456)).toEqual([]);
+  });
+});
+
+describe("edgeEmphasis", () => {
+  const edge = { id: "return:3->4", source: "verify", target: "implement" };
+
+  it("leaves every edge as it is while nothing is focused", () => {
+    expect(edgeEmphasis(null, edge)).toBeNull();
+  });
+
+  it("highlights the focused edge and dims the others", () => {
+    expect(edgeEmphasis({ edgeId: "return:3->4" }, edge)).toBe("highlighted");
+    expect(edgeEmphasis({ edgeId: "flow:plan->implement" }, edge)).toBe("dimmed");
+  });
+
+  it("highlights every edge that leaves or enters a focused step", () => {
+    expect(edgeEmphasis({ stepId: "verify" }, edge)).toBe("highlighted");
+    expect(edgeEmphasis({ stepId: "implement" }, edge)).toBe("highlighted");
+    expect(edgeEmphasis({ stepId: "review" }, edge)).toBe("dimmed");
+  });
+});
+
+describe("returnEdgeTitle", () => {
+  it("names the run that returned the issue, its findings and the run that took them on", () => {
+    const returned = pipelineGraph({ step: "verify", runs: RETURNED_ONCE }).edges.find((edge): edge is ReturnEdge => edge.kind === "return");
+    expect(returned && returnEdgeTitle(returned)).toBe("Return #1: run 3 (Verify) sent the issue back to Implement with 2 findings; run 4 took them on");
   });
 });

@@ -101,8 +101,8 @@ pub async fn get_plan_usage(app: AppHandle) -> Result<PlanUsage, String> {
 }
 
 /// Maps the script output to the windows Hunt shows: 5-hour, weekly, then one weekly window per model; the Opus
-/// and Sonnet windows stand in when the server lists no per-model windows.
-fn parse_output(stdout: &str) -> Result<PlanUsage, String> {
+/// and Sonnet windows stand in when the server lists no per-model windows. `hunt-ctl plan-usage` prints the same output.
+pub fn parse_output(stdout: &str) -> Result<PlanUsage, String> {
     let output: ScriptOutput = serde_json::from_str(stdout.trim()).map_err(|error| format!("failed to read plan usage: {error}"))?;
     let mut windows = Vec::new();
     if let Some(limits) = output.rate_limits.filter(|_| output.rate_limits_available) {

@@ -22,7 +22,7 @@ export function PlanUsageBar() {
 
   const activeAccountId = useAccountsStore((state) => state.accounts?.activeId);
   const shownAccountIdRef = useRef(activeAccountId);
-  const [now, setNow] = useState(() => Date.now());
+  const now = useMinuteClock();
 
   // `undefined` means the accounts are not loaded yet; the first load is no switch.
   useEffect(() => {
@@ -31,11 +31,6 @@ export function PlanUsageBar() {
     if (shownAccountId === undefined || shownAccountId === activeAccountId) return;
     switchAccount();
   }, [activeAccountId, switchAccount]);
-
-  useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 60_000);
-    return () => clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     refreshIfStale();
@@ -74,18 +69,33 @@ export function PlanUsageBar() {
       title={title}
       className={`flex w-full shrink-0 gap-3 overflow-hidden border-t border-(--line) px-3 py-2.5 text-[13px] whitespace-nowrap text-neutral-500 ${isLoading ? "opacity-60" : ""}`}
     >
-      {usage.windows.map((window) => (
-        <span key={window.label} className="flex min-w-0 flex-auto flex-col gap-[5px]">
-          <span className="flex gap-1 leading-none">
-            <span className="min-w-0 truncate">{window.label}</span>
-            <span className="shrink-0 tabular-nums" style={{ color: usageColor(window.utilization) }}>{Math.round(window.utilization)}%</span>
-          </span>
-          <UsageBar percent={window.utilization} />
-          {window.resetsAt ? <span className="text-[12px] leading-none tabular-nums text-neutral-600">{formatTimeUntil(window.resetsAt, now)}</span> : null}
-        </span>
-      ))}
+      <PlanUsageWindows windows={usage.windows} now={now} />
     </div>
   );
+}
+
+/** The plan limits side by side, each its name and percentage above a fill bar and the time until its reset below. */
+export function PlanUsageWindows({ windows, now }: { windows: UsageWindow[]; now: number }) {
+  return windows.map((window) => (
+    <span key={window.label} className="flex min-w-0 flex-auto flex-col gap-[5px]">
+      <span className="flex gap-1 leading-none">
+        <span className="min-w-0 truncate">{window.label}</span>
+        <span className="shrink-0 tabular-nums" style={{ color: usageColor(window.utilization) }}>{Math.round(window.utilization)}%</span>
+      </span>
+      <UsageBar percent={window.utilization} />
+      {window.resetsAt ? <span className="text-[12px] leading-none tabular-nums text-neutral-600">{formatTimeUntil(window.resetsAt, now)}</span> : null}
+    </span>
+  ));
+}
+
+/** The current time, every minute: often enough for the times until a reset. */
+export function useMinuteClock(): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+  return now;
 }
 
 function windowName(window: UsageWindow): string {

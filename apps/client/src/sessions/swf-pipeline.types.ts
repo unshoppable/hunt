@@ -10,7 +10,13 @@ export type SwfStepFile = { n: number; step: string };
  * which the Factory tab validates against the record's schema (`libs/domain/src/swf/pipeline.domain.ts`), and the step
  * results and the transcripts of the runs' conversations, each in the order of their runs.
  */
-export type SwfPipelineFiles = { pipeline: unknown; steps: SwfStepFile[]; transcripts: SwfStepFile[] };
+export type SwfPipelineFiles = { pipeline: unknown; steps: SwfStepFile[]; transcripts: SwfStepFile[]; tokens: RunTokens[] };
+
+/**
+ * The tokens the conversation of the run `n` used, summed over the model responses its transcript records (mirror of
+ * `RunTokens` in src-tauri/src/session/swf.rs).
+ */
+export type RunTokens = { n: number; input: number; cacheWrite: number; cacheRead: number; output: number };
 
 /** `.hunt/swf/` of the session was pulled from its VM (mirror of `SwfPulledEvent` in src-tauri/src/session/swf.rs). */
 export type SwfPulledEvent = { huntSessionId: string };

@@ -5,6 +5,10 @@
 use tauri::AppHandle;
 use uuid::Uuid;
 
+use super::remote_host;
+use crate::agent::plan_usage::{self, PlanUsage};
+use crate::remote::hunt_ctl;
+use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::session::store;
 use crate::session::swf::{self, SwfPipelineFiles};
 
@@ -40,4 +44,18 @@ pub async fn read_swf_transcript(app: AppHandle, session_id: Uuid, n: u32) -> Re
         return Ok(None);
     }
     swf::read_transcript(&record.worktree_path, n)
+}
+
+/// The claude.ai plan limits of the Claude account the session `session_id` runs with on its VM, read there by
+/// `hunt-ctl plan-usage`: a poller session runs with the poller's account, not with the one picked on this Mac. `None`
+/// for a session without a VM. Fails while the VM is off.
+#[tauri::command]
+pub async fn read_session_plan_usage(app: AppHandle, session_id: Uuid) -> Result<Option<PlanUsage>, String> {
+    let record = store::find_session(&app, session_id)?;
+    let Some((owner, target)) = remote_host(&app, &record) else {
+        return Ok(None);
+    };
+    let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
+    let output = hunt_ctl(&ssh, &["plan-usage", &owner.to_string()]).await?;
+    plan_usage::parse_output(&output.to_string()).map(Some)
 }

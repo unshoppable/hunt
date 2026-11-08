@@ -1406,7 +1406,11 @@ poller has renewed the new one (`hunt-ctl github-token`, which replaces `/etc/hu
 relay), whatever the issue's state; a VM that was stopped gets it on the first poll after its start. So the comments,
 commits (author `<slug>[bot]`), pushes and pull requests of a poller session show the App, and a leaked token is worth
 an hour on one repository. None of the key, tokens or files reaches a log line, a comment or a command line;
-`journalctl -u hunt-swf` on the gateway shows one line per decision, Compute Engine call and command on a session VM.
+`journalctl -u hunt-swf` on the gateway shows one line per decision, Compute Engine call and command on a session VM. Since
+the poller's Claude account is not the one of this Mac, `hunt-ctl plan-usage <id>` reads the plan limits of the account a
+session VM's relay runs with, with the token stored on the VM (`apps/session/src/plan-usage/`, the token path of
+`apps/client/scripts/planUsage.mjs`), for the Factory tab; it hands the token to Node in its environment only and never
+counts as activity.
 
 The same service suspends idle session VMs (`apps/gateway/src/session-vm/idle-sweeper.service.ts`): once a minute it lists the running VMs labelled
 `hunt-role=session`, runs the idle check of each (`hunt-idle-check --dry-run`, below) over SSH and suspends every VM

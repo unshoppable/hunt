@@ -262,6 +262,10 @@ Session VM:
                          refs/hunt/<id>/commit
   push <id> [--stored]   push the branch the worktree has checked out to its origin and make that its upstream, with the
                          GitHub token on stdin, or with --stored the one stored on this VM (a poller session's)
+  plan-usage <id>        the claude.ai plan limits of the Claude account the session's relay runs with (the token stored
+                         on this VM; a poller session's is the poller's), as apps/client/scripts/planUsage.mjs prints
+                         them: {"subscriptionType": null, "rateLimitsAvailable": true, "rateLimits": {…}}, or
+                         {"retryAfterSeconds": n} while Claude refuses reads for too many requests
   github-token <id>      replace the GitHub token the session's git, Git LFS and gh act with by the one on stdin; the
                          relay keeps running
   status <id>            relay state, relay status, session metadata and the software factory's pipeline
@@ -1685,6 +1689,26 @@ cmd_github_token() {
   emit '{}'
 }
 
+# Prints the plan limits of the Claude account session $1's relay runs with, which planUsage.mjs reads with the token
+# SECRETS_ENV stores. The token reaches it in its environment only, which no other user can read, never on a command line.
+cmd_plan_usage() {
+  (( $# == 1 )) || usage
+  local id=$1 line token result _
+  require_id "$id"
+  _=$(worktree_of "$id")
+  line=$(grep -m 1 '^CLAUDE_CODE_OAUTH_TOKEN=' "$SECRETS_ENV" 2>/dev/null || true)
+  [[ -n $line ]] || die "no Claude Code OAuth token stored for session $id; its relay has not started yet"
+  # Undoes env_line: the double quotes and the backslash before \, ", ` and $.
+  token=${line#CLAUDE_CODE_OAUTH_TOKEN=\"}
+  token=$(sed 's/\\\(.\)/\1/g' <<<"${token%\"}")
+  secrets+=("$token")
+  [[ -x $HUNT_NODE ]] || die "$HUNT_NODE is missing; this VM is no session VM"
+  if ! result=$(CLAUDE_CODE_OAUTH_TOKEN=$token "$HUNT_NODE" "$CURRENT/session/planUsage.mjs"); then
+    die "failed to read the plan usage of session $id (see above)"
+  fi
+  emit --argjson result "$result" '$result'
+}
+
 cmd_status() {
   (( $# == 1 )) || usage
   local id=$1 relay status meta_json worktree swf_json=null
@@ -2155,7 +2179,7 @@ main() {
     install | install-units | version) ;;
     install-tools | init | clone | set-branch | receive-pack | upload-pack | lfs-put | lfs-get | put-files | put-remote-secrets | get-claude | \
       prepare | deps | session-config | check | service | start | wait | stop | clear | snapshot | commit | push | github-token | status | preview-status | \
-      swf-record | swf-inbox | destroy)
+      plan-usage | swf-record | swf-inbox | destroy)
       [[ $role == session ]] || die "hunt-ctl $command runs on session VMs only; this VM is the gateway"
       ;;
     stage-session)
@@ -2164,10 +2188,12 @@ main() {
     *) usage ;;
   esac
   case $command in
-    version | status | preview-status | install-tools | stage-session | github-token | put-remote-secrets | swf-record | swf-inbox) counts_as_activity=false ;;
+    version | status | preview-status | plan-usage | install-tools | stage-session | github-token | put-remote-secrets | swf-record | swf-inbox)
+      counts_as_activity=false
+      ;;
   esac
   case $command in
-    status | preview-status) logs_success=false ;;
+    status | preview-status | plan-usage) logs_success=false ;;
   esac
   if [[ $command == service && ${1-} == status ]]; then
     counts_as_activity=false
@@ -2237,6 +2263,7 @@ main() {
     push) cmd_push "$@" ;;
     github-token) cmd_github_token "$@" ;;
     status) cmd_status "$@" ;;
+    plan-usage) cmd_plan_usage "$@" ;;
     swf-record) cmd_swf_record "$@" ;;
     swf-inbox) cmd_swf_inbox "$@" ;;
     preview-status) cmd_preview_status "$@" ;;

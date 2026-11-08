@@ -35,8 +35,11 @@ export type StepNode = {
 
 /** The baseline from one step to the next. */
 export type FlowEdge = { id: string; kind: "flow"; source: SwfStep; target: SwfStep };
-/** A run that sent the issue back to implement: from the step of the run `cause` to the step of the run `n` it caused. */
-export type ReturnEdge = { id: string; kind: "return"; source: SwfStep; target: SwfStep; cause: number; n: number; findings: number; label: string };
+/**
+ * A run that sent the issue back to implement: from the step of the run `cause` to the step of the run `n` it caused;
+ * `index` counts the returns in their order from 1, and the label leads with it.
+ */
+export type ReturnEdge = { id: string; kind: "return"; source: SwfStep; target: SwfStep; cause: number; n: number; index: number; findings: number; label: string };
 /** The last transition when neither the baseline nor a return connects its steps, such as checks → merge or merge → human-review. */
 export type JumpEdge = { id: string; kind: "jump"; source: SwfStep; target: SwfStep };
 export type PipelineEdge = FlowEdge | ReturnEdge | JumpEdge;
@@ -73,6 +76,7 @@ export function pipelineGraph(record: PipelineRecord): PipelineGraph {
     const cause = record.runs.find((candidate) => candidate.n === run.cause);
     if (!cause) continue;
     const findings = cause.findings ?? 0;
+    const index = edges.filter((edge) => edge.kind === "return").length + 1;
     edges.push({
       id: `return:${cause.n}->${run.n}`,
       kind: "return",
@@ -80,8 +84,9 @@ export function pipelineGraph(record: PipelineRecord): PipelineGraph {
       target: run.step,
       cause: cause.n,
       n: run.n,
+      index,
       findings,
-      label: `${findings} ${findings === 1 ? "finding" : "findings"}`,
+      label: `#${index} · ${findingsText(findings)}`,
     });
   }
   const lastTransition = pipelineLastTransition(record);
@@ -106,6 +111,29 @@ function lastTransitionEdge(transition: Transition, edges: PipelineEdge[]): stri
   const jump: JumpEdge = { id: `jump:${transition.source}->${transition.target}`, kind: "jump", source: transition.source, target: transition.target };
   edges.push(jump);
   return jump.id;
+}
+
+/** What the graph focuses on: the edge (or its label) or the step the pointer rests on, else the clicked step. */
+export type PipelineFocus = { edgeId: string } | { stepId: string } | null;
+
+/**
+ * How an edge shows for `focus`: the focused edge and every edge of a focused step stand out, all others fade; null
+ * while nothing is focused.
+ */
+export function edgeEmphasis(focus: PipelineFocus, edge: { id: string; source: string; target: string }): "highlighted" | "dimmed" | null {
+  if (!focus) return null;
+  const isFocused = "edgeId" in focus ? focus.edgeId === edge.id : focus.stepId === edge.source || focus.stepId === edge.target;
+  return isFocused ? "highlighted" : "dimmed";
+}
+
+/** What a return edge stands for, as its label's tooltip says it. */
+export function returnEdgeTitle(edge: ReturnEdge): string {
+  const text = `Return #${edge.index}: run ${edge.cause} (${STEP_LABELS[edge.source]}) sent the issue back to ${STEP_LABELS[edge.target]}`;
+  return `${text} with ${findingsText(edge.findings)}; run ${edge.n} took them on`;
+}
+
+function findingsText(findings: number): string {
+  return `${findings} ${findings === 1 ? "finding" : "findings"}`;
 }
 
 /** `transition` in words for the Factory tab's header: `Review → Implement`. */

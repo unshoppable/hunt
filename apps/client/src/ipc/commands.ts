@@ -239,6 +239,8 @@ export const commands = {
   readSwfStep: (sessionId: string, n: number) => invoke<string | null>("read_swf_step", { sessionId, n }),
   /** The Claude Code transcript of the conversation of the pipeline's run `n` (`.hunt/swf/transcripts/<nn>-<step>.jsonl`); `null` without one. */
   readSwfTranscript: (sessionId: string, n: number) => invoke<string | null>("read_swf_transcript", { sessionId, n }),
+  /** The plan limits of the Claude account the session runs with on its VM (`hunt-ctl plan-usage`); `null` without a VM. */
+  readSessionPlanUsage: (sessionId: string) => invoke<PlanUsage | null>("read_session_plan_usage", { sessionId }),
   closeSession: (id: string, ending: SessionEnding) => invoke<void>("close_session", { id, ending }),
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),

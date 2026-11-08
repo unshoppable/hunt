@@ -40,6 +40,7 @@ const ARTIFACTS: Record<string, Artifact> = {
       "session/statusHelper": "apps/session/src/relay/status-helper.main.ts",
       "session/reviewServer": "apps/session/src/review/review-server.main.ts",
       "session/swfRunner": "apps/session/src/swf-runner/swf-runner.main.ts",
+      "session/planUsage": "apps/session/src/plan-usage/plan-usage.main.ts",
     },
     reviewWidget: "session/review.js",
     files: [

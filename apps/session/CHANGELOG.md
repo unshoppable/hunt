@@ -1,3 +1,9 @@
+## 0.33.17 (2026-11-08)
+
+### 🩹 Fixes
+
+- **session:** give session VMs a compressed swap in RAM (zram) so that the agent's idle heap pages make room ([fc0e2c0](https://github.com/unshoppable/hunt/commit/fc0e2c0))
+
 ## 0.33.16 (2026-11-08)
 
 ### 🩹 Fixes

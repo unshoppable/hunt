@@ -143,8 +143,7 @@ export function buildDiagram(
     neighbours.set(edge.target, [...(neighbours.get(edge.target) ?? []), edge.source]);
   }
   const queue = [...shown];
-  while (queue.length) {
-    const current = queue.shift()!;
+  for (let current = queue.shift(); current !== undefined; current = queue.shift()) {
     for (const next of neighbours.get(current) ?? []) {
       if (shown.has(next) || changedByPath.has(next) || isHidden(next)) continue;
       shown.add(next);

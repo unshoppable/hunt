@@ -240,6 +240,8 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
     guardrailChat.open({ selection: { path: GUARDRAIL_CHAT_PATH, startLine: 1, endLine: 1, text: "", task }, anchor: guardrailChatAnchor(bounds) });
   }
 
+  const permission = chat?.permission;
+
   return (
     <div ref={panelRef} className="chat flex h-full min-h-0 flex-col bg-(--chat-bg)">
       <header data-tauri-drag-region="" className={`${HEADER_BAR} gap-3 border-b border-(--line) px-4 in-data-leading:pl-11`}>
@@ -313,11 +315,11 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           {chat?.isLoading ? (
             <div className="text-neutral-500">{chat.remoteStep ? <RemoteStepProgress chat={chat} showsDetail /> : <p>Loading session…</p>}</div>
           ) : null}
-          {chat?.permission ? (
+          {permission ? (
             <PermissionPrompt
               agentName={askingAgent && subagents?.[askingAgent] ? subagentName(subagents[askingAgent]) : null}
-              permission={chat.permission}
-              onAnswer={(optionId) => void answerPermission(sessionId, chat.permission!.requestId, optionId)}
+              permission={permission}
+              onAnswer={(optionId) => void answerPermission(sessionId, permission.requestId, optionId)}
             />
           ) : null}
           {hasQuestion ? (

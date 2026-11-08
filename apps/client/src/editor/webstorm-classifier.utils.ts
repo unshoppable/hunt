@@ -177,7 +177,9 @@ export function roleOfImportHover(signature: string): WebstormRole | null {
 function roleOf(ts: TypeScriptApi, symbol: tsTypes.Symbol, node: tsTypes.Node): number {
   const flags = symbol.flags;
   if (flags & ts.SymbolFlags.Class) return ROLE.class;
-  const valueDeclaration = symbol.valueDeclaration ?? symbol.declarations![0];
+  const declarations = symbol.declarations ?? [];
+  const valueDeclaration = symbol.valueDeclaration ?? declarations[0];
+  if (!valueDeclaration) return -1;
   // Built-in classes (`Math`, `Promise`) are variables merged with an interface of the same name in the lib files; where a
   // type is expected (`Promise<T>`, `implements Iterable<T>`) the merged interface is meant. Other variables of
   // declaration files (`console`, `declare global { const APP_VERSION: string }`) are global variables.
@@ -193,8 +195,8 @@ function roleOf(ts: TypeScriptApi, symbol: tsTypes.Symbol, node: tsTypes.Node): 
   if (flags & (ts.SymbolFlags.ValueModule | ts.SymbolFlags.NamespaceModule)) return ROLE.moduleName;
   if (flags & ts.SymbolFlags.Function) return isTopLevel(ts, valueDeclaration) ? ROLE.globalFunction : ROLE.localFunction;
   const methodFlags = ts.SymbolFlags.Method | ts.SymbolFlags.Constructor | ts.SymbolFlags.GetAccessor | ts.SymbolFlags.SetAccessor;
-  if (flags & methodFlags) return hasStaticModifier(ts, symbol.declarations!) ? ROLE.staticMethod : ROLE.instanceMethod;
-  if (flags & ts.SymbolFlags.Property) return hasStaticModifier(ts, symbol.declarations!) ? ROLE.staticField : ROLE.instanceField;
+  if (flags & methodFlags) return hasStaticModifier(ts, declarations) ? ROLE.staticMethod : ROLE.instanceMethod;
+  if (flags & ts.SymbolFlags.Property) return hasStaticModifier(ts, declarations) ? ROLE.staticField : ROLE.instanceField;
   if (flags & ts.SymbolFlags.Variable) return variableRole(ts, valueDeclaration);
   return -1;
 }

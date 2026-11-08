@@ -183,12 +183,12 @@ export function guardrailListRows(entries: Guardrail[], collapsed: ReadonlySet<s
 
   const rows: GuardrailListRow[] = [];
   const walk = (node: Node, folder: string, depth: number) => {
-    const names = [...node.folders.keys()].sort((left, right) => left.localeCompare(right));
-    for (const name of names) {
+    const folders = [...node.folders].sort(([left], [right]) => left.localeCompare(right));
+    for (const [name, child] of folders) {
       const path = folder ? `${folder}/${name}` : name;
       rows.push({ type: "folder", folder: path, name, depth });
       if (!collapsed.has(path)) {
-        walk(node.folders.get(name)!, path, depth + 1);
+        walk(child, path, depth + 1);
       }
     }
     for (const entry of node.entries) {

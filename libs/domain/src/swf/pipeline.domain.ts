@@ -255,7 +255,7 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
 
   /** Whether the pipeline ended because its issue was marked as failed, which a person can resume (`resume`). */
   get hasFailed(): boolean {
-    return !this.currentRun && this.runs.at(-1)?.outcome === "failed";
+    return !this.currentRun && this.runs[this.runs.length - 1]?.outcome === "failed";
   }
 
   /** One line on where the pipeline stands, for the people who read the issue. */
@@ -566,7 +566,7 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
    * `resumes` the failed run, with no prompt sent, no reminder and no gate failure yet; see `resumedConversation`.
    */
   resume(now: number): void {
-    const failed = this.runs.at(-1);
+    const failed = this.runs[this.runs.length - 1];
     if (!this.hasFailed || !failed) throw new Error(`the pipeline at ${this.step} has not failed; nothing to resume`);
     this.changeState(() => this.beginRun(this.step, now, { resumes: failed.n }));
   }

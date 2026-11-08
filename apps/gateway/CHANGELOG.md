@@ -1,3 +1,9 @@
+## 0.46.12 (2026-11-08)
+
+### 🚀 Features
+
+- **client:** estimate the cost of the session VM in the Factory tab ([#54](https://github.com/unshoppable/hunt/issues/54))
+
 ## 0.46.11 (2026-11-08)
 
 This was a version bump only for gateway to align it with other projects, there were no code changes.

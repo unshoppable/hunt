@@ -1,3 +1,9 @@
+## 0.156.0 (2026-11-08)
+
+### 🚀 Features
+
+- **client:** estimate the cost of the session VM in the Factory tab ([#54](https://github.com/unshoppable/hunt/issues/54))
+
 ## 0.155.0 (2026-11-08)
 
 ### 🚀 Features

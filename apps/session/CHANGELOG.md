@@ -1,3 +1,7 @@
+## 0.33.19 (2026-11-08)
+
+This was a version bump only for session to align it with other projects, there were no code changes.
+
 ## 0.33.18 (2026-11-08)
 
 ### 🚀 Features

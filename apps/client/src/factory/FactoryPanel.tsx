@@ -403,8 +403,8 @@ function RunRow({
 const COLUMNS = "flex shrink-0 self-stretch divide-x divide-(--line) border-l border-(--line)";
 const CELL = "flex shrink-0 items-center justify-end px-4 whitespace-nowrap tabular-nums";
 const MODEL_COLUMN = `w-40 ${CELL}`;
-const TOKENS_COLUMN = `w-32 ${CELL}`;
-const UNCACHED_COLUMN = `w-32 ${CELL}`;
+const TOKENS_COLUMN = `w-20 ${CELL}`;
+const UNCACHED_COLUMN = `w-20 ${CELL}`;
 const DATE_COLUMN = `w-40 ${CELL}`;
 const DURATION_COLUMN = `w-20 ${CELL}`;
 
@@ -418,10 +418,10 @@ function TokensCells({ tokens, className = "text-neutral-400", centered = false 
   return (
     <>
       <span className={`${TOKENS_COLUMN} ${align} ${className}`} title={title}>
-        {tokens ? `${formatTokens(totalTokens(tokens))} tokens` : ""}
+        {tokens ? formatTokens(totalTokens(tokens)) : ""}
       </span>
       <span className={`${UNCACHED_COLUMN} ${align} ${className}`} title={title}>
-        {tokens ? `${formatTokens(uncachedTokens(tokens))} uncached` : ""}
+        {tokens ? formatTokens(uncachedTokens(tokens)) : ""}
       </span>
     </>
   );

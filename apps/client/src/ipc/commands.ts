@@ -23,7 +23,7 @@ import type { FileLine, ReplaceResult, TextQuery, TextSearchResult } from "../id
 import type { AppPage, PreviewStatus } from "../preview/preview.types";
 import type { GithubViewer, PullRequestDetails, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread } from "../review/review.types";
 import type { PullRequest, PullRequestState } from "../sessions/pull-requests.types";
-import type { RemoteLink, SessionVm, SessionVmInfo, SessionVmUsage } from "../sessions/remote/remote-session.types";
+import type { RemoteLink, SessionVm, SessionVmInfo, SessionVmState, SessionVmUsage } from "../sessions/remote/remote-session.types";
 import type { PullRequestRef, SessionEnding, SessionView, Workspace } from "../sessions/session.types";
 import type { SwfPipelineFiles } from "../sessions/swf-pipeline.types";
 import type { CliInstall, GithubTokenStatus, RemoteSecretSummary, VmSettings } from "../settings/settings.types";
@@ -242,6 +242,7 @@ export const commands = {
   /** The plan limits of the Claude account the session runs with on its VM (`hunt-ctl plan-usage`); `null` without a VM. */
   readSessionPlanUsage: (sessionId: string) => invoke<PlanUsage | null>("read_session_plan_usage", { sessionId }),
   readSessionVmUsage: (sessionId: string) => invoke<SessionVmUsage | null>("read_session_vm_usage", { sessionId }),
+  readSessionVmState: (sessionId: string) => invoke<SessionVmState | null>("read_session_vm_state", { sessionId }),
   closeSession: (id: string, ending: SessionEnding) => invoke<void>("close_session", { id, ending }),
   /** Prepares the worktree's `node_modules` again after a failed attempt; progress arrives through `sessions:changed`. */
   prepareDependencies: (id: string) => invoke<void>("prepare_dependencies", { id }),

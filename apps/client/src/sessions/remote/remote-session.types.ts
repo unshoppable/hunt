@@ -46,6 +46,21 @@ export type SessionVm = {
 export type SessionVmInfo = { exists: boolean; name: string; status: string | null; zone: string | null; startedAt: string | null };
 
 /**
+ * The report of the last run of a session VM's idle check (mirror of `VmIdle` in src-tauri/src/session/commands/swf.rs):
+ * when it ran (Unix seconds), its decision (`keep: …`, `wait: …`, `idle: …` or `poweroff: …`), the seconds since
+ * anything kept the VM up, the estimated seconds until the gateway suspends it, and the check's IDLE_MINUTES and
+ * IDLE_CHECKS.
+ */
+export type SessionVmIdle = { at: number; decision: string; idleSeconds: number; suspendInSeconds: number; idleMinutes: number; idleChecks: number };
+
+/**
+ * A session's VM for the Factory tab's VM card (mirror of `SessionVmState` in src-tauri/src/session/commands/swf.rs):
+ * the gateway's info and, while the VM runs, the report of its idle check; `idleNote` says why the report could not be
+ * read.
+ */
+export type SessionVmState = { info: SessionVmInfo; idle: SessionVmIdle | null; idleNote: string | null };
+
+/**
  * How long a session's VM ran, for the estimate of its cost (mirror of `VmUsage` in src-tauri/src/remote/api.rs): its
  * machine type, null when the VM does not exist, and the seconds Cloud Monitoring counted it running over six weeks.
  */

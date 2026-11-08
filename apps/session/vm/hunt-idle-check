@@ -7,6 +7,8 @@
 # prints its decision ("keep: <reason>", "wait: <reason>" while fewer than IDLE_CHECKS runs in a row found nothing,
 # "idle: <reason>" or "poweroff: <reason>") and changes nothing; only a run without it counts towards IDLE_CHECKS, so
 # that a single run which misses an activity (a heartbeat late by a hiccup of the relay) cannot get the VM suspended.
+# Every run without --dry-run also writes its report to /run/hunt/idle-report.json for Hunt's Factory tab: the decision,
+# the seconds since anything kept the VM up and the estimated seconds until the gateway suspends it.
 #
 # The VM stays up while
 #   - it booted, or resumed from a suspend, less than BOOT_GRACE_MINUTES ago (a resume shows as a gap of more than
@@ -39,6 +41,7 @@ state_dir=${HUNT_IDLE_STATE_DIR:-/run/hunt}
 last_run_file=$state_dir/idle-last-run
 idle_since_file=$state_dir/idle-since
 idle_runs_file=$state_dir/idle-runs
+report_file=$state_dir/idle-report.json
 readonly HEARTBEAT_MAX_AGE_MS=120000
 readonly RESUME_GAP_SECONDS=180
 
@@ -121,6 +124,62 @@ last_agent_activity_ms() {
   else
     echo 0
   fi
+}
+
+# Prints the time in ms of the newest activity that keeps the VM up, the boot and the last resume included, given the
+# current time in ms: a running hunt-ctl or check counts as now, else the newest of hunt-ctl's last run, the relay's
+# activity (a pending permission request too), the preview proxy's last page load and the interactive logins' last
+# input.
+last_activity_ms() {
+  local now_ms=$1 latest time uptime resumed login_idle
+  read -r uptime _ <"$uptime_file"
+  latest=$((now_ms - ${uptime%.*} * 1000))
+  resumed=$(seconds_since_resume "$((now_ms / 1000))")
+  if [[ -n $resumed ]] && (( now_ms - resumed * 1000 > latest )); then
+    latest=$((now_ms - resumed * 1000))
+  fi
+  if pgrep -f '/hunt-ctl( |$)' >/dev/null || [[ -n $(running_checks) ]]; then
+    echo "$now_ms"
+    return
+  fi
+  if [[ -e $activity_file ]]; then
+    time=$(( $(stat -c %Y "$activity_file") * 1000 ))
+    (( time > latest )) && latest=$time
+  fi
+  time=$(last_agent_activity_ms "$now_ms")
+  (( time > latest )) && latest=$time
+  if [[ -f $status_file ]]; then
+    time=$(jq -r --argjson now "$now_ms" --argjson maxAge "$HEARTBEAT_MAX_AGE_MS" \
+      'if (.heartbeatAt // 0) < $now - $maxAge then 0 else (.pendingPermissionSince // 0) end' "$status_file" 2>/dev/null) || time=0
+    [[ $time =~ ^[0-9]+$ ]] && (( time > latest )) && latest=$time
+  fi
+  time=$(last_preview_request_ms)
+  [[ $time =~ ^[0-9]+$ ]] && (( time > latest )) && latest=$time
+  login_idle=$(login_idle_minutes)
+  [[ -n $login_idle ]] && (( now_ms - login_idle * 60000 > latest )) && latest=$((now_ms - login_idle * 60000))
+  echo "$latest"
+}
+
+# Writes the report of this run (see the head of the file) given the current time in ms and the decision; the suspend
+# estimate counts the rest of IDLE_MINUTES and one run per minute of IDLE_CHECKS, 0 once the VM is idle or powers off.
+write_report() {
+  local now_ms=$1 decision=$2 idle_s suspend_in
+  idle_s=$(( (now_ms - $(last_activity_ms "$now_ms")) / 1000 ))
+  case $decision in
+    keep:*)
+      suspend_in=$(( IDLE_MINUTES * 60 - idle_s ))
+      (( suspend_in < 0 )) && suspend_in=0
+      suspend_in=$(( suspend_in + IDLE_CHECKS * 60 ))
+      ;;
+    wait:*) suspend_in=$(( (IDLE_CHECKS - $(idle_runs)) * 60 )) ;;
+    *) suspend_in=0 ;;
+  esac
+  mkdir -p "$state_dir"
+  jq -nc --arg decision "$decision" --argjson at "$((now_ms / 1000))" --argjson idle "$idle_s" --argjson suspendIn "$suspend_in" \
+    --argjson idleMinutes "$IDLE_MINUTES" --argjson idleChecks "$IDLE_CHECKS" \
+    '{at: $at, decision: $decision, idleSeconds: $idle, suspendInSeconds: $suspendIn, idleMinutes: $idleMinutes, idleChecks: $idleChecks}' >"$report_file.tmp"
+  chmod 644 "$report_file.tmp"
+  mv "$report_file.tmp" "$report_file"
 }
 
 # Prints the seconds since the VM last resumed from a suspend, given the current time in seconds: 0 when the last run
@@ -273,3 +332,4 @@ case $decision in
     systemctl poweroff
     ;;
 esac
+write_report "$((now_s * 1000))" "$decision"

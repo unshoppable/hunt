@@ -1,5 +1,5 @@
 import type { Run, RunOutcome } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
-import { SWF_STEPS, type SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
+import { isPollerStep, SWF_STEPS, type SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import type { LayoutInput } from "../graph/layout.utils";
 import type { PipelineRecord } from "../sessions/swf-pipeline.utils";
 
@@ -16,6 +16,19 @@ export const STEP_LABELS: Record<SwfStep, string> = {
 
 /** How a run ended, in words. */
 export const OUTCOME_LABELS: Record<RunOutcome, string> = { running: "Running", passed: "Passed", returned: "Returned", failed: "Failed", restarted: "Restarted" };
+
+/**
+ * The state of a run as the Factory tab shows it: its outcome, except that a running run of a poller step (pr-gate,
+ * merge) is `waiting`, since no agent works on the VM then; the gateway's poller waits for GitHub.
+ */
+export type RunState = RunOutcome | "waiting";
+
+export function runState(run: Pick<Run, "step" | "outcome">): RunState {
+  return run.outcome === "running" && isPollerStep(run.step) ? "waiting" : run.outcome;
+}
+
+/** The run states in words. */
+export const RUN_STATE_LABELS: Record<RunState, string> = { ...OUTCOME_LABELS, waiting: "Waiting" };
 
 /** One step of the pipeline as a node: its runs so far, whether the pipeline stands at it and how its last run ended. */
 export type StepNode = {

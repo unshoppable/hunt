@@ -144,7 +144,16 @@ describe("hunt-idle-check", () => {
     } catch {
       systemctl = "";
     }
-    return { status: result.status, stdout: result.stdout.trim(), stderr: result.stderr, systemctl, state: readState(state) };
+    return { status: result.status, stdout: result.stdout.trim(), stderr: result.stderr, systemctl, state: readState(state), report: readReport(state) };
+  }
+
+  /** The report the run wrote (`idle-report.json`); `null` without one. */
+  function readReport(dir: string): Record<string, unknown> | null {
+    try {
+      return JSON.parse(readFileSync(join(dir, "idle-report.json"), "utf8"));
+    } catch {
+      return null;
+    }
   }
 
   /** The epoch seconds of a time `minutes` before now. */
@@ -276,6 +285,18 @@ describe("hunt-idle-check", () => {
     expect(run({ status: { turn: "running" }, idleSinceMinutesAgo: 5 }, [])).toMatchObject({ stdout: "", state: { lastRun: `${NOW_S}`, idleSince: null } });
     expect(run({ lastRunMinutesAgo: 4, idleSinceMinutesAgo: 40 }, []).state).toEqual({ lastRun: `${NOW_S} ${NOW_S}`, idleSince: null, idleRuns: null });
     expect(run({ lastRunMinutesAgo: 1, resumedMinutesAgo: 10 }, []).state).toEqual({ lastRun: `${NOW_S} ${NOW_S - 600}`, idleSince: null, idleRuns: null });
+  });
+
+  it("writes the report of every run without --dry-run: the decision, the idle seconds and the estimated seconds until the suspend", () => {
+    expect(run({}).report).toBeNull();
+    expect(run({}, []).report).toEqual({ at: NOW_S, decision: IDLE, idleSeconds: 36_000, suspendInSeconds: 0, idleMinutes: 30, idleChecks: 15 });
+    expect(run({ status: { turnEnded: 12 } }, []).report).toMatchObject({ decision: "keep: a turn ended within 30 min", idleSeconds: 720, suspendInSeconds: 18 * 60 + 15 * 60 });
+    expect(run({ status: { turn: "running" } }, []).report).toMatchObject({ idleSeconds: 0, suspendInSeconds: 45 * 60 });
+    expect(run({ status: { permission: 5 }, huntCtlMinutesAgo: 50 }, []).report).toMatchObject({ idleSeconds: 300 });
+    expect(run({ logins: ["jane     pts/0    10.0.0.1         09:00    3:00   0.01s  0.01s -bash"], huntCtlMinutesAgo: 50 }, []).report).toMatchObject({ idleSeconds: 180 });
+    expect(run({ idleRuns: 4 }, []).report).toMatchObject({ decision: "wait: nothing keeps the VM up, 4 of 15 checks in a row found nothing", suspendInSeconds: 10 * 60 });
+    expect(run({ uptimeMinutes: 10 }, []).report).toMatchObject({ idleSeconds: 600, suspendInSeconds: 20 * 60 + 15 * 60 });
+    expect(run({ lastRunMinutesAgo: 1, resumedMinutesAgo: 20 }, []).report).toMatchObject({ idleSeconds: 1200 });
   });
 
   it("powers off through systemctl only without --dry-run and refuses other arguments", () => {

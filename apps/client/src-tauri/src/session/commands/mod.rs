@@ -203,6 +203,7 @@ command_handler![
     swf::read_swf_transcript,
     swf::read_session_plan_usage,
     swf::read_session_vm_usage,
+    swf::read_session_vm_state,
     lsp::lsp_request,
     lsp::lsp_cancel,
     documents::document_open,

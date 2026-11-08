@@ -24,18 +24,20 @@ import { modelText, openableRuns, runModelWindows, shownRun, sumTokens, tokensTi
 import { FACTORY_EDGE_TYPES, FACTORY_NODE_TYPES, PipelineFocusContext } from "./FactoryNodes";
 import {
   formatRunDuration,
-  OUTCOME_LABELS,
   pipelineGraph,
   pipelineLinks,
+  RUN_STATE_LABELS,
   runDuration,
+  runState,
   STEP_LABELS,
   transitionText,
   type PipelineFocus,
+  type RunState,
   type Transition,
 } from "./pipeline-graph.utils";
 import { layoutPipeline, pipelineBounds, type PipelineFlowEdge, type StepFlowNode } from "./pipeline-layout.utils";
 import { runConversation, type RunConversation } from "./run-transcript.utils";
-import { vmCost, type VmCost } from "./vm-cost.utils";
+import { VmCard } from "./VmCard";
 
 /** How often the duration of a running run counts up. */
 const CLOCK_TICK_MS = 1000;
@@ -46,9 +48,10 @@ const MIN_GRAPH_HEIGHT = 80;
 const MIN_RUNS_HEIGHT = 60;
 const MIN_DETAILS_HEIGHT = 120;
 
-/** Colour of a run's outcome chip in the timeline. */
-const OUTCOME_CHIP: Record<Run["outcome"], string> = {
+/** Colour of a run's state chip in the timeline. */
+const OUTCOME_CHIP: Record<RunState, string> = {
   running: "border-blue-400/40 bg-blue-400/10 text-blue-300",
+  waiting: "border-violet-400/40 bg-violet-400/10 text-violet-300",
   passed: AGENT_CHIP.done,
   returned: "border-amber-400/40 bg-amber-400/10 text-amber-300",
   failed: AGENT_CHIP.failed,
@@ -240,17 +243,12 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
   );
 }
 
-/** How often the VM's running time is read again from the gateway while the tab is open. */
-const VM_USAGE_REFRESH_MS = 5 * 60_000;
-
 /**
  * The top left corner of the graph: the plan limits for the models the pipeline's runs used, as the session list shows
- * them, and below them the estimated cost of the session's VM. The plan limits are those of the Claude account the
- * session runs with on its VM (a poller session's is the poller's, not the one picked on this Mac), read there when the
- * tab opens, when the VM comes up and whenever a turn starts or ends; the last limits stay while the VM is off or the
- * read fails, with the reason in the tooltip. Nothing of them before the first agent run. The VM's cost is its running
- * time from the gateway (`vms.usage`), also while the VM is off, at the list price of its machine type, read at the same
- * moments and every five minutes.
+ * them, and below them the VM card (`VmCard.tsx`). The plan limits are those of the Claude account the session runs
+ * with on its VM (a poller session's is the poller's, not the one picked on this Mac), read there when the tab opens,
+ * when the VM comes up and whenever a turn starts or ends; the last limits stay while the VM is off or the read fails,
+ * with the reason in the tooltip. Nothing of them before the first agent run.
  */
 function PlanUsageOverlay({ sessionId, pipeline, isTurnRunning }: { sessionId: string; pipeline: Pipeline; isTurnRunning: boolean }) {
   const link = useHuntStore((state) => state.remoteLinks[sessionId]?.state ?? null);
@@ -260,8 +258,6 @@ function PlanUsageOverlay({ sessionId, pipeline, isTurnRunning }: { sessionId: s
   });
   const [windows, setWindows] = useState<UsageWindow[]>([]);
   const [note, setNote] = useState<string | null>(null);
-  const [cost, setCost] = useState<VmCost | null>(null);
-  const [costNote, setCostNote] = useState<string | null>(null);
   const now = useMinuteClock();
   useLoad(
     () => commands.readSessionPlanUsage(sessionId),
@@ -275,35 +271,20 @@ function PlanUsageOverlay({ sessionId, pipeline, isTurnRunning }: { sessionId: s
     [sessionId, link, isTurnRunning],
     { isEnabled: isVmReachable },
   );
-  useLoad(
-    () => commands.readSessionVmUsage(sessionId),
-    {
-      onValue: (usage) => {
-        setCost(usage ? vmCost(usage) : null);
-        setCostNote(null);
-      },
-      onError: (reason) => setCostNote(`Reading the VM's running time from the gateway failed: ${errorText(reason)}`),
-    },
-    [sessionId, link, isTurnRunning, Math.floor(now / VM_USAGE_REFRESH_MS)],
-  );
   const models = pipeline.runs.filter((run) => isAgentStep(run.step)).map((run) => pipeline.settings.steps[run.step].model);
   const shown = runModelWindows(windows, models);
   const hasPlanUsage = models.length > 0 && (shown.length > 0 || note !== null);
-  if (!hasPlanUsage && !cost) return null;
   return (
-    <div className="absolute top-3 left-3 z-10 flex w-72 flex-col gap-2 rounded-md border border-(--line) bg-black/50 px-3 py-2 backdrop-blur-md text-[13px] whitespace-nowrap text-neutral-500">
+    <div className="absolute top-3 left-3 z-10 flex flex-col gap-2">
       {hasPlanUsage ? (
-        <div title={note ?? undefined} className="flex gap-3">
+        <div
+          title={note ?? undefined}
+          className="flex w-72 gap-3 rounded-md border border-(--line) bg-black/50 px-3 py-2 backdrop-blur-md text-[13px] whitespace-nowrap text-neutral-500"
+        >
           {shown.length ? <PlanUsageWindows windows={shown} now={now} /> : <span className="min-w-0 truncate">Plan usage unavailable</span>}
         </div>
       ) : null}
-      {cost ? (
-        <div title={costNote ? `${cost.title}\n${costNote}` : cost.title} className={`flex gap-1 leading-none ${hasPlanUsage ? "border-t border-(--line) pt-2" : ""}`}>
-          <span className="min-w-0 truncate">VM</span>
-          <span className="shrink-0 tabular-nums text-neutral-300">{cost.cost}</span>
-          <span className="ml-auto shrink-0 text-[12px] tabular-nums text-neutral-600">{cost.duration}</span>
-        </div>
-      ) : null}
+      <VmCard sessionId={sessionId} isTurnRunning={isTurnRunning} now={now} />
     </div>
   );
 }
@@ -363,15 +344,19 @@ function RunRow({
   useEffect(() => {
     if (isSelected) rowRef.current?.scrollIntoView({ block: "nearest" });
   }, [isSelected]);
+  const state = runState(run);
   const started = Date.parse(run.startedAt);
   const startedText = Number.isNaN(started) ? run.startedAt : new Date(started).toLocaleString(undefined, { dateStyle: "short", timeStyle: "short" });
   const content = (
     <>
       <span className="w-7 shrink-0 text-right text-neutral-500 tabular-nums">{run.n}</span>
       <span className="w-28 shrink-0 truncate font-medium text-neutral-100">{STEP_LABELS[run.step]}</span>
-      <Chip className={OUTCOME_CHIP[run.outcome]} title={run.outcome === "returned" ? `Sent the issue back to implement with ${run.findings ?? 0} findings` : undefined}>
-        {run.outcome === "running" ? <span className="size-1.5 animate-pulse rounded-full bg-blue-400" aria-hidden="true" /> : null}
-        {OUTCOME_LABELS[run.outcome]}
+      <Chip
+        className={OUTCOME_CHIP[state]}
+        title={state === "returned" ? `Sent the issue back to implement with ${run.findings ?? 0} findings` : state === "waiting" ? "The gateway's poller waits for GitHub; no agent works on the VM" : undefined}
+      >
+        {state === "running" ? <span className="size-1.5 animate-pulse rounded-full bg-blue-400" aria-hidden="true" /> : null}
+        {RUN_STATE_LABELS[state]}
         {run.outcome === "returned" && run.findings !== undefined ? ` · ${run.findings}` : ""}
       </Chip>
       <span className="flex-1" />

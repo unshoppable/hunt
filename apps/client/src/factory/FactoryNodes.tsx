@@ -4,6 +4,7 @@ import { HANDLE_STYLE } from "../graph/DiagramNodes";
 import { MAX_LABEL_WIDTH, orthogonalPath } from "../graph/layout.utils";
 import type { SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import { edgeEmphasis, OUTCOME_LABELS, type PipelineFocus } from "./pipeline-graph.utils";
+import { isPollerStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import { pipelineEdgeColor, type PipelineFlowEdge, type StepFlowNode } from "./pipeline-layout.utils";
 
 /**
@@ -47,7 +48,8 @@ export const StepNodeView = memo(function StepNodeView({ data }: NodeProps<StepF
   const outline = isSelected ? "outline-2 outline-offset-2 outline-white/80" : "";
   const opacity = selectedStep && !isSelected ? "opacity-40" : !data.outcome && !data.isCurrent ? "opacity-60" : "";
   const count = `${runs} ${runs === 1 ? "run" : "runs"}`;
-  const detail = runs === 0 ? "Not yet run" : data.isRunning ? `${count} · Running` : `${count} · ${OUTCOME_LABELS[data.outcome ?? "restarted"]}`;
+  const isWaiting = data.isRunning && isPollerStep(data.id);
+  const detail = runs === 0 ? "Not yet run" : isWaiting ? `${count} · Waiting` : data.isRunning ? `${count} · Running` : `${count} · ${OUTCOME_LABELS[data.outcome ?? "restarted"]}`;
   const repeated = data.repeats > 0 ? `Repeated ${data.repeats} ${data.repeats === 1 ? "time" : "times"}` : "";
   return (
     <div
@@ -57,7 +59,7 @@ export const StepNodeView = memo(function StepNodeView({ data }: NodeProps<StepF
       <Handle type="target" position={Position.Left} style={HANDLE_STYLE} />
       <Handle type="source" position={Position.Right} style={HANDLE_STYLE} />
       <div className="flex items-center gap-1.5">
-        {data.isRunning ? <span className="size-2 shrink-0 animate-pulse rounded-full bg-blue-400" aria-hidden="true" /> : null}
+        {isWaiting ? <span className="size-2 shrink-0 rounded-full bg-violet-400" aria-hidden="true" /> : data.isRunning ? <span className="size-2 shrink-0 animate-pulse rounded-full bg-blue-400" aria-hidden="true" /> : null}
         <span className="min-w-0 flex-1 truncate text-[13px] font-medium">{data.label}</span>
         {data.repeats > 0 ? (
           <span className="shrink-0 text-[11px] text-amber-300 tabular-nums" aria-label={repeated}>

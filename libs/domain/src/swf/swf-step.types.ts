@@ -41,6 +41,10 @@ export function isAgentStep(step: string): step is AgentStep {
   return (AGENT_STEPS as readonly string[]).includes(step);
 }
 
+export function isPollerStep(step: string): step is PollerStep {
+  return (POLLER_STEPS as readonly string[]).includes(step);
+}
+
 export function isSwfStep(step: string): step is SwfStep {
   return (SWF_STEPS as readonly string[]).includes(step);
 }

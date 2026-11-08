@@ -1,3 +1,9 @@
+## 0.36.1 (2026-11-08)
+
+### 🩹 Fixes
+
+- **session:** keep the npm registry cache out of the agent's lockfiles ([a1f7f11](https://github.com/unshoppable/hunt/commit/a1f7f11))
+
 ## 0.36.0 (2026-11-08)
 
 ### 🚀 Features

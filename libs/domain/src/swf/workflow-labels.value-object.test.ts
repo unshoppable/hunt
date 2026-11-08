@@ -16,6 +16,12 @@ describe("WorkflowLabels", () => {
     expect(labels.stepOf("other:plan")).toBeNull();
   });
 
+  it("reads the label of the retired step checks, which an issue of an earlier release may carry, as human-review", () => {
+    expect(labels.stepOf("swf:checks")).toBe("human-review");
+    expect(labels.agentStateOf({ state: "open", labels: ["swf:checks"] })).toBe("human-review");
+    expect(labels.carriedBy({ labels: ["bug", "swf:checks"] })).toEqual(["swf:checks"]);
+  });
+
   it("rejects a label with a colon or whitespace", () => {
     expect(() => WorkflowLabels.of("swf:plan")).toThrow(/no colon/);
     expect(() => WorkflowLabels.of("s wf")).toThrow(/no colon/);
@@ -30,16 +36,18 @@ describe("WorkflowLabels", () => {
       "swf:verify",
       "swf:review",
       "swf:pr",
-      "swf:checks",
       "swf:human-review",
       "swf:merge",
       "swf:question",
       "swf:done",
       "swf:failed",
     ]);
-    expect(specs.find((spec) => spec.name === "swf:human-review")).toEqual({ name: "swf:human-review", color: "e99695", description: "A person has to review the pull request" });
+    expect(specs.find((spec) => spec.name === "swf:human-review")).toEqual({
+      name: "swf:human-review",
+      color: "e99695",
+      description: "The pull request waits for the approval of the repository's review workflow or a person",
+    });
     expect(specs.find((spec) => spec.name === "swf:review")).toEqual({ name: "swf:review", color: "fbca04", description: "Hunt's agent reviews the change by the repository's review criteria" });
-    expect(specs.find((spec) => spec.name === "swf:checks")).toEqual({ name: "swf:checks", color: "fbca04", description: "The pull request waits for its checks and the repository's review workflow" });
     expect(specs.every((spec) => /^[0-9a-f]{6}$/.test(spec.color) && spec.description !== "")).toBe(true);
   });
 
@@ -49,7 +57,6 @@ describe("WorkflowLabels", () => {
     expect(labels.agentStateOf({ state: "open", labels: ["swf:verify", "swf:question"] })).toBe("question");
     expect(labels.agentStateOf({ state: "open", labels: ["swf:merge", "swf:done"] })).toBe("done");
     expect(labels.agentStateOf({ state: "open", labels: ["swf:review", "swf:failed"] })).toBe("failed");
-    expect(labels.agentStateOf({ state: "open", labels: ["swf:checks"] })).toBe("checks");
     expect(labels.agentStateOf({ state: "open", labels: ["swf:gate"] })).toBeNull();
     expect(labels.agentStateOf({ state: "closed", labels: ["swf:plan"] })).toBe("done");
     expect(labels.agentStateOf(null)).toBe("done");
@@ -60,7 +67,7 @@ describe("WorkflowLabels", () => {
     expect(labels.carriedBy({ labels: ["bug", "swf", "swf:plan", "swf:question", "other:done"] })).toEqual(["swf:plan", "swf:question"]);
   });
 
-  it("names the labels of an issue in progress: the steps and the question, not the request or the outcomes", () => {
-    expect(labels.inProgress).toEqual(["swf:plan", "swf:implement", "swf:verify", "swf:review", "swf:pr", "swf:checks", "swf:human-review", "swf:merge", "swf:question"]);
+  it("names the labels of an issue in progress: the steps, the retired ones and the question, not the request or the outcomes", () => {
+    expect(labels.inProgress).toEqual(["swf:plan", "swf:implement", "swf:verify", "swf:review", "swf:pr", "swf:human-review", "swf:merge", "swf:checks", "swf:question"]);
   });
 });

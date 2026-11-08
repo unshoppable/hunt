@@ -16,7 +16,6 @@ function pullRequest(overrides: Partial<z.input<typeof PullRequestState.schema>>
     mergeState: "CLEAN",
     reviewDecision: "APPROVED",
     checks: "success",
-    failingChecks: [],
     labels: [],
     ...overrides,
   });
@@ -36,35 +35,11 @@ describe("PullRequestState", () => {
     expect(pullRequest({ reviewDecision: null }).isApproved).toBe(false);
   });
 
-  describe("checksOutcome", () => {
-    it("waits while the checks run or the head has none yet", () => {
-      expect(pullRequest({ checks: "pending" }).checksOutcome()).toEqual({ kind: "wait", reason: "the checks of the head commit are still running" });
-      expect(pullRequest({ checks: "none" }).checksOutcome()).toEqual({ kind: "wait", reason: `the head commit ${SHORT} has no checks yet` });
-      expect(pullRequest({ checks: "pending", reviewDecision: null }).checksOutcome().kind).toBe("wait");
-    });
-
-    it("sends failing checks back, whatever the review workflow decided", () => {
-      expect(pullRequest({ checks: "failure", failingChecks: ["build", "test-med"] }).checksOutcome()).toEqual({
-        kind: "fix",
-        findings: [`Checks: build, test-med failed on ${SHORT} (https://github.com/acme/app/pull/42/checks)`],
-      });
-      expect(pullRequest({ checks: "failure", reviewDecision: null }).checksOutcome()).toEqual({
-        kind: "fix",
-        findings: [`Checks: a check failed on ${SHORT} (https://github.com/acme/app/pull/42/checks)`],
-      });
-    });
-
-    it("lets the review workflow's decision decide once the checks passed: approved merges, anything else needs a person", () => {
-      expect(pullRequest().checksOutcome()).toEqual({ kind: "merge" });
-      expect(pullRequest({ reviewDecision: "REVIEW_REQUIRED" }).checksOutcome()).toEqual({ kind: "human" });
-      expect(pullRequest({ reviewDecision: "CHANGES_REQUESTED" }).checksOutcome()).toEqual({ kind: "human" });
-      expect(pullRequest({ reviewDecision: null }).checksOutcome()).toEqual({ kind: "human" });
-    });
-
-    it("reports a merged or closed pull request first", () => {
-      expect(pullRequest({ state: "merged", checks: "failure" }).checksOutcome()).toEqual({ kind: "merged" });
-      expect(pullRequest({ state: "closed", checks: "pending" }).checksOutcome()).toEqual({ kind: "closed" });
-    });
+  it("has its checks done once they passed or failed, not while they run or before the head has any", () => {
+    expect(pullRequest().areChecksDone).toBe(true);
+    expect(pullRequest({ checks: "failure" }).areChecksDone).toBe(true);
+    expect(pullRequest({ checks: "pending" }).areChecksDone).toBe(false);
+    expect(pullRequest({ checks: "none" }).areChecksDone).toBe(false);
   });
 
   describe("mergeOutcome", () => {

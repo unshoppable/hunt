@@ -1,6 +1,6 @@
 import * as z from "zod/mini";
 import { ValueObject } from "../model/value-object.model.ts";
-import { isSwfStep, SWF_STEPS, type AgentState, type SwfStep } from "./swf-step.types.ts";
+import { currentStepOf, isSwfStep, RETIRED_STEPS, SWF_STEPS, type AgentState, type SwfStep } from "./swf-step.types.ts";
 
 /** The label that asks the software factory for a session; the labels of the steps and outcomes derive from it. */
 export const SWF_LABEL = "swf";
@@ -11,8 +11,7 @@ const STEP_DESCRIPTIONS: Record<SwfStep, string> = {
   verify: "Hunt's agent checks its change against the issue",
   review: "Hunt's agent reviews the change by the repository's review criteria",
   pr: "Hunt's agent opens the pull request",
-  checks: "The pull request waits for its checks and the repository's review workflow",
-  "human-review": "A person has to review the pull request",
+  "human-review": "The pull request waits for the approval of the repository's review workflow or a person",
   merge: "Hunt merges the pull request",
 };
 
@@ -37,7 +36,8 @@ export interface WorkflowLabels extends z.infer<typeof ZodWorkflowLabelsState> {
 
 /**
  * The labels the poller works with for the configured `label`: the label itself asks for a session, `<label>:<step>`
- * marks the step of the pipeline, and `<label>:question`, `<label>:done` and `<label>:failed` its outcomes.
+ * marks the step of the pipeline, and `<label>:question`, `<label>:done` and `<label>:failed` its outcomes. The label
+ * of a retired step (RETIRED_STEPS), which an issue of an earlier release may carry, marks its successor.
  */
 export class WorkflowLabels extends ValueObject<typeof ZodWorkflowLabelsState> {
   static readonly schema = ZodWorkflowLabelsState;
@@ -68,9 +68,9 @@ export class WorkflowLabels extends ValueObject<typeof ZodWorkflowLabelsState> {
     return `${this.label}:failed`;
   }
 
-  /** The labels of an issue the pipeline works on: every step's and the question's. */
+  /** The labels of an issue the pipeline works on: every step's, every retired step's and the question's. */
   get inProgress(): string[] {
-    return [...SWF_STEPS.map((step) => this.step(step)), this.question];
+    return [...SWF_STEPS.map((step) => this.step(step)), ...[...RETIRED_STEPS.keys()].map((step) => `${this.label}:${step}`), this.question];
   }
 
   /** `<label>:<step>` while the pipeline is at that step. */
@@ -78,11 +78,11 @@ export class WorkflowLabels extends ValueObject<typeof ZodWorkflowLabelsState> {
     return `${this.label}:${step}`;
   }
 
-  /** The step `name` labels; null for any other label. */
+  /** The step `name` labels, the successor for the label of a retired step; null for any other label. */
   stepOf(name: string): SwfStep | null {
     const prefix = `${this.label}:`;
     if (!name.startsWith(prefix)) return null;
-    const step = name.slice(prefix.length);
+    const step = currentStepOf(name.slice(prefix.length));
     return isSwfStep(step) ? step : null;
   }
 

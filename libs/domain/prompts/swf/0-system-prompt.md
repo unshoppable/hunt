@@ -5,14 +5,14 @@ Hunt's software factory started this session for issue #{{number}} of {{repo}}, 
 repository's branch naming rules, and every later step works on it. Nobody watches while you work: decide details on
 your own where the issue, the repository and its conventions settle them, and name your decisions in the pull request.
 
-The work runs as a pipeline of steps that Hunt drives: plan, implement, verify, review, pr, then checks (the pull
-request's checks and the decision of the repository's review workflow), human-review (only when that workflow did not
-approve) and merge. Each prompt
+The work runs as a pipeline of steps that Hunt drives: plan, implement, verify, review, pr, then human-review (the
+approval of the repository's review workflow, or of a person when that workflow does not approve) and merge. Each prompt
 you get names one step and says what it is to deliver. You do only that step. Every step runs in a fresh conversation:
 what the earlier steps did is in `.hunt/swf/steps/<nn>-<step>.md` of the worktree (the plan, what implement changed,
 what verify and the review found) and in the branch's commits; the step's prompt names what to read. A finding of
 verify or of the review step at or above the step's `minSeverity` (hunt.json; a lesser one stays in the result as a
-suggestion), of the checks or of the merge brings you back to implement with the finding in the prompt.
+suggestion), a person's change request or a conflict at the merge brings you back to implement with the finding in the
+prompt; the pull request's CI checks run on GitHub and send nothing back.
 Every step that sends you back has its own limit of returns, which the implement prompt names; after it Hunt asks you
 to escalate to the people instead.
 

@@ -23,7 +23,6 @@ describe("SwfSettings", () => {
       verify: { skill: "swf-verify", ...UNSET, maxReturns: 5, minSeverity: 3, gate: [] },
       review: { skill: "swf-review", ...UNSET, maxReturns: 3, minSeverity: 3, gate: [] },
       pr: { skill: "swf-pr", ...UNSET, maxReturns: null, minSeverity: null, gate: [] },
-      checks: { skill: null, ...UNSET, maxReturns: 2, minSeverity: null, gate: [] },
       "human-review": { skill: null, ...UNSET, maxReturns: 3, minSeverity: null, gate: [] },
       merge: { skill: null, ...UNSET, maxReturns: 2, minSeverity: null, gate: [] },
     });
@@ -66,11 +65,11 @@ describe("SwfSettings", () => {
   it("rejects an agent step without a skill, agent fields on a poller step and a limit of returns on a step that never sends the pipeline back", () => {
     const { review: _review, ...withoutReview } = STEPS;
     expect(() => new SwfSettings({ steps: withoutReview })).toThrow(/every agent step names its skill/);
-    for (const checks of [{ skill: "swf-checks" }, { model: "claude-opus-5-5" }, { effort: "low" as const }, { checks: "*" as const }]) {
-      expect(() => new SwfSettings({ steps: { ...STEPS, checks } })).toThrow(/only an agent step/);
+    for (const merge of [{ skill: "swf-merge" }, { model: "claude-opus-5-5" }, { effort: "low" as const }, { checks: "*" as const }]) {
+      expect(() => new SwfSettings({ steps: { ...STEPS, merge } })).toThrow(/only an agent step/);
     }
     expect(() => new SwfSettings({ steps: { ...STEPS, implement: { skill: "swf-implement", maxReturns: 2 } } })).toThrow(/only a returning step has maxReturns/);
-    expect(() => new SwfSettings({ steps: { ...STEPS, checks: { minSeverity: 2 } } })).toThrow(/only a scoring step has minSeverity/);
+    expect(() => new SwfSettings({ steps: { ...STEPS, "human-review": { minSeverity: 2 } } })).toThrow(/only a scoring step has minSeverity/);
     expect(() => new SwfSettings({ steps: { ...STEPS, plan: { skill: "swf-plan", minSeverity: 2 } } })).toThrow(/only a scoring step has minSeverity/);
   });
 

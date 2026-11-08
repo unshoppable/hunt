@@ -35,7 +35,7 @@ describe("humanReviewComment", () => {
 
 describe("pull request comments and findings", () => {
   it("marks an issue as failed without a pull request and turns a change request into one finding without its empty body", () => {
-    expect(noPullRequestComment()).toBe("Hunt reached the checks without a pull request number, so this issue is marked as failed.");
+    expect(noPullRequestComment()).toBe("Hunt reached the review of the pull request without a pull request number, so this issue is marked as failed.");
     expect(missingPullRequestComment(31)).toBe("Pull request #31 does not exist (any more), so this issue is marked as failed.");
     const review = { id: 7, author: "carol", state: "CHANGES_REQUESTED", body: "  \n", submittedAt: "2026-10-13T10:00:00Z" };
     const finding = changeRequestFinding(31, review, ["db/0007.sql:3: Use a partial index."]);

@@ -6,8 +6,8 @@ description: Refines the implement step of Hunt's swf pipeline for this reposito
 # Implement step in this repository
 
 Hunt's swf pipeline turns a GitHub issue into a merged pull request, one step per prompt. In the implement step the
-agent carries out the plan it commented on the issue, or fixes the findings the prompt lists (of the verify step, a
-failing check, the review, a reviewer or a merge conflict); it writes the tests, runs the checks, commits and pushes. The
+agent carries out the plan it commented on the issue, or fixes the findings the prompt lists (of the verify step, the
+review, a reviewer or a merge conflict); it writes the tests, runs the checks, commits and pushes. The
 step's prompt says what the step delivers and how it ends (its result, labels and questions); where this skill
 disagrees with it on those, the prompt wins. This skill adds what this repository needs to implement a change: how its
 commands run, which conventions most changes meet, which checks cover a change and how a commit is written.

@@ -39,9 +39,9 @@ export function mergedComment(pullRequest: number): string {
   return `Hunt merged pull request #${pullRequest}.`;
 }
 
-/** The comment that marks an issue as failed because its pipeline reached the checks without a pull request number. */
+/** The comment that marks an issue as failed because its pipeline reached the review of the pull request without a pull request number. */
 export function noPullRequestComment(): string {
-  return "Hunt reached the checks without a pull request number, so this issue is marked as failed.";
+  return "Hunt reached the review of the pull request without a pull request number, so this issue is marked as failed.";
 }
 
 /** The comment that marks an issue as failed because its pull request does not exist (any more). */

@@ -20,18 +20,8 @@ const ZodPullRequestState = z.object({
   reviewDecision: z.nullable(z.string()),
   /** The combined state of the head commit's checks: success, failure, pending, or none without checks. */
   checks: z.enum(["success", "failure", "pending", "none"]),
-  /** The names of the failing checks. */
-  failingChecks: z.array(z.string()),
   labels: z.array(z.string()),
 });
-
-export type ChecksOutcome =
-  | { kind: "wait"; reason: string }
-  | { kind: "fix"; findings: string[] }
-  | { kind: "merge" }
-  | { kind: "human" }
-  | { kind: "merged" }
-  | { kind: "closed" };
 
 export type MergeOutcome =
   | { kind: "merge" }
@@ -71,20 +61,12 @@ export class PullRequestState extends ValueObject<typeof ZodPullRequestState> {
   }
 
   /**
-   * What the checks step does with the pull request: a failing check sends the agent back; running checks, or a head
-   * without checks yet, wait (the review workflow has not judged it either); once the checks passed, its decision counts:
-   * an approved pull request goes on to the merge, one without an approval to a person.
+   * Whether the checks of the head commit ended, passed or failed, and with them the run of the repository's review
+   * workflow, which is one of them: until then the workflow may still approve, so human-review asks no person yet. A
+   * failing check sends nothing back; the people see it on GitHub.
    */
-  checksOutcome(): ChecksOutcome {
-    if (this.isMerged) return { kind: "merged" };
-    if (this.isClosed) return { kind: "closed" };
-    if (this.checks === "failure") {
-      const names = this.failingChecks.length > 0 ? this.failingChecks.join(", ") : "a check";
-      return { kind: "fix", findings: [`Checks: ${names} failed on ${this.shortSha} (${this.url}/checks)`] };
-    }
-    if (this.checks === "pending") return { kind: "wait", reason: "the checks of the head commit are still running" };
-    if (this.checks === "none") return { kind: "wait", reason: `the head commit ${this.shortSha} has no checks yet` };
-    return this.isApproved ? { kind: "merge" } : { kind: "human" };
+  get areChecksDone(): boolean {
+    return this.checks === "success" || this.checks === "failure";
   }
 
   /**

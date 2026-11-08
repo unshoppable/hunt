@@ -252,7 +252,7 @@ function idle(fields: Partial<RelaySessionStatus> = {}): RelaySessionStatus {
 function recorded(step: SwfStep = "plan", promptTurn: number | null = null, settings: StepSettings = SETTINGS, sessionId = "acp-1"): Pipeline {
   const pipeline = started(NOW, settings);
   pipeline.noteRecordComment(RECORD_ID);
-  const order: SwfStep[] = ["plan", "implement", "verify", "review", "pr", "checks"];
+  const order: SwfStep[] = ["plan", "implement", "verify", "review", "pr", "human-review"];
   for (const current of order.slice(0, order.indexOf(step))) {
     switch (current) {
       case "plan":
@@ -285,7 +285,7 @@ describe("SwfRunner", () => {
     await h.runner.tick();
     expect(h.logs).toEqual(["no pipeline in .hunt/swf yet"]);
 
-    h.files.writePipeline(recorded("checks"));
+    h.files.writePipeline(recorded("human-review"));
     await h.runner.tick();
     h.files.writePipeline(recorded("plan"));
     h.status = null;
@@ -293,7 +293,7 @@ describe("SwfRunner", () => {
     h.status = idle({ turn: "running" });
     await h.runner.tick();
     await h.runner.tick();
-    expect(h.logs.slice(1)).toEqual(["the gateway drives the step checks", "the relay serves no session", "the agent runs a turn of plan"]);
+    expect(h.logs.slice(1)).toEqual(["the gateway drives the step human-review", "the relay serves no session", "the agent runs a turn of plan"]);
     expect(h.prompts).toEqual([]);
     expect(h.github.calls).toEqual([]);
   });
@@ -464,25 +464,25 @@ describe("SwfRunner", () => {
     expect(h.files.inbox).toEqual([]);
     expect(h.logs).toContain("warn: ignored 2-1.json of the inbox, which holds no message");
 
-    // At checks the poller owns the transitions: its pipeline wins, in review or sent back.
-    h.files.writePipeline(recorded("checks"));
-    const prepared = recorded("checks");
+    // At human-review the poller owns the transitions: its pipeline wins, in review or sent back.
+    h.files.writePipeline(recorded("human-review"));
+    const prepared = recorded("human-review");
     prepared.noteInReview();
     h.files.deliver("3-1.json", pipelineMessage(prepared));
     await h.runner.tick();
     expect(h.files.pipeline?.inReview).toBe(true);
     expect(h.prompts).toEqual([]);
 
-    const returned = recorded("checks");
-    returned.sendBackToImplement(["Review: the test fails"], NOW + 1);
+    const returned = recorded("human-review");
+    returned.sendBackToImplement(["@carol requested changes on #31:\nThe test fails"], NOW + 1);
     h.files.deliver("4-1.json", pipelineMessage(returned));
     await h.runner.tick();
     expect(h.files.pipeline?.step).toBe("implement");
     expect(h.files.pipeline?.runs).toHaveLength(7);
     expect(h.clears).toBe(1);
     expect(h.prompts).toHaveLength(1);
-    expect(h.prompts[0].text).toContain(`Step \`implement\` for issue #12 of acme/app on the branch \`${BRANCH}\` (return 1 of 2, sent back by checks).`);
-    expect(h.prompts[0].text).toContain("- Review: the test fails");
+    expect(h.prompts[0].text).toContain(`Step \`implement\` for issue #12 of acme/app on the branch \`${BRANCH}\` (return 1 of 3, sent back by human-review).`);
+    expect(h.prompts[0].text).toContain("- @carol requested changes on #31:");
     expect(h.logs).toContain("took the pipeline the gateway sent: at implement after 7 runs");
   });
 

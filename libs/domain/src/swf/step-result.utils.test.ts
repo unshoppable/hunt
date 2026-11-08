@@ -6,10 +6,10 @@ describe("steps", () => {
   it("tells the agent steps from the poller steps and both from anything else", () => {
     expect(isAgentStep("plan")).toBe(true);
     expect(isAgentStep("review")).toBe(true);
-    expect(isAgentStep("checks")).toBe(false);
+    expect(isAgentStep("human-review")).toBe(false);
     expect(isAgentStep("gate")).toBe(false);
-    expect(isSwfStep("checks")).toBe(true);
     expect(isSwfStep("human-review")).toBe(true);
+    expect(isSwfStep("checks")).toBe(false);
     expect(isSwfStep("gate")).toBe(false);
     expect(isSwfStep("running")).toBe(false);
   });

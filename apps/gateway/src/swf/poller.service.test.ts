@@ -453,7 +453,6 @@ function pullRequestOf(fields: Partial<z.input<typeof PullRequestState.schema>> 
     mergeState: "BLOCKED",
     reviewDecision: "APPROVED",
     checks: "success",
-    failingChecks: [],
     labels: [],
     ...fields,
   });
@@ -549,7 +548,7 @@ describe("Poller.cycle", () => {
     await poller.cycle();
     await poller.drain();
 
-    const labels = ["plan", "implement", "verify", "review", "pr", "checks", "human-review", "merge", "question", "done", "failed"];
+    const labels = ["plan", "implement", "verify", "review", "pr", "human-review", "merge", "question", "done", "failed"];
     // The plan step creates the branch; the issue moves to In Progress once the settings of hunt.json are known.
     const planned = Pipeline.start({ ...ISSUE, branch: "" }, REPORTED_SETTINGS, NOW);
     expect(github.calls).toEqual([
@@ -900,19 +899,19 @@ describe("Poller.cycle follows running sessions", () => {
     expect(session.calls).toEqual([TOKEN_CALL]);
     expect(writes(session.github)).toEqual([]);
 
-    session.github.threads[KEY] = threadOf(recordAt("checks", { pullRequest: PULL_REQUEST }));
+    session.github.threads[KEY] = threadOf(recordAt("human-review", { pullRequest: PULL_REQUEST }));
     session.stored.labels = ["bug"];
     await session.poller.cycle();
     expect(session.logs.filter((line) => line.includes("no label of the workflow"))).toEqual([
-      `${KEY}: the issue carries no label of the workflow; setting swf:checks from the pipeline record`,
+      `${KEY}: the issue carries no label of the workflow; setting swf:human-review from the pipeline record`,
     ]);
-    expect(writes(session.github).slice(0, 1)).toEqual(["label acme/app#12 swf:checks"]);
+    expect(writes(session.github).slice(0, 1)).toEqual(["label acme/app#12 swf:human-review"]);
   });
 
   it("leaves a session alone whose record is of an older version or names no version, and says so once", async () => {
     for (const version of [2, 3, null]) {
-      const session = followSession(recordAt("checks", { pullRequest: PULL_REQUEST }), { labels: ["swf:checks"], pullRequests: { [PULL_REQUEST]: pullRequestOf() } });
-      session.github.threads[KEY][0].body = oldRecordComment("checks", version);
+      const session = followSession(recordAt("human-review", { pullRequest: PULL_REQUEST }), { pullRequests: { [PULL_REQUEST]: pullRequestOf() } });
+      session.github.threads[KEY][0].body = oldRecordComment("human-review", version);
 
       await session.poller.cycle();
       await session.poller.cycle();
@@ -1102,10 +1101,10 @@ describe("Poller.cycle follows running sessions", () => {
 });
 
 describe("Poller.cycle drives the pull request", () => {
-  it("moves the issue to In Review once the runner moved it to checks, then waits for the checks of the head commit without asking the VM", async () => {
-    const pullRequests = { [PULL_REQUEST]: pullRequestOf({ checks: "pending" }) };
+  it("moves the issue to In Review once the runner moved it to human-review, then waits for the checks of the head commit without asking anyone or the VM", async () => {
+    const pullRequests = { [PULL_REQUEST]: pullRequestOf({ checks: "pending", reviewDecision: "REVIEW_REQUIRED" }) };
     const ended = { endedAt: new Date(NOW).toISOString(), outcome: "passed" as const };
-    const record = recordAt("checks", { pullRequest: PULL_REQUEST, runs: [runOf(1, "pr", ended), runOf(2, "checks")] });
+    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, runs: [runOf(1, "pr", ended), runOf(2, "human-review")] });
     const session = followSession(record, { pullRequests, projects: ["Board"] });
 
     await session.poller.cycle();
@@ -1114,84 +1113,78 @@ describe("Poller.cycle drives the pull request", () => {
     expect(session.calls).toHaveLength(2);
     expect(session.calls[1]).toMatch(/^hunt-ctl swf-inbox [0-9a-f-]+ <<< .*\\"inReview\\":true/);
     expect(session.logs).toContain(`${KEY}: moved to In Review in "Board"`);
-    expect(session.logs).toContain(`${KEY}: checks: the checks of the head commit are still running`);
+    expect(session.logs).toContain(`${KEY}: human-review: waiting for the checks of #31, the repository's review workflow among them`);
 
-    // Moved once; the checks go on without the VM.
+    // Moved once; the wait goes on without the VM.
     await session.poller.cycle();
     await session.poller.cycle();
     expect(writes(session.github)).toHaveLength(2);
     expect(session.calls).toHaveLength(2);
-    expect(session.logs.filter((line) => line.includes("still running"))).toHaveLength(1);
+    expect(session.logs.filter((line) => line.includes("waiting for the checks"))).toHaveLength(1);
 
     // The status is the one hunt.json names, which the record keeps.
-    const custom = followSession(recordAt("checks", { pullRequest: PULL_REQUEST, settings: CUSTOM_SETTINGS.toJSON() }), { pullRequests, projects: ["Board"] });
+    const custom = followSession(recordAt("human-review", { pullRequest: PULL_REQUEST, settings: CUSTOM_SETTINGS.toJSON() }), { pullRequests, projects: ["Board"] });
     await custom.poller.cycle();
     expect(writes(custom.github)).toEqual(["move acme/app#12 Reviewing", `update acme/app ${RECORD_ID}`]);
   });
 
-  it("sends the issue back to implement at checks for a failing check, through the runner's inbox, and starts a stopped VM for it", async () => {
-    const session = followSession(recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true, returns: { checks: 1 } }), {
-      pullRequests: { [PULL_REQUEST]: pullRequestOf({ checks: "failure", failingChecks: ["build", "lint"] }) },
-    });
-    await session.poller.cycle();
-    expect(writes(session.github)).toEqual(["label acme/app#12 swf:implement", "unlabel acme/app#12 swf:checks", `update acme/app ${RECORD_ID}`]);
-    expect(lastRecord(session.github)).toEqual(withoutRuns({
-      ...recordAt("implement", { pullRequest: PULL_REQUEST, inReview: true }),
-      returns: { checks: 2 },
-      findings: ["Checks: build, lint failed on 0123456 (https://github.com/acme/app/pull/31/checks)"],
-    }));
-    expect(session.logs).toContain(`${KEY}: the checks of #31 failed; back to implement`);
-    expect(session.calls).toHaveLength(2);
-    expect(session.calls[1]).toMatch(/^hunt-ctl swf-inbox [0-9a-f-]+ <<< .*\\"kind\\":\\"pipeline\\".*\\"step\\":\\"implement\\"/);
-
-    const stopped = followSession(recordAt("implement", { returns: { checks: 1 }, findings: ["Checks: build failed"] }), { vmStatus: "SUSPENDED" });
-    startable(stopped.compute, stopped.listed);
-    await stopped.poller.cycle();
-    expect(stopped.logs).toContain(`${KEY}: the step implement waits for its prompt while ${VM} is suspended; starting it`);
-    await settle(stopped.logs, `${KEY}: ${VM} runs again`);
-    expect(stopped.calls.filter((call) => call.startsWith("hunt-ctl swf-inbox"))).toHaveLength(1);
-    expect(stopped.calls.filter((call) => call.startsWith("hunt-ctl swf-record"))).toEqual([]);
-  });
-
-  it("goes on with merge once the checks passed and the repository's review workflow approved the pull request", async () => {
-    const pullRequests = { [PULL_REQUEST]: pullRequestOf({ checks: "pending" }) };
-    const record = recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true });
+  it("goes on with merge once the repository's review workflow approved the pull request, whatever its checks say", async () => {
+    const pullRequests = { [PULL_REQUEST]: pullRequestOf({ checks: "pending", reviewDecision: "REVIEW_REQUIRED" }) };
+    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true });
     const session = followSession(record, { pullRequests });
 
     await session.poller.cycle();
     expect(writes(session.github)).toEqual([]);
 
-    pullRequests[PULL_REQUEST] = pullRequestOf({ reviewDecision: "APPROVED" });
+    pullRequests[PULL_REQUEST] = pullRequestOf({ reviewDecision: "APPROVED", checks: "failure" });
     await session.poller.cycle();
-    expect(writes(session.github)).toEqual(["label acme/app#12 swf:merge", "unlabel acme/app#12 swf:checks", `update acme/app ${RECORD_ID}`]);
+    expect(writes(session.github)).toEqual(["label acme/app#12 swf:merge", "unlabel acme/app#12 swf:human-review", `update acme/app ${RECORD_ID}`]);
     expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "merge" }));
-    expect(session.logs).toContain(`${KEY}: #31 passed its checks and the repository's review workflow approved it; the pipeline goes on with merge`);
+    expect(session.logs).toContain(`${KEY}: #31 was approved by the repository's review workflow; the pipeline goes on with merge`);
     expect(session.calls[0]).toBe(TOKEN_CALL);
     expect(session.calls.at(-1)).toContain('\\"step\\":\\"merge\\"');
   });
 
-  it("asks the issue's people to review once the checks passed without the review workflow's approval: reviewers and one comment, once per issue", async () => {
-    const record = recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true });
-    const session = followSession(record, { pullRequests: { [PULL_REQUEST]: pullRequestOf({ reviewDecision: "REVIEW_REQUIRED" }) } });
+  it("asks the issue's people to review once the checks are done without the review workflow's approval, a failing one too: reviewers and one comment, once per issue", async () => {
+    for (const checks of ["success", "failure"] as const) {
+      const record = recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true });
+      const session = followSession(record, { pullRequests: { [PULL_REQUEST]: pullRequestOf({ checks, reviewDecision: "REVIEW_REQUIRED" }) } });
 
-    await session.poller.cycle();
-    expect(writes(session.github)).toEqual([
-      `request acme/app#${PULL_REQUEST} carol`,
-      `comment acme/app#${PULL_REQUEST} ${humanReviewComment(["carol"], 12)}`,
-      "label acme/app#12 swf:human-review",
-      "unlabel acme/app#12 swf:checks",
-      `update acme/app ${RECORD_ID}`,
-    ]);
-    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "human-review", notified: true }));
-    expect(session.logs).toContain(`${KEY}: #31 passed its checks without the approval of the repository's review workflow; a person reviews it`);
-    expect(session.logs).toContain(`${KEY}: asked @carol to review #31`);
+      await session.poller.cycle();
+      expect(writes(session.github), checks).toEqual([
+        `request acme/app#${PULL_REQUEST} carol`,
+        `comment acme/app#${PULL_REQUEST} ${humanReviewComment(["carol"], 12)}`,
+        `update acme/app ${RECORD_ID}`,
+      ]);
+      expect(lastRecord(session.github), checks).toEqual(withoutRuns({ ...record, notified: true }));
+      expect(session.logs, checks).toContain(`${KEY}: asked @carol to review #31`);
+      expect(session.logs, checks).toContain(`${KEY}: human-review: waiting for a person to approve #31`);
+      await session.poller.cycle();
+      expect(writes(session.github), checks).toHaveLength(3);
+    }
 
-    // Asked once: a pull request that comes back to checks and needs a person again mentions nobody again.
-    const again = followSession(recordAt("checks", { pullRequest: PULL_REQUEST, inReview: true, notified: true, returns: { checks: 1 } }), {
+    // Asked once: a pull request that comes back to human-review and needs a person again mentions nobody again.
+    const again = followSession(recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true, notified: true, returns: { "human-review": 1 } }), {
       pullRequests: { [PULL_REQUEST]: pullRequestOf({ reviewDecision: "CHANGES_REQUESTED" }) },
     });
     await again.poller.cycle();
-    expect(writes(again.github)).toEqual(["label acme/app#12 swf:human-review", "unlabel acme/app#12 swf:checks", `update acme/app ${RECORD_ID}`]);
+    expect(writes(again.github)).toEqual([]);
+  });
+
+  it("drives a record of an earlier release at the retired step checks as human-review and replaces its label with the next step's", async () => {
+    const pullRequests = { [PULL_REQUEST]: pullRequestOf({ reviewDecision: "REVIEW_REQUIRED", checks: "pending" }) };
+    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true });
+    const session = followSession(record, { labels: ["swf:checks"], pullRequests });
+    session.github.threads[KEY][0].body = record.toComment().replaceAll('"step":"human-review"', '"step":"checks"');
+
+    await session.poller.cycle();
+    expect(writes(session.github)).toEqual([]);
+    expect(session.logs).toContain(`${KEY}: human-review: waiting for the checks of #31, the repository's review workflow among them`);
+
+    pullRequests[PULL_REQUEST] = pullRequestOf();
+    await session.poller.cycle();
+    expect(writes(session.github)).toEqual(["label acme/app#12 swf:merge", "unlabel acme/app#12 swf:checks", `update acme/app ${RECORD_ID}`]);
+    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "merge" }));
   });
 
   it("waits at human-review for a person's approval, ignoring bots and plain comments, then goes on with merge", async () => {
@@ -1310,20 +1303,22 @@ describe("Poller.cycle drives the pull request", () => {
     expect(session.logs).toContain(`${KEY}: #31 conflicts with its base; back to implement`);
   });
 
-  it("sends a blocked pull request whose checks passed without an approval from merge to a person", async () => {
+  it("sends a blocked pull request whose checks passed without an approval from merge back to human-review, which asks a person", async () => {
     const record = recordAt("merge", { pullRequest: PULL_REQUEST, inReview: true, mergeSha: HEAD_SHA });
     const session = followSession(record, { pullRequests: { [PULL_REQUEST]: pullRequestOf({ headSha: "b".repeat(40), mergeState: "BLOCKED", reviewDecision: "REVIEW_REQUIRED" }) } });
 
     await session.poller.cycle();
-    expect(writes(session.github)).toEqual([
+    expect(writes(session.github)).toEqual(["label acme/app#12 swf:human-review", "unlabel acme/app#12 swf:merge", `update acme/app ${RECORD_ID}`]);
+    expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "human-review", mergeSha: null }));
+    expect(session.logs).toContain(`${KEY}: #31 is blocked without an approval; a person reviews it`);
+
+    await session.poller.cycle();
+    expect(writes(session.github).slice(3)).toEqual([
       `request acme/app#${PULL_REQUEST} carol`,
       `comment acme/app#${PULL_REQUEST} ${humanReviewComment(["carol"], 12)}`,
-      "label acme/app#12 swf:human-review",
-      "unlabel acme/app#12 swf:merge",
       `update acme/app ${RECORD_ID}`,
     ]);
     expect(lastRecord(session.github)).toEqual(withoutRuns({ ...record, step: "human-review", mergeSha: null, notified: true }));
-    expect(session.logs).toContain(`${KEY}: #31 is blocked without an approval; a person reviews it`);
   });
 
   it("waits at merge while the checks of a mergeable pull request still run", async () => {
@@ -1336,10 +1331,10 @@ describe("Poller.cycle drives the pull request", () => {
   });
 
   it("marks the issue as failed when the pull request was closed without a merge or does not exist", async () => {
-    const closed = followSession(recordAt("checks", { pullRequest: PULL_REQUEST }), { pullRequests: { [PULL_REQUEST]: pullRequestOf({ state: "closed" }) } });
+    const closed = followSession(recordAt("human-review", { pullRequest: PULL_REQUEST }), { pullRequests: { [PULL_REQUEST]: pullRequestOf({ state: "closed" }) } });
     await closed.poller.cycle();
     expect(writes(closed.github)).toEqual([
-      "unlabel acme/app#12 swf:checks",
+      "unlabel acme/app#12 swf:human-review",
       "unlabel acme/app#12 swf:question",
       "label acme/app#12 swf:failed",
       `comment acme/app#12 ${closedComment(PULL_REQUEST)}`,
@@ -1450,9 +1445,9 @@ describe("Poller.cycle replaces a lost VM", () => {
   });
 
   it("drives the poller steps of an issue without a VM on GitHub alone and replaces the VM only once the pipeline is back at the agent", async () => {
-    const pullRequests = { [PULL_REQUEST]: pullRequestOf() };
+    const pullRequests = { [PULL_REQUEST]: pullRequestOf({ reviewDecision: "REVIEW_REQUIRED" }) };
     const reviews: PullRequestReview[] = [];
-    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true, notified: true, runs: [runOf(1, "pr", { ...ended, outcome: "passed" }), runOf(2, "checks", { ...ended, outcome: "passed" }), runOf(3, "human-review")] });
+    const record = recordAt("human-review", { pullRequest: PULL_REQUEST, inReview: true, notified: true, runs: [runOf(1, "pr", { ...ended, outcome: "passed" }), runOf(2, "merge", { ...ended, outcome: "passed" }), runOf(3, "human-review")] });
     const session = followIssueWithoutVm(record, { pullRequests, reviews, reviewComments: [] });
 
     await session.poller.cycle();

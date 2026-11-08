@@ -17,7 +17,7 @@
  *         "verify": { "skill": "swf-verify", "maxReturns": 5 },
  *         "review": { "skill": "swf-review", "effort": "max" },
  *         "pr": { "skill": "swf-pr" },
- *         "checks": { "maxReturns": 2 }
+ *         "human-review": { "maxReturns": 3 }
  *       }
  *     },
  *     "services": {
@@ -80,7 +80,7 @@
  *     does not end with a colon; DEFAULT_QUESTION_PREFIX (`❓ RÜCKFRAGE`) without it.
  *   - `projectStatus`: the names of the Status options the poller sets on the issue in every GitHub Project (v2) it is
  *     an item of, each one line of at most 60 characters, matched regardless of case: `inProgress` once the issue is
- *     claimed, `inReview` once its pull request waits for its checks, `done` once it is merged. All three or none;
+ *     claimed, `inReview` once its pull request waits for its review, `done` once it is merged. All three or none;
  *     DEFAULT_PROJECT_STATUS (`In Progress`, `In Review`, `Done`) without it.
  *   - `mergeMethod`: how the poller merges the pull request, `squash`, `merge` or `rebase` (MERGE_METHODS);
  *     DEFAULT_MERGE_METHOD (`squash`) without it.
@@ -89,8 +89,9 @@
  *     does, from hunt.json. None by default; the VM only validates the list.
  *   - `steps`: the settings of each step (SWF_STEPS), each optional: an agent step (`plan`, `implement`, `verify`,
  *     `review`, `pr`) takes `skill`, `model`, `effort` and `checks`, a step that sends the pipeline back (`verify`,
- *     `review`, `checks`, `human-review`, `merge`; RETURNING_STEPS) `maxReturns`, a step whose findings carry a
- *     severity (`verify`, `review`; SCORING_STEPS) `minSeverity`; any other field of a step is a problem.
+ *     `review`, `human-review`, `merge`; RETURNING_STEPS) `maxReturns`, a step whose findings carry a severity
+ *     (`verify`, `review`; SCORING_STEPS) `minSeverity`; any other field of a step is a problem. The entry of a retired
+ *     step (RETIRED_STEPS: `checks`, which older files set) is ignored, whatever it holds.
  *     - `skill`: the Claude Code skill (`.claude/skills/<name>/SKILL.md`, a name like `guardrailSkill`) with which the
  *       repository refines the step: its prompt tells the agent to invoke the skill first. Every agent step must have
  *       one, here or in `skills`; Hunt has no default, so a step without one is a problem, which the client's dialog on
@@ -138,7 +139,7 @@ import * as z from "zod/mini";
 import { ValueObject } from "../../../../libs/domain/src/model/value-object.model.ts";
 import { isRecord } from "../../../../libs/domain/src/shared/json-rpc.utils.ts";
 import { isReturningStep, isScoringStep, type ProjectStatus, type StepSettings } from "../../../../libs/domain/src/swf/step-settings.value-object.ts";
-import { AGENT_STEPS, isAgentStep, SWF_STEPS, type AgentStep, type SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
+import { AGENT_STEPS, isAgentStep, RETIRED_STEPS, SWF_STEPS, type AgentStep, type SwfStep } from "../../../../libs/domain/src/swf/swf-step.types.ts";
 import { CheckConfig } from "./check-config.value-object.ts";
 import { ConfigError } from "./config.error.ts";
 import {
@@ -185,7 +186,7 @@ const CONTRACT_2_PROBLEM = 'the preview section of contract 2 is no longer read;
 /** Hunt has no default skill: the client's dialog on opening a session of the repository adds the missing entries. */
 const SKILLS_RULE = `must name the skill of every agent step (${AGENT_STEPS.join(", ")}); Hunt asks to add them when a session of the repository opens`;
 const STEP_SKILL_RULE = "must name the skill of the step; Hunt asks to add it when a session of the repository opens";
-const MAX_RETURNS_STEP_RULE = "only a step that sends the pipeline back has maxReturns (verify, review, checks, human-review, merge)";
+const MAX_RETURNS_STEP_RULE = "only a step that sends the pipeline back has maxReturns (verify, review, human-review, merge)";
 const MIN_SEVERITY_STEP_RULE = "only a step whose findings carry a severity has minSeverity (verify, review)";
 
 const ZodHuntJsonState = z
@@ -346,11 +347,14 @@ function parseProjectStatus(value: unknown, problems: Problems): ProjectStatus |
   return { inProgress, inReview, done };
 }
 
-/** The steps of `swf.steps` in the order of the steps, as far as they are objects; none when the section is missing or no object. */
+/**
+ * The steps of `swf.steps` in the order of the steps, as far as they are objects; none when the section is missing or no
+ * object. The entry of a retired step is left unread.
+ */
 function parseSteps(value: unknown, checkNames: ReadonlySet<string>, problems: Problems): Partial<Record<SwfStep, StepDraft>> {
   const steps: Partial<Record<SwfStep, StepDraft>> = {};
   if (value === undefined) return steps;
-  const fields = record(value, at("swf", "steps"), SWF_STEPS, problems);
+  const fields = record(value, at("swf", "steps"), [...SWF_STEPS, ...RETIRED_STEPS.keys()], problems);
   if (!fields) return steps;
   for (const step of SWF_STEPS) {
     if (fields[step] === undefined) continue;

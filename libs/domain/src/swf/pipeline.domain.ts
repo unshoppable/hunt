@@ -19,17 +19,21 @@
  * conversation its prompt went to (`sessionId`, the relay's ACP session, which is Claude Code's), whose transcript the
  * runner keeps as `.hunt/swf/transcripts/<nn>-<step>.jsonl`.
  *
- * The steps run plan → implement → verify → review → pr → checks → human-review (when the repository's review workflow
- * did not approve) → merge. The plan step creates the session's branch by the repository's branch naming rules and
- * reports it in its result (`branch` is empty until then). The agent steps end with the review, a fresh conversation
- * that judges the change by the repository's review criteria. From checks on the poller watches the pull request: the
- * repository's review workflow (such as a scoring GitHub Action) reviews every pull request and approves it as its own
- * GitHub App when no person has to review, and the repository's ruleset requires one approval, so a pull request whose
- * checks passed without an approval waits for a person. Findings of verify, of
- * the review, of the checks (a failing check) or of the merge (conflicts) send the issue back to implement, which then
- * runs verify and review again before the pull request is checked once more. Each returning step counts its returns
- * (`returns`) against its own limit (`maxReturns`); past it the implement step is an escalation, the agent asks the
- * people, and that step counts anew.
+ * The steps run plan → implement → verify → review → pr → human-review → merge. The plan step creates the session's
+ * branch by the repository's branch naming rules and reports it in its result (`branch` is empty until then). The agent
+ * steps end with the review, a fresh conversation that judges the change by the repository's review criteria; the gates
+ * and these steps make sure of the change, so the pipeline never waits for the pull request's CI, which runs on GitHub.
+ * From human-review on the poller watches the pull request: the repository's review workflow (such as a scoring GitHub
+ * Action) reviews every pull request and approves it as its own GitHub App when no person has to review, and the
+ * repository's ruleset requires one approval, so human-review goes on to merge once the workflow or a person approved.
+ * Findings of verify, of the review, of a person's change request or of the merge (conflicts) send the issue back to
+ * implement, which then runs verify and review again before the pull request waits for its review once more. Each
+ * returning step counts its returns (`returns`) against its own limit (`maxReturns`); past it the implement step is an
+ * escalation, the agent asks the people, and that step counts anew.
+ *
+ * A record of an earlier release may name the retired step `checks` (`RETIRED_STEPS` in `swf-step.types.ts`), as its
+ * step or the step of a run: it reads as human-review, and its returns and settings of checks are dropped
+ * (`swf-step.rules.ts`), so the pipeline goes on.
  *
  * An agent step whose settings name a gate is finished only when the gate's checks pass on its result: the runner runs
  * them and, on a failure, gives the result back to the agent in the same conversation (`noteGateFailure`). `gateRuns`
@@ -46,7 +50,8 @@ import { DomainModel } from "../model/domain.model.ts";
 import { isRecord } from "../shared/json-rpc.utils.ts";
 import type { Finding, ParsedStepResult } from "./step-result.utils.ts";
 import { isReturningStep, RETURNING_STEPS, StepSettings, type ReturningStep, type ScoringStep, type StepSetting } from "./step-settings.value-object.ts";
-import { isAgentStep, SWF_STEPS, type AgentStep, type SwfStep } from "./swf-step.types.ts";
+import { ZodSwfStep, ZodWithoutRetiredSteps } from "./swf-step.rules.ts";
+import { isAgentStep, type AgentStep, type SwfStep } from "./swf-step.types.ts";
 import { UnusableStepResult } from "./unusable-step-result.error.ts";
 
 /** The version of the records this release writes and drives; see the module comment. */
@@ -68,7 +73,7 @@ export type RunOutcome = (typeof RUN_OUTCOMES)[number];
 const ZodRun = z.object({
   /** The run's position in the pipeline's log, from 1. */
   n: z.int(),
-  step: z.enum(SWF_STEPS),
+  step: ZodSwfStep,
   startedAt: z.string(),
   endedAt: z.nullable(z.string()),
   outcome: z.enum(RUN_OUTCOMES),
@@ -90,7 +95,7 @@ const ZodStrings = z.pipe(
 );
 
 /** How often each returning step sent the issue back; a value that is no such map counts as none. */
-const ZodReturns = z.catch(z.partialRecord(z.enum(RETURNING_STEPS), z.int().check(z.nonnegative())), () => ({}));
+const ZodReturns = z.catch(ZodWithoutRetiredSteps(z.partialRecord(z.enum(RETURNING_STEPS), z.int().check(z.nonnegative()))), () => ({}));
 
 /**
  * The record. A field that a record lacks or holds with another type falls back to its value at the start; only a record
@@ -107,7 +112,7 @@ const ZodPipelineState = z
     branch: z.catch(z.string(), ""),
     /** The id of the record comment on the issue, so that the runner can edit it; 0 until the poller posted it. */
     recordId: z.catch(z.int(), 0),
-    step: z.enum(SWF_STEPS),
+    step: ZodSwfStep,
     /** How often each returning step sent the issue back to implement since the plan or since that step's last escalation. */
     returns: ZodReturns,
     /** How often the result of the current step's run failed its gate. */
@@ -134,7 +139,7 @@ const ZodPipelineState = z
     mergeSha: z.catch(z.nullable(z.string()), null),
     /** Whether the people who have to review were mentioned on the pull request. */
     notified: z.catch(z.boolean(), false),
-    /** Whether the issue was moved to In Review in its projects, which happens once, when the pull request first waits for its checks. */
+    /** Whether the issue was moved to In Review in its projects, which happens once, when the pull request first waits for its review. */
     inReview: z.catch(z.boolean(), false),
     /** The log of the steps' runs, appended only. */
     runs: z.catch(z.array(ZodRun), () => []),
@@ -165,6 +170,7 @@ export interface PullRequestReview {
   submittedAt: string;
 }
 
+/** What human-review does: wait, go on to merge (`by` the people who approved, empty when only the review workflow did), or send a change request back. */
 export type HumanReviewOutcome = { kind: "wait" } | { kind: "approved"; by: string[] } | { kind: "changes"; review: PullRequestReview };
 
 /** The issue a pipeline works on: its repository as `<owner>/<repo>`, its number and the session's branch (empty until the plan step named it). */
@@ -271,7 +277,7 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
       parts.push(`pull request #${this.pullRequest}`);
     }
     if (this.step === "human-review") {
-      parts.push("a person reviews before the merge");
+      parts.push("the pull request waits for its approval");
     }
     return parts.join(" · ");
   }
@@ -352,9 +358,10 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   /**
    * What the latest review of each person (reviews by `botLogin` and plain comments do not count) means: a change request
    * that was not handled yet goes back to the agent; approval by at least one person and no open change request
-   * approves; otherwise the step waits.
+   * approves, and so does `isApproved`, GitHub's review decision, which the repository's review workflow sets when no
+   * person has to review; otherwise the step waits.
    */
-  humanReviewOutcome(reviews: PullRequestReview[], botLogin: string): HumanReviewOutcome {
+  humanReviewOutcome(reviews: PullRequestReview[], botLogin: string, isApproved: boolean): HumanReviewOutcome {
     const latest = new Map<string, PullRequestReview>();
     for (const review of reviews) {
       if (review.author === botLogin || review.author.endsWith("[bot]")) continue;
@@ -366,7 +373,7 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     if (unhandled) return { kind: "changes", review: unhandled };
     if (changes.length > 0) return { kind: "wait" };
     const approvers = [...latest.values()].filter((review) => review.state === "APPROVED").map((review) => review.author);
-    return approvers.length > 0 ? { kind: "approved", by: approvers } : { kind: "wait" };
+    return approvers.length > 0 || isApproved ? { kind: "approved", by: approvers } : { kind: "wait" };
   }
 
   /** The body of the record comment: the status line for people and the record for the poller. */
@@ -378,7 +385,7 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
    * Moves the pipeline on with the step result the agent reported (`parseStepResult` of its text): plan → implement;
    * implement → verify; verify → review, or back to implement with the findings at or above the step's `minSeverity`
    * (an unscored finding always returns; the others stay in the result as suggestions); review → pr while the pull
-   * request does not exist yet, else checks, or back to implement the same way; pr → checks. `resultId` is the id of the comment
+   * request does not exist yet, else human-review, or back to implement the same way; pr → human-review. `resultId` is the id of the comment
    * that carries the result when the poller reads it from the issue, null for the result the runner reads from
    * `.hunt/swf/result.md`. Throws UnusableStepResult with the problem for a text without a usable result and for the
    * result of another step than the current one. `now` is the time in ms the step's run ends and the next one starts at.
@@ -419,12 +426,12 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
           if (returning.length > 0) {
             this.returnToImplement(returning, now);
           } else {
-            this.moveTo(this.pullRequest === null ? "pr" : "checks", now);
+            this.moveTo(this.pullRequest === null ? "pr" : "human-review", now);
           }
           break;
         }
         case "pr":
-          this.moveTo("checks", now);
+          this.moveTo("human-review", now);
           this.pullRequest = result.pullRequest;
           break;
       }
@@ -509,7 +516,7 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
   }
 
   /**
-   * Findings of a returning step (verify, review, checks, human-review, merge) send the issue back to implement: the
+   * Findings of a returning step (verify, review, human-review, merge) send the issue back to implement: the
    * return is counted for the step, past the step's limit the agent escalates to the people and the step counts anew.
    * Empty findings are dropped; at most FINDINGS_LIMIT of FINDING_LIMIT characters each are kept. `now` is the time in
    * ms the step's run ends at.
@@ -519,22 +526,13 @@ export class Pipeline extends DomainModel<typeof ZodPipelineState> {
     this.changeState(() => this.returnToImplement(findings, now));
   }
 
-  /** The pull request passed its checks and the repository's review workflow approved it: on to merge. */
-  passChecks(now: number): void {
-    this.assertStep("checks", "passing the checks");
-    this.changeState(() => this.moveTo("merge", now));
-  }
-
-  /**
-   * The pull request passed its checks, but the repository's review workflow did not approve it: a person has to review
-   * before the merge. From checks, or from merge when a branch update made the workflow withdraw its approval.
-   */
+  /** The pull request lost its approval at the merge, when a branch update made the review workflow withdraw it: back to human-review. */
   requireHumanReview(now: number): void {
-    if (this.step !== "checks" && this.step !== "merge") throw new Error(`a human review needs the step checks or merge, but the pipeline is at ${this.step}`);
+    this.assertStep("merge", "a human review");
     this.changeState(() => this.moveTo("human-review", now));
   }
 
-  /** A person approved the pull request: on to merge. */
+  /** The repository's review workflow or a person approved the pull request: on to merge. */
   approve(now: number): void {
     this.assertStep("human-review", "an approval");
     this.changeState(() => this.moveTo("merge", now));

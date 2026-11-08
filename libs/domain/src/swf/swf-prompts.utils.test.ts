@@ -110,16 +110,17 @@ describe("session files", () => {
       ),
     ).toBe(true);
     expect(unwrapped).toContain(
-      "The work runs as a pipeline of steps that Hunt drives: plan, implement, verify, review, pr, then checks (the pull request's checks and the decision of the " +
-        "repository's review workflow), human-review (only when that workflow did not approve) and merge.",
+      "The work runs as a pipeline of steps that Hunt drives: plan, implement, verify, review, pr, then human-review (the approval of the repository's " +
+        "review workflow, or of a person when that workflow does not approve) and merge.",
     );
     expect(prompt).not.toContain("scorer");
     expect(unwrapped).toContain(
-      "A finding of verify or of the review step at or above the step's `minSeverity` (hunt.json; a lesser one stays in the result as a suggestion), of the checks or of the merge brings you back to implement",
+      "A finding of verify or of the review step at or above the step's `minSeverity` (hunt.json; a lesser one stays in the result as a suggestion), a person's change request or a conflict at the merge brings you back to implement",
     );
     expect(unwrapped).toContain("Every step runs in a fresh conversation: what the earlier steps did is in `.hunt/swf/steps/<nn>-<step>.md` of the worktree");
     expect(unwrapped).toContain(
-      "brings you back to implement with the finding in the prompt. Every step that sends you back has its own limit of returns, which the implement prompt names; " +
+      "brings you back to implement with the finding in the prompt; the pull request's CI checks run on GitHub and send nothing back. Every step that sends you back " +
+        "has its own limit of returns, which the implement prompt names; " +
         "after it Hunt asks you to escalate to the people instead.",
     );
     expect(unwrapped).toContain(
@@ -242,10 +243,10 @@ describe("stepPrompt", () => {
   });
 
   it("asks the agent to escalate to the people once a step sent the change back more often than its limit", () => {
-    const pipeline = sentBack(pipelineAt("checks", { returns: { checks: 2, verify: 1 }, pullRequest: 31 }), ["Checks: build failed"]);
+    const pipeline = sentBack(pipelineAt("merge", { returns: { merge: 2, verify: 1 }, pullRequest: 31 }), ["Merge: conflicts"]);
     const text = stepPrompt(prompts, REPO, fixLogin, [], labels, pipeline);
-    expect(text.startsWith("For issue #12 of acme/app, `checks` sent the change back to `implement` more than 2 times.\n")).toBe(true);
-    expect(text).toContain("## The findings that came back last\n\n- Checks: build failed\n");
+    expect(text.startsWith("For issue #12 of acme/app, `merge` sent the change back to `implement` more than 2 times.\n")).toBe(true);
+    expect(text).toContain("## The findings that came back last\n\n- Merge: conflicts\n");
     expect(unwrap(text)).toContain("with `gh issue edit 12 --repo acme/app --remove-label swf:implement --add-label swf:question --title \"❓ RÜCKFRAGE: <title>\"` to mark the issue.");
     expect(unwrap(text)).toContain("run `gh issue edit 12 --repo acme/app --remove-label swf:question --add-label swf:implement --title \"<title>\"` and carry out the `implement` step");
     expect(text).not.toContain("{{");
@@ -295,7 +296,7 @@ describe("stepPrompt", () => {
   });
 
   it("has no prompt for the steps the poller carries out itself", () => {
-    for (const step of ["checks", "human-review", "merge"] as const) {
+    for (const step of ["human-review", "merge"] as const) {
       expect(() => stepPrompt(prompts, REPO, fixLogin, [], labels, pipelineAt(step))).toThrow(`the step ${step} has no prompt for the agent`);
     }
   });
@@ -318,7 +319,7 @@ describe("stepPrompt", () => {
     expect(stepPrompt(prompts, REPO, fixLogin, [], labels, sentBack(pipelineAt("verify", { settings }), ["Verify: a"]))).toContain(
       `\`feat/general/12-fix-login\` (return 1 of 5, sent back by verify).\n\n${invokeSkill("acme-implement")}\n\n## Findings to fix`,
     );
-    const escalate = sentBack(pipelineAt("checks", { settings, returns: { checks: 2 }, pullRequest: 31 }), ["Checks: build failed"]);
+    const escalate = sentBack(pipelineAt("merge", { settings, returns: { merge: 2 }, pullRequest: 31 }), ["Merge: conflicts"]);
     expect(stepPrompt(prompts, REPO, fixLogin, [], labels, escalate)).toContain(
       `your recommendation.\n\n${invokeSkill("acme-implement")}\n\n## The findings`,
     );
@@ -377,7 +378,7 @@ describe("gatePrompt", () => {
   });
 
   it("has no gate at the steps of the poller", () => {
-    expect(() => gatePrompt(prompts, labels, pipelineAt("checks", { pullRequest: 31 }), [lint])).toThrow("the step checks has no gate");
+    expect(() => gatePrompt(prompts, labels, pipelineAt("human-review", { pullRequest: 31 }), [lint])).toThrow("the step human-review has no gate");
   });
 });
 

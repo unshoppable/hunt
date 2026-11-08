@@ -78,7 +78,7 @@ describe("sessionStepLabel", () => {
     expect(sessionStepLabel("implement", null)).toBe("implement");
     expect(sessionStepLabel("implement", "verify")).toBe("verify");
     expect(sessionStepLabel("", "human-review")).toBe("human-review");
-    expect(sessionStepLabel("checks", "done")).toBeNull();
+    expect(sessionStepLabel("merge", "done")).toBeNull();
     expect(sessionStepLabel("question", null)).toBeNull();
     expect(sessionStepLabel("failed", null)).toBeNull();
     expect(sessionStepLabel("", null)).toBeNull();

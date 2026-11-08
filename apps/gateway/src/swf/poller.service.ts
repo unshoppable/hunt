@@ -29,14 +29,16 @@
  * metadata `hunt-agent` records for Hunt's lists, and the record comment holds the pipeline's state. The runner on the
  * VM drives the agent steps (plan, implement, verify, review, pr) and edits the record comment itself; a record of an
  * older version (`Pipeline.RECORD_VERSION`), whose steps meant something else, is left alone with a warning. The poller
- * steps are the poller's: `checks` waits for the checks of the pull request's head commit (a failing check goes back to
- * implement) and then reads GitHub's review decision, which the repository's review workflow sets: it reviews every
+ * steps are the poller's; none of them waits for the pull request's CI, which runs on GitHub, nor sends a failing check
+ * back. `human-review` reads GitHub's review decision, which the repository's review workflow sets: it reviews every
  * pull request and approves it as its own GitHub App when no person has to review, and the ruleset requires one
- * approval, so an approved pull request goes on to `merge` and one without an approval to `human-review`, which asks the
- * issue's people once (`askForHumanReview`) and waits for a person's approval (a change request goes back to implement);
- * `merge` updates the branch when it is behind and merges it the way the settings' `mergeMethod` says, and sends a pull
- * request that lost its approval with a new head to `human-review`; then the issue gets `swf:done` and moves to the
- * settings' `projectStatus.done` in its projects. The first poll at `checks` moves the issue to `projectStatus.inReview`.
+ * approval, so an approved pull request goes on to `merge`; otherwise, once the head commit's checks are done (the
+ * workflow's run among them), it asks the issue's people once (`askForHumanReview`) and waits for a person's approval
+ * (a change request goes back to implement). `merge` updates the branch when it is behind and merges it the way the
+ * settings' `mergeMethod` says once GitHub reports it as mergeable, and sends a pull request that lost its approval with
+ * a new head back to `human-review`; then the issue gets `swf:done` and moves to the settings' `projectStatus.done` in
+ * its projects. The first poll at `human-review` moves the issue to `projectStatus.inReview`. An issue still labelled
+ * with the retired step `checks` reads as `human-review` (`WorkflowLabels`) until its next step replaces the label.
  * These steps need GitHub only, so they go on while the idle
  * sweeper keeps the session's VM suspended. While the issue is labelled `swf:question`, the poller watches it for the
  * answer: a comment by someone other than the app's bot user after the agent's question (`newAnswers` in
@@ -444,10 +446,9 @@ export class Poller {
   }
 
   /**
-   * A poller step, from the state of the pull request: `checks` waits for the checks of the head commit and then follows
-   * the decision of the repository's review workflow, `human-review` a person's, `merge` GitHub's merge state. The first
-   * poll at `checks` moves the issue to the settings' `projectStatus.inReview`, since the runner, not the poller, moved
-   * the pipeline into checks.
+   * A poller step, from the state of the pull request: `human-review` follows the decision of the repository's review
+   * workflow or a person's, `merge` GitHub's merge state. The first poll at `human-review` moves the issue to the
+   * settings' `projectStatus.inReview`, since the runner, not the poller, moved the pipeline into human-review.
    */
   private async drivePollerStep(context: SessionContext): Promise<void> {
     const { key, github, repo, recordId, issue, labels, pipeline, watched, bot } = context;
@@ -469,35 +470,24 @@ export class Poller {
       await this.failIssue(key, github, repo, issue.number, labels, step, closedComment(pullRequest.number));
       return;
     }
-    if (step === "checks" && !pipeline.inReview) {
+    if (step === "human-review" && !pipeline.inReview) {
       await this.moveToStatus(github, key, repo, issue.number, pipeline.settings.projectStatus.inReview);
       pipeline.noteInReview();
       await this.records.save(repo, recordId, pipeline);
       await this.recordOnVm(context);
     }
     switch (step) {
-      case "checks": {
-        const outcome = pullRequest.checksOutcome();
-        if (outcome.kind === "wait") {
-          this.waitOnce(watched, key, `checks: ${outcome.reason}`);
-        } else if (outcome.kind === "fix") {
-          this.deps.log(`${key}: the checks of #${pullRequest.number} failed; back to implement`);
-          pipeline.sendBackToImplement(outcome.findings, this.deps.now());
-          await this.enterStep(context);
-        } else if (outcome.kind === "merge") {
-          pipeline.passChecks(this.deps.now());
-          this.deps.log(`${key}: #${pullRequest.number} passed its checks and the repository's review workflow approved it; the pipeline goes on with merge`);
-          await this.enterStep(context);
-        } else if (outcome.kind === "human") {
-          pipeline.requireHumanReview(this.deps.now());
-          this.deps.log(`${key}: #${pullRequest.number} passed its checks without the approval of the repository's review workflow; a person reviews it`);
-          await this.enterStep(context);
-        }
-        return;
-      }
       case "human-review": {
-        const outcome = pipeline.humanReviewOutcome(await github.reviews(repo, pullRequest.number), bot);
-        if (outcome.kind === "wait") {
+        const outcome = pipeline.humanReviewOutcome(await github.reviews(repo, pullRequest.number), bot, pullRequest.isApproved);
+        if (outcome.kind === "wait" && !pullRequest.areChecksDone) {
+          this.waitOnce(watched, key, `human-review: waiting for the checks of #${pullRequest.number}, the repository's review workflow among them`);
+        } else if (outcome.kind === "wait") {
+          if (!pipeline.notified) {
+            await this.askForHumanReview(context, pullRequest.number);
+            pipeline.noteReviewersNotified();
+            await this.records.save(repo, recordId, pipeline);
+            await this.recordOnVm(context);
+          }
           this.waitOnce(watched, key, `human-review: waiting for a person to approve #${pullRequest.number}`);
         } else if (outcome.kind === "changes") {
           const inline = await github.reviewComments(repo, pullRequest.number, outcome.review.id);
@@ -506,7 +496,8 @@ export class Poller {
           pipeline.handleChangeRequest(outcome.review.id, finding, this.deps.now());
           await this.enterStep(context);
         } else {
-          this.deps.log(`${key}: #${pullRequest.number} was approved by ${outcome.by.join(", ")}; the pipeline goes on with merge`);
+          const approvers = outcome.by.length > 0 ? outcome.by.join(", ") : "the repository's review workflow";
+          this.deps.log(`${key}: #${pullRequest.number} was approved by ${approvers}; the pipeline goes on with merge`);
           pipeline.approve(this.deps.now());
           await this.enterStep(context);
         }
@@ -542,16 +533,9 @@ export class Poller {
     }
   }
 
-  /**
-   * Carries out on GitHub what the pipeline's move into its current step brings with it, then saves it: the issue's
-   * label and, for human-review with a pull request, the request to the issue's people, once.
-   */
+  /** Carries out on GitHub what the pipeline's move into its current step brings with it, the issue's label, then saves it. */
   private async enterStep(context: SessionContext): Promise<void> {
     const { repo, recordId, pipeline, watched } = context;
-    if (pipeline.step === "human-review" && pipeline.pullRequest !== null && !pipeline.notified) {
-      await this.askForHumanReview(context, pipeline.pullRequest);
-      pipeline.noteReviewersNotified();
-    }
     await this.relabel(context, pipeline.step);
     await this.records.save(repo, recordId, pipeline);
     await this.recordOnVm(context);

@@ -16,9 +16,13 @@ Steps 1 to 5 are the agent's: one Claude Code turn each on the session VM, in a 
 (`hunt-ctl clear <id> --keep-stored` before the prompt), started by the step's prompt and ended with a **step result**,
 the file `.hunt/swf/result.md` of the worktree that carries `<!-- hunt:step {…} -->`. The runner keeps it as
 `.hunt/swf/steps/<nn>-<step>.md` (`nn` the number of the run) and posts it as a comment on the issue, so the next step's
-conversation reads what the earlier steps did from `.hunt/swf/steps/`. Steps 6 to 8 are the poller's: it watches the
-pull request on GitHub, no prompt is sent. The record is of version 4 (`RECORD_VERSION` in `pipeline.domain.ts`); a
-record of an older version, whose fields meant something else, is left alone, and the poller says so on the issue.
+conversation reads what the earlier steps did from `.hunt/swf/steps/`. Steps 6 and 7 are the poller's: it watches the
+pull request on GitHub, no prompt is sent. No step waits for the pull request's CI or sends a failing check back: the
+CI runs on GitHub for the people, and the gates, verify and the review make sure of the change before the pull request
+opens. The record is of version 4 (`RECORD_VERSION` in `pipeline.domain.ts`); a record of an older version, whose
+fields meant something else, is left alone, and the poller says so on the issue. A record, a label or a hunt.json of an
+earlier release that names the retired step `checks` (`RETIRED_STEPS` in `swf-step.types.ts`) reads as human-review;
+`swf.steps.checks` of hunt.json is ignored.
 
 An agent step whose settings name a **gate** is finished only when the gate is green: once the agent wrote
 `.hunt/swf/result.md`, the runner runs the gate's checks of hunt.json and checks that the working tree is clean; a red
@@ -35,13 +39,12 @@ gate is every check of hunt.json unless the repository names another; the other 
 | 3 | `verify` | `swf:verify` | `3-verify.user-prompt.md` | invoke the step's skill; verify every acceptance criterion of the plan, in the browser for anything the user sees, running a check of hunt.json only where a criterion needs its output (implement's gate ran them); fix nothing | `{"step":"verify","findings":[{"text","severity"}, …]}`; findings at or above `minSeverity` (3) → back to 2, at most `maxReturns` (5) times; the others stay in the result as suggestions |
 | 4 | `review` | `swf:review` | `4-review.user-prompt.md` | invoke the step's skill (the repository's review criteria); the fresh conversation, which did not write the change, reviews the diff against the issue, the plan, the steps' results, the guardrails and, on a re-review, the pull request's comments: correctness, security, the guardrails and the tests they demand, duplication, leftovers, scope; fix nothing | `{"step":"review","findings":[{"text","severity"}, …]}`; findings at or above `minSeverity` (3) → back to 2, at most `maxReturns` (3) times; the others stay in the result as suggestions |
 | 5 | `pr` | `swf:pr` | `5-pr.user-prompt.md` (first pass only) | invoke the step's skill; open the pull request (`Closes #n`, decisions, how it was checked) from the plan, the results and the diff; clean the VM up; the result carries the link | `{"step":"pr","pullRequest":n}` |
-| 6 | `checks` | `swf:checks` | — | the poller moves the issue to the `inReview` status of `swf.projectStatus` (`In Review`) in its projects once, then waits for the head commit's checks; a failing check → back to 2, at most `maxReturns` (2) times; once they passed, GitHub's `reviewDecision` decides: `APPROVED` (the repository's review workflow approved) → 8, else → 7 | checks passed |
-| 7 | `human-review` | `swf:human-review` | — | only when the repository's review workflow did not approve: request the issue's assignees as reviewers, mention them once; wait for an approval; a change request → back to 2, at most `maxReturns` (3) times | a person's approval |
-| 8 | `merge` | `swf:merge` | — | update the branch when it is behind (the repository's review workflow reviews the new head; the merge waits while its checks run), merge with `swf.mergeMethod` (`squash`) when GitHub reports it mergeable; conflicts → back to 2, at most `maxReturns` (2) times; blocked with passed checks and no approval → 7 | `swf:done`, the `done` status of `swf.projectStatus` (`Done`) |
+| 6 | `human-review` | `swf:human-review` | — | the poller moves the issue to the `inReview` status of `swf.projectStatus` (`In Review`) in its projects once; GitHub's `reviewDecision` `APPROVED` (the repository's review workflow approved) or a person's approval → 7; otherwise, once the head commit's checks are done (passed or failed; the review workflow's run is one of them), request the issue's assignees as reviewers and mention them once, then wait for an approval; a change request → back to 2, at most `maxReturns` (3) times | an approval |
+| 7 | `merge` | `swf:merge` | — | update the branch when it is behind (the repository's review workflow reviews the new head; the merge waits while its checks run), merge with `swf.mergeMethod` (`squash`) when GitHub reports it mergeable (a blocked pull request, such as one whose required checks are pending or failed, waits); conflicts → back to 2, at most `maxReturns` (2) times; blocked with passed checks and no approval → 6 | `swf:done`, the `done` status of `swf.projectStatus` (`Done`) |
 
 Every return to 2 counts for the step that sent the issue back (`returns` in the record) and runs 3, 4 and 6 again
-before the pull request is checked once more. Each returning step has its own limit (`maxReturns`; Hunt's defaults are
-`DEFAULT_MAX_RETURNS` in `libs/domain/src/swf/step-settings.value-object.ts`: verify 5, review 3, checks 2,
+before the pull request waits for its approval once more. Each returning step has its own limit (`maxReturns`; Hunt's
+defaults are `DEFAULT_MAX_RETURNS` in `libs/domain/src/swf/step-settings.value-object.ts`: verify 5, review 3,
 human-review 3, merge 2): the return past it makes the implement step an escalation, the agent asks the people, and that
 step counts anew; the plan's result starts every count anew. A finding of verify or review carries a severity of 1 to 5
 (`Finding` in `step-result.utils.ts`; the scale is in the review prompt): only a finding at or above the step's
@@ -50,17 +53,16 @@ and with its severity in the implement prompt (`Review (severity 4): …`); a fi
 severity and always returns; the others stay in the step result as suggestions, which the pr step carries into the pull
 request. The poller hands the pipeline back to the runner through its inbox (`hunt-ctl swf-inbox`, `libs/domain/src/swf/swf-inbox.utils.ts`),
 starting a VM the idle check suspended first. On the first pass the issue moves to the `inReview` status in its projects
-when the pull request opens, and when a person has to review, that person is asked at that moment.
+when the pull request opens, and when a person has to review, that person is asked once the head commit's checks are
+done.
 
 ```mermaid
 flowchart LR
-    plan[1 plan] --> implement[2 implement] --> verify[3 verify] --> review[4 review] --> pr[5 pr] --> checks[6 checks]
+    plan[1 plan] --> implement[2 implement] --> verify[3 verify] --> review[4 review] --> pr[5 pr] --> human[6 human-review]
     verify -->|findings ≥ minSeverity| implement
     review -->|findings ≥ minSeverity| implement
-    review -->|PR exists| checks
-    checks -->|failing check| implement
-    checks -->|passed, not approved| human[7 human-review] -->|approved| merge[8 merge]
-    checks -->|passed, review workflow approved| merge
+    review -->|PR exists| human
+    human -->|review workflow or a person approved| merge[7 merge]
     human -->|changes requested| implement
     merge -->|conflicts| implement
     merge -->|blocked, not approved| human
@@ -97,7 +99,7 @@ The `swf` section of hunt.json sets each step under `swf.steps.<step>` (`SWF_STE
   `swf.skills.<step>` is an alias. Hunt has no default skill and no fallback prompt for a missing one.
 - `model`, `effort`: an agent step's config options of Claude Code, else the section's `swf.model` and `swf.effort`,
   else Claude Code's defaults.
-- `maxReturns`: a returning step's limit of returns (verify, review, checks, human-review, merge), else Hunt's default.
+- `maxReturns`: a returning step's limit of returns (verify, review, human-review, merge), else Hunt's default.
 - `checks`: the checks of hunt.json's `checks` an agent step's result must pass (its gate), `"*"` for every check; without one,
   implement's gate is every check and the other steps have none.
 
@@ -157,4 +159,4 @@ the session's branch and Hunt names none), its guardrails (CLAUDE.md, rules, ski
 template), an issue form with acceptance criteria, a review workflow (such as a scoring GitHub Action) that reviews
 every pull request and approves it as its own GitHub App when no person has to review (and dismisses its stale approval
 on a new head), and a ruleset that requires one approval, so that a pull request the workflow did not approve waits
-for a person. app-framework is the reference. The GitHub App needs `Checks: read` for step 6.
+for a person. app-framework is the reference. The GitHub App needs `Checks: read` for steps 6 and 7.

@@ -16,7 +16,7 @@ outside the repository and leave the working tree clean: `git status` shows noth
 Write the step result to `.hunt/swf/result.md`: the pull request's link, ending with
 `<!-- hunt:step {"step":"pr","pullRequest":<number>} -->`; Hunt posts it on the issue, so do not comment the link
 yourself. From here on Hunt watches the pull request: its checks and the repository's review workflow run on GitHub;
-that workflow decides whether a person reviews before Hunt merges it. When a check or a reviewer finds something, you get it as an
-`implement` step.
+that workflow decides whether a person reviews before Hunt merges it. When a reviewer requests changes or the branch
+conflicts with its base, you get it as an `implement` step.
 
 The issue is labelled `{{stepLabel}}` while you work on this step; to give up, run `{{relabelFailed}}` and say why.

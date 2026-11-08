@@ -119,11 +119,7 @@ const PULL_REQUEST_QUERY = `query($owner: String!, $name: String!, $number: Int!
     pullRequest(number: $number) {
       number url title state merged headRefOid mergeStateStatus reviewDecision
       labels(first: 50) { nodes { name } }
-      commits(last: 1) { nodes { commit { statusCheckRollup { state contexts(first: 100) { nodes {
-        __typename
-        ... on CheckRun { name conclusion status }
-        ... on StatusContext { context state }
-      } } } } } }
+      commits(last: 1) { nodes { commit { statusCheckRollup { state } } } }
     }
   }
 }`;
@@ -151,31 +147,20 @@ export function statusTargets(items: unknown, status: string): { item: string; p
   return targets;
 }
 
-/** The checks of a head commit as the GraphQL `statusCheckRollup` reports them, and the names of the failing ones. */
-export function checksOf(rollup: unknown): { checks: PullRequestState["checks"]; failingChecks: string[] } {
-  if (!isRecord(rollup)) return { checks: "none", failingChecks: [] };
-  const failingChecks: string[] = [];
-  const contexts = isRecord(rollup.contexts) && Array.isArray(rollup.contexts.nodes) ? rollup.contexts.nodes : [];
-  for (const context of contexts as unknown[]) {
-    if (!isRecord(context)) continue;
-    const isFailedRun =
-      context.__typename === "CheckRun" && ["FAILURE", "TIMED_OUT", "CANCELLED", "ACTION_REQUIRED", "STARTUP_FAILURE"].includes(String(context.conclusion));
-    const isFailedStatus = context.__typename === "StatusContext" && ["FAILURE", "ERROR"].includes(String(context.state));
-    if (isFailedRun || isFailedStatus) {
-      failingChecks.push(String(context.name ?? context.context ?? "check"));
-    }
-  }
+/** The combined state of a head commit's checks as the GraphQL `statusCheckRollup` reports it. */
+export function checksOf(rollup: unknown): PullRequestState["checks"] {
+  if (!isRecord(rollup)) return "none";
   switch (rollup.state) {
     case "SUCCESS":
-      return { checks: "success", failingChecks };
+      return "success";
     case "FAILURE":
     case "ERROR":
-      return { checks: "failure", failingChecks };
+      return "failure";
     case "PENDING":
     case "EXPECTED":
-      return { checks: "pending", failingChecks };
+      return "pending";
     default:
-      return { checks: "none", failingChecks };
+      return "none";
   }
 }
 
@@ -186,7 +171,7 @@ export function parsePullRequest(data: unknown): PullRequestState | null {
   const commits = isRecord(pullRequest.commits) && Array.isArray(pullRequest.commits.nodes) ? (pullRequest.commits.nodes as unknown[]) : [];
   const lastCommitNode = commits[0];
   const commit = isRecord(lastCommitNode) && isRecord(lastCommitNode.commit) ? lastCommitNode.commit : null;
-  const { checks, failingChecks } = checksOf(commit?.statusCheckRollup);
+  const checks = checksOf(commit?.statusCheckRollup);
   const labels = isRecord(pullRequest.labels) && Array.isArray(pullRequest.labels.nodes) ? labelNames(pullRequest.labels.nodes) : [];
   return new PullRequestState({
     number: pullRequest.number,
@@ -197,7 +182,6 @@ export function parsePullRequest(data: unknown): PullRequestState | null {
     mergeState: typeof pullRequest.mergeStateStatus === "string" ? pullRequest.mergeStateStatus : "UNKNOWN",
     reviewDecision: typeof pullRequest.reviewDecision === "string" ? pullRequest.reviewDecision : null,
     checks,
-    failingChecks,
     labels,
   });
 }

@@ -22,7 +22,7 @@ describe("StepSettings", () => {
     expect(JSON.parse(JSON.stringify(settings))).toEqual(plain);
     expect(settings.isEqualTo(SETTINGS)).toBe(true);
     expect(settings.of("implement")).toEqual({ skill: SKILLS.implement, model: null, effort: null, maxReturns: null, minSeverity: null, gate: IMPLEMENT_GATE });
-    expect(settings.of("checks")).toEqual({ skill: null, model: null, effort: null, maxReturns: DEFAULT_MAX_RETURNS.checks, minSeverity: null, gate: [] });
+    expect(settings.of("human-review")).toEqual({ skill: null, model: null, effort: null, maxReturns: DEFAULT_MAX_RETURNS["human-review"], minSeverity: null, gate: [] });
     expect(settings.of("review")).toEqual({ skill: SKILLS.review, model: null, effort: null, maxReturns: DEFAULT_MAX_RETURNS.review, minSeverity: DEFAULT_MIN_SEVERITY, gate: [] });
   });
 
@@ -33,6 +33,14 @@ describe("StepSettings", () => {
     expect(settings.of("review").minSeverity).toBeNull();
     expect(settings.minSeverityOf("review")).toBe(DEFAULT_MIN_SEVERITY);
     expect(settingsWith({ verify: { minSeverity: 5 } }).minSeverityOf("verify")).toBe(5);
+  });
+
+  it("drops the settings of the retired step checks, which a VM of an earlier release reported", () => {
+    const plain = SETTINGS.toJSON();
+    const checks = { skill: null, model: null, effort: null, maxReturns: 2, minSeverity: null, gate: [] };
+    const settings = new StepSettings({ ...plain, steps: { ...plain.steps, checks } as typeof plain.steps });
+    expect(Object.keys(settings.steps)).toEqual([...SWF_STEPS]);
+    expect(settings.isEqualTo(SETTINGS)).toBe(true);
   });
 
   it("parses settings a VM reported before the workflow settings existed, with Hunt's, and keeps a repository's own", () => {

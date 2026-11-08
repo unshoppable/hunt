@@ -73,23 +73,14 @@ describe("parseComments", () => {
 });
 
 describe("checksOf", () => {
-  it("maps the rollup's state and names the failing check runs and statuses", () => {
-    const contexts = {
-      nodes: [
-        { __typename: "CheckRun", name: "build", conclusion: "FAILURE", status: "COMPLETED" },
-        { __typename: "CheckRun", name: "lint", conclusion: "SUCCESS", status: "COMPLETED" },
-        { __typename: "CheckRun", name: "e2e", conclusion: "TIMED_OUT", status: "COMPLETED" },
-        { __typename: "StatusContext", context: "ci/legacy", state: "ERROR" },
-        { __typename: "StatusContext", context: "ci/other", state: "SUCCESS" },
-        null,
-      ],
-    };
-    expect(checksOf({ state: "FAILURE", contexts })).toEqual({ checks: "failure", failingChecks: ["build", "e2e", "ci/legacy"] });
-    expect(checksOf({ state: "ERROR", contexts: { nodes: [] } })).toEqual({ checks: "failure", failingChecks: [] });
-    expect(checksOf({ state: "SUCCESS" })).toEqual({ checks: "success", failingChecks: [] });
-    expect(checksOf({ state: "PENDING" }).checks).toBe("pending");
-    expect(checksOf({ state: "EXPECTED" }).checks).toBe("pending");
-    expect(checksOf(null)).toEqual({ checks: "none", failingChecks: [] });
+  it("maps the rollup's state", () => {
+    expect(checksOf({ state: "FAILURE" })).toBe("failure");
+    expect(checksOf({ state: "ERROR" })).toBe("failure");
+    expect(checksOf({ state: "SUCCESS" })).toBe("success");
+    expect(checksOf({ state: "PENDING" })).toBe("pending");
+    expect(checksOf({ state: "EXPECTED" })).toBe("pending");
+    expect(checksOf({ state: "UNKNOWN" })).toBe("none");
+    expect(checksOf(null)).toBe("none");
   });
 });
 
@@ -104,7 +95,7 @@ describe("parsePullRequest", () => {
     mergeStateStatus: "BEHIND",
     reviewDecision: "REVIEW_REQUIRED",
     labels: { nodes: [{ name: "dependencies" }] },
-    commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS", contexts: { nodes: [] } } } }] },
+    commits: { nodes: [{ commit: { statusCheckRollup: { state: "SUCCESS" } } }] },
   };
 
   it("reads the head, the merge state, the review decision, the labels and the checks of the head commit", () => {
@@ -117,7 +108,6 @@ describe("parsePullRequest", () => {
       mergeState: "BEHIND",
       reviewDecision: "REVIEW_REQUIRED",
       checks: "success",
-      failingChecks: [],
       labels: ["dependencies"],
     });
   });
@@ -134,7 +124,6 @@ describe("parsePullRequest", () => {
       mergeState: "UNKNOWN",
       reviewDecision: null,
       checks: "none",
-      failingChecks: [],
       labels: [],
     });
   });

@@ -659,10 +659,10 @@ which a Tauri app cannot satisfy, and its elbow arrows cross other shapes.
 
 A session of the gateway's swf poller (`mode: "swf"` in `sessions.json`, see "Remote sessions") has the Factory tab
 after Terminal. It shows the pipeline of the session's issue: the steps plan → implement → verify → review → pr →
-checks → human-review → merge as a graph (`@xyflow/react`, laid out by ELK like the architecture diagrams), each with its run
+human-review → merge as a graph (`@xyflow/react`, laid out by ELK like the architecture diagrams), each with its run
 count and how often it was repeated (`↻n`), the current step marked and every return to implement as an amber edge labelled
 with the findings that caused it; the edge of the last transition (from the step of the last run but one to that of the
-last run) is blue, drawn over the steps' tops when no edge connects them (such as checks → merge), and the header names
+last run) is blue, drawn over the steps' tops when no edge connects them (such as merge → human-review), and the header names
 it (`last Review → Implement`); below the graph the runs in order with outcome, start and duration, and under them the step result of the selected
 run rendered as markdown and its conversation in the chat's rows (prompts, thoughts, replies, tool calls with their
 results; `factory/run-transcript.utils.ts` reads the transcript); a run with either opens. The data is the record the poller mirrors into `.hunt/swf/pipeline.json` of the worktree on
@@ -855,7 +855,7 @@ defaults: `apps/session/src/session-config/swf-settings.value-object.ts`, `libs/
     "verify": { "skill": "swf-verify", "maxReturns": 5 },
     "review": { "skill": "acme-review", "effort": "max" },
     "pr": { "skill": "swf-pr" },
-    "checks": { "maxReturns": 2 }
+    "human-review": { "maxReturns": 3 }
   }
 }
 ```
@@ -865,11 +865,11 @@ a full model ID (an alias such as `opus` is rejected, since its model changes wi
 one of `low`, `medium`, `high`, `xhigh`, `max`; without them Claude Code's defaults apply, also for a model Claude Code
 does not know (the relay's journal says so). `swf.steps.<step>` sets each step, each entry optional. An agent step
 (`plan`, `implement`, `verify`, `review`, `pr`) takes `skill`, `model`, `effort` and `checks`; a step that sends the issue
-back to `implement` (`verify`, `review`, `checks`, `human-review`, `merge`) takes `maxReturns`, how often it may do so
-before the agent escalates (1 to 20; Hunt's defaults `DEFAULT_MAX_RETURNS`: verify 5, review 3, checks 2, human-review 3,
-merge 2); `verify` and `review`, whose findings carry a severity of 1 to 5, take `minSeverity`, the severity from which a
+back to `implement` (`verify`, `review`, `human-review`, `merge`) takes `maxReturns`, how often it may do so before the
+agent escalates (1 to 20; Hunt's defaults `DEFAULT_MAX_RETURNS`: verify 5, review 3, human-review 3, merge 2); `verify` and `review`, whose findings carry a severity of 1 to 5, take `minSeverity`, the severity from which a
 finding sends the issue back (a lesser one stays in the step result as a suggestion; `DEFAULT_MIN_SEVERITY` 3); the
-poller steps take nothing else, and any other field of a step is a problem. `skill` names the Claude Code
+poller steps take nothing else, and any other field of a step is a problem. `swf.steps.checks`, the retired step that
+waited for the pull request's CI, is ignored whatever it holds, so older files stay valid. `skill` names the Claude Code
 skill with which the repository refines the step (`.claude/skills/<name>/SKILL.md`, names like `guardrailSkill`);
 `swf.skills.<step>` is its alias, as older files write it (`"skills": {"plan": "swf-plan", …}`), and a step may name its
 skill in both places only when they agree. Every agent step must name one: Hunt has no default skill, so a step without
@@ -884,7 +884,7 @@ what the repository's workflow calls things: `questionPrefix` (one line of at mo
 colon, default `❓ RÜCKFRAGE`) is what the agent puts in front of the issue's title while a question is open
 (`<prefix>: <title>`) and in bold at the start of the question's comment; `projectStatus` names the Status options the
 poller sets on the issue in its GitHub Projects (v2), `inProgress` when the issue is claimed, `inReview` when its pull
-request waits for its checks, `done` when it is merged (each one line of at most 60 characters, all three or none;
+request waits for its review, `done` when it is merged (each one line of at most 60 characters, all three or none;
 defaults `In Progress`, `In Review`, `Done`); `mergeMethod` is how the poller merges the pull request, `squash`,
 `merge` or `rebase` (default `squash`). `session-config` reports the resolved settings, defaults applied, as
 `swf_steps` (`{"maxGateRuns": 5, "questionPrefix": "…", "projectStatus": {"inProgress", "inReview", "done"},
@@ -1326,16 +1326,18 @@ diff as a code reviewer against the issue, the steps' results and the repository
 skill): its findings at or above `minSeverity` send the issue back to `implement` too, the lesser ones stay in the step
 result as suggestions. `pr` opens the pull request (`Closes #<issue>`)
 and cleans up the VM; the poller then prepares the review once (`inReview` in the record): the issue moves to the
-`inReview` status of `swf.projectStatus` (`In Review` by default) in its projects. `checks` waits for the checks of
-the head commit: a failing check sends the issue back to
-`implement` with the finding; once they pass, GitHub's `reviewDecision` of the pull request decides — `APPROVED` (the
-repository's review workflow approved it, below) goes on to `merge`, anything else to `human-review`, which requests the
-issue's assignees (or its author) as reviewers and mentions them once when it is entered, then waits for a person's
-approval (a change request goes back to `implement` with the review's text). `merge` updates the branch when it is
-behind the base, merges it with `swf.mergeMethod` (`squash` by default) when GitHub reports it mergeable, sends
-conflicts back to `implement`, and goes to
-`human-review` when GitHub reports the pull request `BLOCKED` with passing checks and no approval. After every return to
-`implement` the pipeline runs `verify` and `review` again before the pull request is checked once more. Each return
+`inReview` status of `swf.projectStatus` (`In Review` by default) in its projects. No step waits for the pull
+request's CI or sends a failing check back: the CI runs on GitHub, and the gates, `verify` and `review` made sure of the
+change before. `human-review` follows GitHub's `reviewDecision` of the pull request: `APPROVED` (the repository's
+review workflow approved it, below) goes on to `merge`; otherwise, once the head commit's checks are done (passed or
+failed; the review workflow's run is one of them), it requests the issue's assignees (or its author) as reviewers and
+mentions them once, then waits for a person's approval (a change request goes back to `implement` with the review's
+text). `merge` updates the branch when it is behind the base, merges it with `swf.mergeMethod` (`squash` by default)
+when GitHub reports it mergeable (it waits while the head's checks run or GitHub reports it `BLOCKED`), sends conflicts
+back to `implement`, and goes back to `human-review` when GitHub reports the pull request `BLOCKED` with passing checks
+and no approval. A record or label of an earlier release at the retired step `checks` reads as `human-review`. After
+every return to `implement` the pipeline runs `verify` and `review` again before the pull request waits for its
+approval once more. Each return
 counts for the step that sent the issue back (`returns` in the record, the status line says `return n of m (<step>)`);
 once a step's returns exceed its `maxReturns`, the implement step is an escalation: the agent is told to ask the people
 instead (`2-implement-escalate.user-prompt.md`), and that step's count starts anew, as every count does after the plan.
@@ -1397,8 +1399,8 @@ scoring GitHub Action, app-framework's `ai-pr-scorer.yml` for example) that revi
 human is needed, approves it as its own GitHub App and dismisses its stale approval when the head changes; and a
 ruleset of the base branch that requires one approval, so that the workflow's approval lets the poller merge and a
 withheld one sends the pull request to a person. The poller's GitHub App
-needs `Checks: read` to see the check runs of a head commit; without it the `checks` step treats the commit as having
-no checks.
+needs `Checks: read` to see the check runs of a head commit; without it the commit seems to have no checks, so
+`human-review` asks no person until someone approves, and `merge` does not wait for running checks.
 
 The poller acts on GitHub as a GitHub App (`apps/gateway/src/swf/github-app.client.ts`): its App ID and private key come from
 Secret Manager (`HUNT_SWF_GITHUB_APP_ID`, `HUNT_SWF_GITHUB_APP_KEY`), as do the Claude Code OAuth token its sessions

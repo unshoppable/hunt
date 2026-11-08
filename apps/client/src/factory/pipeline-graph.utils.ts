@@ -10,7 +10,6 @@ export const STEP_LABELS: Record<SwfStep, string> = {
   verify: "Verify",
   review: "Review",
   pr: "Pull request",
-  checks: "Checks",
   "human-review": "Human review",
   merge: "Merge",
 };
@@ -40,7 +39,7 @@ export type FlowEdge = { id: string; kind: "flow"; source: SwfStep; target: SwfS
  * `index` counts the returns in their order from 1, and the label leads with it.
  */
 export type ReturnEdge = { id: string; kind: "return"; source: SwfStep; target: SwfStep; cause: number; n: number; index: number; findings: number; label: string };
-/** The last transition when neither the baseline nor a return connects its steps, such as checks → merge or merge → human-review. */
+/** The last transition when neither the baseline nor a return connects its steps, such as merge → human-review. */
 export type JumpEdge = { id: string; kind: "jump"; source: SwfStep; target: SwfStep };
 export type PipelineEdge = FlowEdge | ReturnEdge | JumpEdge;
 

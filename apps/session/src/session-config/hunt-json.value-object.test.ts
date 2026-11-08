@@ -39,7 +39,7 @@ const SKILLS = { plan: "swf-plan", implement: "swf-implement", verify: "swf-veri
 const STEPS = Object.fromEntries(AGENT_STEPS.map((step) => [step, { skill: SKILLS[step] }]));
 const EFFORT_RULE = "must be one of low, medium, high, xhigh, max";
 const MAX_RETURNS_RULE = "must be an integer from 1 to 20";
-const MAX_RETURNS_STEP_RULE = "only a step that sends the pipeline back has maxReturns (verify, review, checks, human-review, merge)";
+const MAX_RETURNS_STEP_RULE = "only a step that sends the pipeline back has maxReturns (verify, review, human-review, merge)";
 const MIN_SEVERITY_RULE = "must be an integer from 1 to 5";
 const MIN_SEVERITY_STEP_RULE = "only a step whose findings carry a severity has minSeverity (verify, review)";
 const STEP_CHECKS_RULE = 'must be "*" for every check or a list of at most 32 names of checks';
@@ -226,12 +226,12 @@ describe("HuntJson services", () => {
         ["swf.steps.plan.skill: differs from swf.skills.plan", "swf.steps.review.skill: differs from swf.skills.review"],
       ],
       [
-        { ...lint({}), swf: { steps: { ...STEPS, checks: { skill: "swf-checks", model: "claude-opus-5-5", effort: "low", maxReturns: 2, checks: "*" }, merge: { skill: "swf-merge" } } } },
+        { ...lint({}), swf: { steps: { ...STEPS, "human-review": { skill: "swf-review", model: "claude-opus-5-5", effort: "low", maxReturns: 2, checks: "*" }, merge: { skill: "swf-merge" } } } },
         [
-          "swf.steps.checks.skill: only an agent step has a skill",
-          "swf.steps.checks.model: only an agent step has a model",
-          "swf.steps.checks.effort: only an agent step has an effort",
-          "swf.steps.checks.checks: only an agent step has checks",
+          "swf.steps.human-review.skill: only an agent step has a skill",
+          "swf.steps.human-review.model: only an agent step has a model",
+          "swf.steps.human-review.effort: only an agent step has an effort",
+          "swf.steps.human-review.checks: only an agent step has checks",
           "swf.steps.merge.skill: only an agent step has a skill",
         ],
       ],
@@ -239,7 +239,7 @@ describe("HuntJson services", () => {
         { ...web({}), swf: { steps: { ...STEPS, [step]: { skill: `swf-${step}`, maxReturns: 2, minSeverity: 2 } } } },
         [`swf.steps.${step}.maxReturns: ${MAX_RETURNS_STEP_RULE}`, `swf.steps.${step}.minSeverity: ${MIN_SEVERITY_STEP_RULE}`],
       ]),
-      ...["checks", "human-review", "merge"].map((step): [unknown, string[]] => [
+      ...["human-review", "merge"].map((step): [unknown, string[]] => [
         { ...web({}), swf: { steps: { ...STEPS, [step]: { minSeverity: 2 } } } },
         [`swf.steps.${step}.minSeverity: ${MIN_SEVERITY_STEP_RULE}`],
       ]),
@@ -549,7 +549,6 @@ describe("HuntJson", () => {
         verify: { skill: "swf-verify", model: "claude-opus-5-5", ...unset, maxReturns: 5, minSeverity: 3 },
         review: { skill: "swf-review", model: "claude-opus-5-5", ...unset, maxReturns: 3, minSeverity: 3 },
         pr: { skill: "swf-pr", model: "claude-opus-5-5", ...unset, maxReturns: null },
-        checks: { skill: null, model: null, ...unset, maxReturns: 2 },
         "human-review": { skill: null, model: null, ...unset, maxReturns: 3 },
         merge: { skill: null, model: null, ...unset, maxReturns: 2 },
       },
@@ -607,10 +606,18 @@ describe("HuntJson", () => {
       verify: { skill: "swf-verify", maxReturns: 3, minSeverity: 3 },
       review: { skill: "swf-review", maxReturns: 3, minSeverity: 3 },
       pr: { skill: "swf-pr" },
-      checks: { maxReturns: 2 },
       "human-review": { maxReturns: 3 },
       merge: { maxReturns: 2 },
     });
+    expect(settings?.steps).not.toHaveProperty("checks");
+  });
+
+  it("ignores the entry of the retired step checks, which older files set, whatever it holds", () => {
+    for (const checks of [{ maxReturns: 2 }, { skill: "swf-checks", maxReturns: 0, color: "red" }, "swf-checks", null]) {
+      const huntJson = { ...web({}), swf: { steps: { ...STEPS, checks } } };
+      expect(problemsOf(huntJson), JSON.stringify(checks)).toEqual([]);
+      expect(huntJsonOf(huntJson).stepSettings?.steps, JSON.stringify(checks)).not.toHaveProperty("checks");
+    }
   });
 
   it("reports the remote secrets that do not exist after every other problem, only when it knows the existing ones", () => {

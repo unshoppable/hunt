@@ -1,3 +1,9 @@
+## 0.36.0 (2026-11-08)
+
+### 🚀 Features
+
+- show the session VM's idle time and suspend in a VM card of the Factory tab ([67ac96b](https://github.com/unshoppable/hunt/commit/67ac96b))
+
 ## 0.35.0 (2026-11-08)
 
 ### 🚀 Features

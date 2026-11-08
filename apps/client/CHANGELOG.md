@@ -1,3 +1,10 @@
+## 0.157.0 (2026-11-08)
+
+### 🚀 Features
+
+- **client:** show the Factory runs as a table with a header row and the uncached tokens ([d3e6202](https://github.com/unshoppable/hunt/commit/d3e6202))
+- remove the checks step from the swf pipeline ([97c3c85](https://github.com/unshoppable/hunt/commit/97c3c85))
+
 ## 0.156.0 (2026-11-08)
 
 ### 🚀 Features

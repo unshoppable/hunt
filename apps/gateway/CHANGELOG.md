@@ -1,3 +1,9 @@
+## 0.47.0 (2026-11-08)
+
+### 🚀 Features
+
+- remove the checks step from the swf pipeline ([97c3c85](https://github.com/unshoppable/hunt/commit/97c3c85))
+
 ## 0.46.12 (2026-11-08)
 
 ### 🚀 Features

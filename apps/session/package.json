@@ -1,6 +1,6 @@
 {
   "name": "session",
-  "version": "0.33.19",
+  "version": "0.34.0",
   "private": true,
   "type": "module",
   "volta": {

@@ -20,6 +20,7 @@ function instance(overrides: Partial<Instance> = {}, metadata: Record<string, st
     zone: ZONE,
     status: "RUNNING",
     creationTimestamp: "2026-10-13T08:00:00.000-07:00",
+    lastStartTimestamp: "",
     lastStopTimestamp: "",
     lastSuspendedTimestamp: "",
     labels: { "hunt-role": "session", "hunt-session": "ab12cd34", "hunt-origin": "desktop" },

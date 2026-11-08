@@ -62,6 +62,7 @@ function instance(overrides: Partial<Instance> & { sessionId?: string }): Instan
     zone: ZONE,
     status: "RUNNING",
     creationTimestamp: "2026-10-13T08:00:00.000-07:00",
+    lastStartTimestamp: "",
     lastStopTimestamp: "",
     lastSuspendedTimestamp: "",
     labels: SESSION_LABELS,
@@ -895,7 +896,7 @@ describe("SessionVmService.start moving the VM", () => {
     fake.snapshots.add(SNAPSHOT);
     const { service } = createService(fake.compute);
 
-    expect(await service.get(SESSION_ID)).toEqual({ exists: true, name: VM, status: "TERMINATED" });
+    expect(await service.get(SESSION_ID)).toEqual({ exists: true, name: VM, status: "TERMINATED", zone: ZONE, startedAt: null });
     await service.stop(SESSION_ID);
     expect(await service.delete(SESSION_ID)).toEqual({ alreadyGone: false });
     expect(fake.calls).toEqual([`delete ${MOVING}`, `deleteSnapshot ${SNAPSHOT}`]);
@@ -970,10 +971,16 @@ describe("SessionVmService.suspend, stop, delete and get", () => {
     expect(fake.calls).toEqual([]);
   });
 
-  it("reports whether the session's VM exists and its status", async () => {
-    const { service } = createService(fakeCompute([instance({ status: "SUSPENDED" })]).compute);
-    expect(await service.get(SESSION_ID)).toEqual({ exists: true, name: VM, status: "SUSPENDED" });
-    expect(await service.get(SessionId.of("00000000-0000-4000-8000-000000000000"))).toEqual({ exists: false, name: "vm-hunt-s-00000000", status: null });
+  it("reports whether the session's VM exists, its status, zone and last start", async () => {
+    const { service } = createService(fakeCompute([instance({ status: "SUSPENDED", lastStartTimestamp: "2026-10-14T08:00:00.000-07:00" })]).compute);
+    expect(await service.get(SESSION_ID)).toEqual({ exists: true, name: VM, status: "SUSPENDED", zone: ZONE, startedAt: "2026-10-14T08:00:00.000-07:00" });
+    expect(await service.get(SessionId.of("00000000-0000-4000-8000-000000000000"))).toEqual({
+      exists: false,
+      name: "vm-hunt-s-00000000",
+      status: null,
+      zone: null,
+      startedAt: null,
+    });
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionVm } from "./remote-session.types";
-import { filterSessionVms, sessionVmAgentLabel, sessionVmMarkState, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl } from "./session-vms.utils";
+import { filterSessionVms, sessionVmAgentLabel, sessionVmMarkState, sessionVmMeta, sessionVmOriginLabel, sessionVmStatusLabel, sessionVmUrl, vmUptimeLabel } from "./session-vms.utils";
 
 function sessionVm(overrides: Partial<SessionVm> = {}): SessionVm {
   return {
@@ -107,6 +107,24 @@ describe("sessionVmStatusLabel", () => {
     expect(sessionVmStatusLabel(sessionVm({ status: "TERMINATED", isRunning: false }))).toBe("Stopped");
     expect(sessionVmStatusLabel(sessionVm({ status: "STAGING", isRunning: false }))).toBe("Staging");
     expect(sessionVmStatusLabel(sessionVm({ status: "", isRunning: false }))).toBe("Unknown");
+  });
+});
+
+describe("vmUptimeLabel", () => {
+  const now = Date.parse("2026-10-16T12:00:00Z");
+
+  it("words the time since the VM's start in its two largest units", () => {
+    expect(vmUptimeLabel("2026-10-16T11:59:30Z", now)).toBe("under a minute");
+    expect(vmUptimeLabel("2026-10-16T11:15:00Z", now)).toBe("45 min");
+    expect(vmUptimeLabel("2026-10-16T10:00:00Z", now)).toBe("2 h");
+    expect(vmUptimeLabel("2026-10-16T08:48:00Z", now)).toBe("3 h 12 min");
+    expect(vmUptimeLabel("2026-10-14T08:00:00Z", now)).toBe("2 d 4 h");
+    expect(vmUptimeLabel("2026-10-13T12:00:00Z", now)).toBe("3 d");
+  });
+
+  it("reads an offset and returns null for an unreadable time", () => {
+    expect(vmUptimeLabel("2026-10-16T04:00:00.000-07:00", now)).toBe("1 h");
+    expect(vmUptimeLabel("", now)).toBeNull();
   });
 });
 

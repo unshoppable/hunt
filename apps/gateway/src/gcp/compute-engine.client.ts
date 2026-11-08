@@ -22,6 +22,8 @@ export interface Instance {
   status: string;
   /** RFC 3339, as Compute Engine writes it; empty when the resource names none. */
   creationTimestamp: string;
+  /** When the VM was last started or resumed, RFC 3339; empty for one that never ran. */
+  lastStartTimestamp: string;
   /** When the VM was last stopped, RFC 3339; empty for one that never was. */
   lastStopTimestamp: string;
   /** When the VM was last suspended, RFC 3339; empty for one that never was. */
@@ -170,6 +172,7 @@ export function parseInstance(value: unknown): Instance {
     zone?: unknown;
     status?: unknown;
     creationTimestamp?: unknown;
+    lastStartTimestamp?: unknown;
     lastStopTimestamp?: unknown;
     lastSuspendedTimestamp?: unknown;
     labels?: unknown;
@@ -192,6 +195,7 @@ export function parseInstance(value: unknown): Instance {
     zone: lastSegment(raw.zone),
     status: typeof raw.status === "string" ? raw.status : "",
     creationTimestamp: typeof raw.creationTimestamp === "string" ? raw.creationTimestamp : "",
+    lastStartTimestamp: typeof raw.lastStartTimestamp === "string" ? raw.lastStartTimestamp : "",
     lastStopTimestamp: typeof raw.lastStopTimestamp === "string" ? raw.lastStopTimestamp : "",
     lastSuspendedTimestamp: typeof raw.lastSuspendedTimestamp === "string" ? raw.lastSuspendedTimestamp : "",
     labels,

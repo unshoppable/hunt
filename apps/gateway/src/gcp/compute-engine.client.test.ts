@@ -346,6 +346,7 @@ describe("metadata items", () => {
       zone: "",
       status: "",
       creationTimestamp: "",
+      lastStartTimestamp: "",
       lastStopTimestamp: "",
       lastSuspendedTimestamp: "",
       labels: { a: "b" },
@@ -355,11 +356,12 @@ describe("metadata items", () => {
     });
   });
 
-  it("parses the zone, creation and stop times and disks of an instance", () => {
+  it("parses the zone, creation, start and stop times and disks of an instance", () => {
     const instance = parseInstance({
       name: "vm-hunt-s-ab12cd34",
       zone: "https://www.googleapis.com/compute/v1/projects/medconomy-hunt/zones/europe-west3-a",
       creationTimestamp: "2026-10-13T01:02:03.456-07:00",
+      lastStartTimestamp: "2026-10-13T01:03:04.567-07:00",
       lastStopTimestamp: "2026-10-14T01:02:03.456-07:00",
       metadata: { items: [{ key: "hunt-session-id", value: "ab12cd34-0000-4000-8000-000000000001" }] },
       machineType: "https://www.googleapis.com/compute/v1/projects/medconomy-hunt/zones/europe-west3-a/machineTypes/c4d-standard-8",
@@ -372,6 +374,7 @@ describe("metadata items", () => {
     expect(instance).toMatchObject({
       zone: "europe-west3-a",
       creationTimestamp: "2026-10-13T01:02:03.456-07:00",
+      lastStartTimestamp: "2026-10-13T01:03:04.567-07:00",
       lastStopTimestamp: "2026-10-14T01:02:03.456-07:00",
       lastSuspendedTimestamp: "",
       machineType: "c4d-standard-8",

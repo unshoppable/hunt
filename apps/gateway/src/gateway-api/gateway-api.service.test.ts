@@ -44,6 +44,7 @@ function fakeCompute() {
         zone,
         status: "RUNNING",
         creationTimestamp: "2026-10-14T08:00:00.000-07:00",
+        lastStartTimestamp: "",
         lastStopTimestamp: "",
         lastSuspendedTimestamp: "",
         labels: request.labels,
@@ -257,7 +258,7 @@ describe("the gateway API over its Unix socket", () => {
       status: 1,
       final: { type: "error", code: "notFound", message: `the session ${ID} has no VM ${VM}` },
     });
-    expect((await call("vms.get", { id: ID })).final).toEqual({ type: "result", data: { exists: false, name: VM, status: null } });
+    expect((await call("vms.get", { id: ID })).final).toEqual({ type: "result", data: { exists: false, name: VM, status: null, zone: null, startedAt: null } });
     expect(await call("vms.delete", { id: ID })).toMatchObject({ status: 0, final: { type: "result", data: { alreadyGone: true } } });
 
     await call("sessions.provision", PROVISION);

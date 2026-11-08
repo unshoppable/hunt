@@ -17,7 +17,7 @@ use crate::agent::acp::{system_prompt_append, AgentTransport, PermissionRegistry
 use crate::agent::claude_config::claude_dir;
 use crate::github::github_token;
 use crate::graph::WatcherRegistry;
-use crate::remote::api::{validate_remote_secret_name, validate_remote_secret_value, GatewayApi, RemoteSecretSummary};
+use crate::remote::api::{validate_remote_secret_name, validate_remote_secret_value, GatewayApi, RemoteSecretSummary, VmInfo};
 use crate::remote::preview::PreviewStatus;
 use crate::remote::ssh::{ssh_dir, Ssh};
 use crate::remote::{self, RemoteTarget, VmSettings};
@@ -45,6 +45,12 @@ pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>
     let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
     let status = remote::hunt_ctl(&ssh, &["preview-status", &id.to_string()]).await?;
     remote::preview::parse_status(&status, id, domain)
+}
+
+/// The VM of the remote session `id` as the gateway reports it, for the hover card of the chat header's "On VM" button.
+#[tauri::command]
+pub async fn session_vm_info(id: Uuid) -> Result<VmInfo, String> {
+    gateway_api("read the session's VM").await?.vm_info(id).await
 }
 
 /// The session VMs the gateway of the remote settings lists, running or not (see `remote::adoption::list_session_vms`),

@@ -27,7 +27,7 @@
  * hears its progress from the start, a different one waits until the first ended. `createSessionVmService` wires the
  * service to the gateway's project for hunt-api and hunt-swf.
  */
-import type { ProgressStep, ReleaseInfo, SessionSummary, VmRef } from "../../../../libs/domain/src/gateway-api/gateway-api.types.ts";
+import type { ProgressStep, ReleaseInfo, SessionSummary, VmInfo, VmRef } from "../../../../libs/domain/src/gateway-api/gateway-api.types.ts";
 import { messageOf } from "../../../../libs/domain/src/shared/errors.utils.ts";
 import type { Log } from "../../../../libs/domain/src/shared/journal.utils.ts";
 import { ApiError } from "../../../../libs/domain/src/gateway-api/api.error.ts";
@@ -240,10 +240,16 @@ export class SessionVmService {
     return { alreadyGone: !isDeleted };
   }
 
-  async get(sessionId: SessionId): Promise<{ exists: boolean; name: string; status: string | null }> {
+  async get(sessionId: SessionId): Promise<VmInfo> {
     const { vm, moving } = await this.locateSession(sessionId);
     const instance = vm ?? moving;
-    return { exists: instance !== null, name: sessionId.vm.name, status: instance?.status ?? null };
+    return {
+      exists: instance !== null,
+      name: sessionId.vm.name,
+      status: instance?.status ?? null,
+      zone: instance?.zone ?? null,
+      startedAt: instance?.lastStartTimestamp || null,
+    };
   }
 
   /** The session VMs of every zone of the gateway's project, oldest first. */

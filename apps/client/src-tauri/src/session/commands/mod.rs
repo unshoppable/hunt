@@ -78,6 +78,7 @@ command_handler![
     sessions::close_session,
     remote::preview_status,
     remote::list_session_vms,
+    remote::session_vm_info,
     remote::list_remote_secrets,
     remote::set_remote_secret,
     remote::delete_remote_secret,

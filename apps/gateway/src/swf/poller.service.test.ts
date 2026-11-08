@@ -213,6 +213,7 @@ function listedVm(name: string, status: string, labels: Record<string, string> =
     zone: "europe-west3-a",
     status,
     creationTimestamp: "2026-10-13T08:00:00.000-07:00",
+    lastStartTimestamp: "",
     lastStopTimestamp: "",
     lastSuspendedTimestamp: "",
     labels,

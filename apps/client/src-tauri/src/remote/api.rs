@@ -129,10 +129,18 @@ pub fn validate_remote_secret_value(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct VmStatus {
-    exists: bool,
-    status: Option<String>,
+/// A session's VM as `vms.get` reports it. `zone` and `started_at` (its last start or resume, RFC 3339) are None when the
+/// VM does not exist or the gateway predates them, `started_at` also when Compute Engine names no start.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VmInfo {
+    pub exists: bool,
+    pub name: String,
+    pub status: Option<String>,
+    #[serde(default)]
+    pub zone: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -209,9 +217,14 @@ impl GatewayApi {
         Ok(listed.sessions)
     }
 
+    /// The VM of session `id`: whether it exists, its status, zone and last start.
+    pub async fn vm_info(&self, id: Uuid) -> Result<VmInfo, String> {
+        self.call("vms.get", &json!({ "id": id })).await
+    }
+
     /// Whether the VM of session `id` runs; false when it is off or does not exist.
     pub async fn is_vm_running(&self, id: Uuid) -> Result<bool, String> {
-        let vm: VmStatus = self.call("vms.get", &json!({ "id": id })).await?;
+        let vm = self.vm_info(id).await?;
         Ok(vm.exists && vm.status.as_deref() == Some("RUNNING"))
     }
 
@@ -575,5 +588,16 @@ mod tests {
         let template = ProvisionRequest { machine_type: None, ..request };
         assert_eq!(serde_json::to_value(&template).unwrap()["machineType"], json!(null));
         assert_eq!(json!({ "id": id }), json!({ "id": "ab12cd34-0000-4000-8000-000000000001" }));
+    }
+
+    #[test]
+    fn vm_info_reads_zone_and_start_and_tolerates_a_gateway_without_them() {
+        let info: VmInfo = serde_json::from_str(
+            r#"{"exists":true,"name":"vm-hunt-s-ab12cd34","status":"RUNNING","zone":"europe-west3-a","startedAt":"2026-10-14T08:00:00.000-07:00"}"#,
+        )
+        .unwrap();
+        assert_eq!((info.zone.as_deref(), info.started_at.as_deref()), (Some("europe-west3-a"), Some("2026-10-14T08:00:00.000-07:00")));
+        let older: VmInfo = serde_json::from_str(r#"{"exists":false,"name":"vm-hunt-s-ab12cd34","status":null}"#).unwrap();
+        assert_eq!((older.exists, older.zone, older.started_at), (false, None, None));
     }
 }

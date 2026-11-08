@@ -16,6 +16,7 @@ function sessionInstance(name: string, id: string | null, overrides: Partial<Ins
     zone: ZONE,
     status: "RUNNING",
     creationTimestamp: "2026-10-19T08:00:00Z",
+    lastStartTimestamp: "",
     lastStopTimestamp: "",
     lastSuspendedTimestamp: "",
     labels: { "hunt-role": "session", "hunt-origin": "desktop" },

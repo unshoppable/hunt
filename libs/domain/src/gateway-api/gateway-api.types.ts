@@ -71,11 +71,23 @@ export interface SessionSummary {
   createdAt: string;
 }
 
+/** A session's VM as `vms.get` reports it; also the VM under its moving name while a move between zones runs. */
+export interface VmInfo {
+  exists: boolean;
+  name: string;
+  /** Compute Engine status; null when the VM does not exist. */
+  status: string | null;
+  /** Null when the VM does not exist. */
+  zone: string | null;
+  /** When the VM was last started or resumed, RFC 3339; null when it does not exist or Compute Engine names no start. */
+  startedAt: string | null;
+}
+
 /** Request and result of every method. */
 export interface Methods {
   hello: { request: Record<string, never>; result: HelloResult };
   "sessions.list": { request: Record<string, never>; result: { sessions: SessionSummary[] } };
-  "vms.get": { request: { id: string }; result: { exists: boolean; name: string; status: string | null } };
+  "vms.get": { request: { id: string }; result: VmInfo };
   /** Creates the session's VM unless it exists, records the session in its metadata, starts it, waits for its startup
    *  script and updates its release; streams progress. `conflict` when the VM holds another session. */
   "sessions.provision": {

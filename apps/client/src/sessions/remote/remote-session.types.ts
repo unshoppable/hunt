@@ -39,6 +39,13 @@ export type SessionVm = {
 };
 
 /**
+ * A session's VM as the gateway reports it (mirror of `VmInfo` in src-tauri/src/remote/api.rs): its Compute Engine
+ * `status`, `zone` and the time of its last start or resume (`startedAt`, RFC 3339); those are null when the VM does
+ * not exist, `zone` and `startedAt` also when the gateway does not report them yet.
+ */
+export type SessionVmInfo = { exists: boolean; name: string; status: string | null; zone: string | null; startedAt: string | null };
+
+/**
  * What the relay of a remote session last reported through the status channel (mirror of `RelayActivity` in
  * src-tauri/src/remote/target.rs): whether its agent runs a turn and whether it waits for the user's answer to a question;
  * `isQuestion` is null for an older relay that does not say.

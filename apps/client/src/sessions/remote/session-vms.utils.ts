@@ -55,12 +55,29 @@ export function sessionVmUrl(vm: SessionVm): string {
   return vm.origin === "swf" && vm.issue ? `${repo}/issues/${vm.issue}` : repo;
 }
 
-/** The status word of a VM that is not running, as the list shows it: `stopped` for Compute Engine's TERMINATED. */
+/** The status word of a listed VM (`vmStatusLabel`). */
 export function sessionVmStatusLabel(vm: SessionVm): string {
-  if (vm.isRunning) return "Running";
-  if (vm.status === "TERMINATED" || vm.status === "STOPPED") return "Stopped";
-  const word = vm.status.toLowerCase();
+  return vm.isRunning ? "Running" : vmStatusLabel(vm.status);
+}
+
+/** The word for a Compute Engine status: `Stopped` for TERMINATED and STOPPED, else the status capitalised; `Unknown` when empty. */
+export function vmStatusLabel(status: string): string {
+  if (status === "TERMINATED" || status === "STOPPED") return "Stopped";
+  const word = status.toLowerCase();
   return word ? word.charAt(0).toUpperCase() + word.slice(1) : "Unknown";
+}
+
+/** How long a VM has run since `startedAt` (RFC 3339): `under a minute`, `45 min`, `3 h 12 min`, `2 d 4 h`; null when unreadable. */
+export function vmUptimeLabel(startedAt: string, now = Date.now()): string | null {
+  const started = Date.parse(startedAt);
+  if (Number.isNaN(started)) return null;
+  const minutes = Math.max(0, Math.floor((now - started) / 60_000));
+  if (minutes < 1) return "under a minute";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return minutes % 60 ? `${hours} h ${minutes % 60} min` : `${hours} h`;
+  const days = Math.floor(hours / 24);
+  return hours % 24 ? `${days} d ${hours % 24} h` : `${days} d`;
 }
 
 /**

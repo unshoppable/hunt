@@ -7,9 +7,11 @@ import { configuredVmSettings, useSettingsStore } from "../../settings/settings.
 import { useHuntStore } from "../hunt.store";
 import { SECONDARY_BUTTON_MD } from "../../ui/buttons.constants";
 import { CloudIcon } from "../../ui/Icons";
+import { useHoverAnchor } from "../../ui/hover-anchor.hook";
 import { confirmVmLoss } from "./confirm-vm-loss.utils";
 import { isAdopted } from "./remote-origin.utils";
 import { fileSyncLabel, handOffBlocker, hasBusySubChat, retrieveBlocker } from "./remote-session.utils";
+import { VmHoverCard } from "./VmHoverCard";
 
 /** How long a file sync runs before the header says so; quicker ones would only flicker. */
 const SYNC_LABEL_DELAY_MS = 800;
@@ -18,7 +20,8 @@ const SYNC_LABEL_DELAY_MS = 800;
  * Chat header toggle of the session's place: a click hands a local session off to a VM of its own, created from the
  * settings, or brings a remote one back, which deletes its VM; an adopted session asks
  * first, since others may work on it. The tooltip explains the click or why it is blocked, in which case a click does
- * nothing and the button is dimmed. Next to it, a remote session shows the state of its file sync. Hidden while the
+ * nothing and the button is dimmed; for a remote session it is `VmHoverCard`, which also shows the VM's name, status,
+ * zone and uptime. Next to it, a remote session shows the state of its file sync. Hidden while the
  * remote settings are incomplete and the session runs locally, and for a sub chat, whose agent runs on this Mac in its
  * session's worktree wherever the session runs.
  */
@@ -35,6 +38,7 @@ export function RemoteToggle({ sessionId }: { sessionId: string }) {
   const hasClaudeAccount = useAccountsStore((state) => Boolean(state.accounts?.activeId));
   const busyChatIds = useBusyChatIds();
   const [isSyncSlow, setIsSyncSlow] = useState(false);
+  const hover = useHoverAnchor<"vm">();
 
   const isSyncRunning = Boolean(chat?.fileSync.isRunning);
   useEffect(() => {
@@ -53,7 +57,8 @@ export function RemoteToggle({ sessionId }: { sessionId: string }) {
   const isRunning = Boolean(chat?.remoteStep) || Boolean(chat?.isLoading) || Boolean(chat?.move);
   const context = { hasUnsavedEdits, hasClaudeAccount, hasBusySubChat: hasBusySubChat(session, sessions, busyChatIds) };
   const blocker = isRemote ? retrieveBlocker(session, context) : handOffBlocker(session, context);
-  const instance = session.remote?.vm.instance ?? "";
+  const vm = session.remote?.vm;
+  const instance = vm?.instance ?? "";
   const syncLabel = isRemote && chat ? fileSyncLabel(chat.fileSync, isSyncSlow) : null;
 
   async function toggle() {
@@ -74,7 +79,7 @@ export function RemoteToggle({ sessionId }: { sessionId: string }) {
   const worktree = session.hasLocalWorktree ? "its local" : "a new";
   const bringBackHint = isAdopted(session)
     ? `The session continues here in ${worktree} worktree and its VM ${instance} is deleted, also for others working on it.${afterTurn}`
-    : `The session continues here and its VM is deleted. Runs on ${instance}.${afterTurn}`;
+    : `The session continues here and its VM is deleted.${afterTurn}`;
   const title = blocker ?? (isRemote ? `Bring back from the VM: ${bringBackHint}` : `Hand off to the VM: ${handOffHint}`);
 
   return (
@@ -84,18 +89,22 @@ export function RemoteToggle({ sessionId }: { sessionId: string }) {
           {syncLabel}
         </span>
       ) : null}
-      <button
-        type="button"
-        onClick={() => (blocker ? undefined : void toggle())}
-        disabled={isCreating || isRunning}
-        aria-disabled={Boolean(blocker)}
-        aria-pressed={isRemote}
-        title={title}
-        className={`${SECONDARY_BUTTON_MD} ${isRemote ? "text-sky-300" : ""} ${blocker ? "opacity-40" : ""}`}
-      >
-        <CloudIcon className="size-4" />
-        {isRemote ? "On VM" : "Remote"}
-      </button>
+      {/* The span takes the hover, since a disabled button gets no mouse events. */}
+      <span className="flex" onMouseEnter={vm ? (event) => hover.enter("vm", event.currentTarget) : undefined} onMouseLeave={vm ? hover.leave : undefined}>
+        <button
+          type="button"
+          onClick={() => (blocker ? undefined : void toggle())}
+          disabled={isCreating || isRunning}
+          aria-disabled={Boolean(blocker)}
+          aria-pressed={isRemote}
+          title={vm ? undefined : title}
+          className={`${SECONDARY_BUTTON_MD} ${isRemote ? "text-sky-300" : ""} ${blocker ? "opacity-40" : ""}`}
+        >
+          <CloudIcon className="size-4" />
+          {isRemote ? "On VM" : "Remote"}
+        </button>
+      </span>
+      {vm && hover.anchor ? <VmHoverCard sessionId={sessionId} vm={vm} hint={title} anchor={hover.anchor.rect} onEnter={hover.keep} onLeave={hover.leave} /> : null}
     </div>
   );
 }

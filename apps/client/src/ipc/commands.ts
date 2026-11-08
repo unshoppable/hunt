@@ -23,7 +23,7 @@ import type { FileLine, ReplaceResult, TextQuery, TextSearchResult } from "../id
 import type { AppPage, PreviewStatus } from "../preview/preview.types";
 import type { GithubViewer, PullRequestDetails, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread } from "../review/review.types";
 import type { PullRequest, PullRequestState } from "../sessions/pull-requests.types";
-import type { RemoteLink, SessionVm } from "../sessions/remote/remote-session.types";
+import type { RemoteLink, SessionVm, SessionVmInfo } from "../sessions/remote/remote-session.types";
 import type { PullRequestRef, SessionEnding, SessionView, Workspace } from "../sessions/session.types";
 import type { SwfPipelineFiles } from "../sessions/swf-pipeline.types";
 import type { CliInstall, GithubTokenStatus, RemoteSecretSummary, VmSettings } from "../settings/settings.types";
@@ -179,6 +179,8 @@ export const commands = {
   adoptSessionVms: (settings: VmSettings, repoPaths: string[], ids: string[]) => invoke<string[]>("adopt_session_vms", { settings, repoPaths, ids }),
   /** The session VMs the gateway of the remote settings lists, running or not, for the start view's list of remote sessions. */
   listSessionVms: () => invoke<SessionVm[]>("list_session_vms"),
+  /** The VM of the remote session `id` as the gateway reports it: status, zone and last start. */
+  sessionVmInfo: (id: string) => invoke<SessionVmInfo>("session_vm_info", { id }),
   /**
    * The remote settings, or null while they are incomplete; the main window pushes them at its start and on every
    * change, and commands on stored remote sessions reach the gateway they name.

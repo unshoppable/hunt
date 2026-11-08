@@ -32,6 +32,11 @@ export function totalTokens(tokens: TokenCounts): number {
   return tokens.input + tokens.cacheWrite + tokens.cacheRead + tokens.output;
 }
 
+/** The tokens a run paid for in full: everything but the cache reads, i.e. input, cache writes and output. */
+export function uncachedTokens(tokens: TokenCounts): number {
+  return tokens.input + tokens.cacheWrite + tokens.output;
+}
+
 /** The kinds of tokens a run used, for the tooltip of its total: `Input 1k · cache write 1.4M · cache read 215M · output 475k`. */
 export function tokensTitle(tokens: TokenCounts): string {
   return `Input ${formatTokens(tokens.input)} · cache write ${formatTokens(tokens.cacheWrite)} · cache read ${formatTokens(tokens.cacheRead)} · output ${formatTokens(tokens.output)}`;

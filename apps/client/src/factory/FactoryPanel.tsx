@@ -20,7 +20,7 @@ import { errorText } from "../ui/error-text.utils";
 import { ExternalIcon, GitHubIcon, Spinner } from "../ui/Icons";
 import { useLoad } from "../ui/load.hook";
 import { PaneSeparator, Panel, PersistentGroup } from "../ui/ResizablePanes";
-import { modelText, openableRuns, runModelWindows, shownRun, sumTokens, tokensTitle, totalTokens, type TokenCounts } from "./factory-runs.utils";
+import { modelText, openableRuns, runModelWindows, shownRun, sumTokens, tokensTitle, totalTokens, uncachedTokens, type TokenCounts } from "./factory-runs.utils";
 import { FACTORY_EDGE_TYPES, FACTORY_NODE_TYPES, PipelineFocusContext } from "./FactoryNodes";
 import {
   formatRunDuration,
@@ -59,7 +59,7 @@ const OUTCOME_CHIP: Record<Run["outcome"], string> = {
  * The Factory tab of a session of the swf poller: the pipeline of its issue as the record in `.hunt/swf/pipeline.json` of
  * the worktree tells it, pulled from the VM whenever the runner wrote it, so it follows the pipeline live and reads
  * without the VM too. On top the steps plan →
- * implement → verify → review → pr → checks → human-review → merge as a graph, each with its run count, the current step
+ * implement → verify → review → pr → human-review → merge as a graph, each with its run count, the current step
  * marked and every return to implement as an amber edge labelled with its findings; below the runs in order with their
  * outcome and duration, and under them the step result and the conversation of the selected run (by default the latest
  * one that has either; the selection is stored per session, where `hunt-client factory` reads and sets it).
@@ -197,7 +197,8 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
           </Panel>
           <PaneSeparator orientation="vertical" />
           <Panel id="runs" defaultSize="25" minSize={MIN_RUNS_HEIGHT} className={`flex min-h-0 flex-col ${FACTORY_TEXT}`}>
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto py-1.5">
+            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+              {runs.length ? <HeaderRow /> : null}
               {runs.length ? (
                 runs.map((run) => (
                   <RunRow
@@ -215,8 +216,8 @@ export function FactoryPanel({ sessionId }: { sessionId: string }) {
               ) : (
                 <p className={HINT}>The record lists no runs yet.</p>
               )}
+              {runs.length ? <TotalRow runCount={runs.length} tokens={tokens.length ? sumTokens(tokens) : null} duration={runs.reduce((sum, run) => sum + runDuration(run, now), 0)} /> : null}
             </div>
-            {runs.length ? <TotalRow runCount={runs.length} tokens={tokens.length ? sumTokens(tokens) : null} duration={runs.reduce((sum, run) => sum + runDuration(run, now), 0)} /> : null}
           </Panel>
           <PaneSeparator orientation="vertical" />
           <Panel id="details" minSize={MIN_DETAILS_HEIGHT} className="flex min-h-0 flex-col">
@@ -259,9 +260,9 @@ function PlanUsageOverlay({ sessionId, pipeline, isTurnRunning }: { sessionId: s
   });
   const [windows, setWindows] = useState<UsageWindow[]>([]);
   const [note, setNote] = useState<string | null>(null);
-  const now = useMinuteClock();
   const [cost, setCost] = useState<VmCost | null>(null);
   const [costNote, setCostNote] = useState<string | null>(null);
+  const now = useMinuteClock();
   useLoad(
     () => commands.readSessionPlanUsage(sessionId),
     {
@@ -274,7 +275,6 @@ function PlanUsageOverlay({ sessionId, pipeline, isTurnRunning }: { sessionId: s
     [sessionId, link, isTurnRunning],
     { isEnabled: isVmReachable },
   );
-  const models = pipeline.runs.filter((run) => isAgentStep(run.step)).map((run) => pipeline.settings.steps[run.step].model);
   useLoad(
     () => commands.readSessionVmUsage(sessionId),
     {
@@ -286,6 +286,7 @@ function PlanUsageOverlay({ sessionId, pipeline, isTurnRunning }: { sessionId: s
     },
     [sessionId, link, isTurnRunning, Math.floor(now / VM_USAGE_REFRESH_MS)],
   );
+  const models = pipeline.runs.filter((run) => isAgentStep(run.step)).map((run) => pipeline.settings.steps[run.step].model);
   const shown = runModelWindows(windows, models);
   const hasPlanUsage = models.length > 0 && (shown.length > 0 || note !== null);
   if (!hasPlanUsage && !cost) return null;
@@ -374,14 +375,16 @@ function RunRow({
         {run.outcome === "returned" && run.findings !== undefined ? ` · ${run.findings}` : ""}
       </Chip>
       <span className="flex-1" />
-      <span className={`${MODEL_COLUMN} text-neutral-500`} title="Model and effort of the step's conversation">
-        {model ?? ""}
+      <span className={COLUMNS}>
+        <span className={`${MODEL_COLUMN} text-neutral-500`} title="Model and effort of the step's conversation">
+          <span className="truncate">{model ?? ""}</span>
+        </span>
+        <TokensCells tokens={tokens ?? null} />
+        <span className={`${DATE_COLUMN} text-neutral-400`} title={run.startedAt}>
+          {startedText}
+        </span>
+        <span className={`${DURATION_COLUMN} text-neutral-400`}>{formatRunDuration(runDuration(run, now))}</span>
       </span>
-      <TokensCell tokens={tokens ?? null} />
-      <span className={`${DATE_COLUMN} text-neutral-400`} title={run.startedAt}>
-        {startedText}
-      </span>
-      <span className={`${DURATION_COLUMN} text-neutral-400`}>{formatRunDuration(runDuration(run, now))}</span>
     </>
   );
   const row = `flex min-h-7 w-full items-center gap-3 px-4 transition-opacity ${isSelected ? "bg-(--row-selected)" : ""} ${stepMark ? STEP_MARK[stepMark] : ""}`;
@@ -393,35 +396,72 @@ function RunRow({
   );
 }
 
-/** The columns the run rows and the total row share, so that their values line up. */
-const MODEL_COLUMN = "w-40 shrink-0 truncate text-right";
-const TOKENS_COLUMN = "w-28 shrink-0 text-right whitespace-nowrap tabular-nums";
-const DATE_COLUMN = "w-36 shrink-0 text-right whitespace-nowrap";
-const DURATION_COLUMN = "w-16 shrink-0 text-right tabular-nums";
+/**
+ * The right-hand columns the header, the run rows and the total row share, so that their values line up: one cluster
+ * whose cells a faint line parts, each padded alike and right-aligned (`justify-center` centers one).
+ */
+const COLUMNS = "flex shrink-0 self-stretch divide-x divide-(--line) border-l border-(--line)";
+const CELL = "flex shrink-0 items-center justify-end px-4 whitespace-nowrap tabular-nums";
+const MODEL_COLUMN = `w-40 ${CELL}`;
+const TOKENS_COLUMN = `w-32 ${CELL}`;
+const UNCACHED_COLUMN = `w-32 ${CELL}`;
+const DATE_COLUMN = `w-40 ${CELL}`;
+const DURATION_COLUMN = `w-20 ${CELL}`;
 
-/** A count of tokens with its kinds in the tooltip; empty without counts. */
-function TokensCell({ tokens, className = "text-neutral-400" }: { tokens: TokenCounts | null; className?: string }) {
+/**
+ * Two columns of token counts, the total and the uncached ones (input, cache writes and output, the tokens paid in
+ * full), each with the kinds in the tooltip; empty without counts. `centered` centers the counts, for the total row.
+ */
+function TokensCells({ tokens, className = "text-neutral-400", centered = false }: { tokens: TokenCounts | null; className?: string; centered?: boolean }) {
+  const align = centered ? "justify-center" : "";
+  const title = tokens ? tokensTitle(tokens) : undefined;
   return (
-    <span className={`${TOKENS_COLUMN} ${className}`} title={tokens ? tokensTitle(tokens) : undefined}>
-      {tokens ? `${formatTokens(totalTokens(tokens))} tokens` : ""}
-    </span>
+    <>
+      <span className={`${TOKENS_COLUMN} ${align} ${className}`} title={title}>
+        {tokens ? `${formatTokens(totalTokens(tokens))} tokens` : ""}
+      </span>
+      <span className={`${UNCACHED_COLUMN} ${align} ${className}`} title={title}>
+        {tokens ? `${formatTokens(uncachedTokens(tokens))} uncached` : ""}
+      </span>
+    </>
   );
 }
 
-/** The last row of the run list: how many runs there were, the tokens they used and how long they took, all summed up. */
+/** The first row of the run list, pinned to the top while the runs scroll: the title of each column. */
+function HeaderRow() {
+  return (
+    <div className="sticky top-0 z-10 flex min-h-8 shrink-0 items-center gap-3 border-b border-(--line) bg-(--factory-bg) px-4 py-1.5 font-medium text-neutral-500">
+      <span className="w-7 shrink-0 text-right">#</span>
+      <span className="w-28 shrink-0">Step</span>
+      <span>Outcome</span>
+      <span className="flex-1" />
+      <span className={COLUMNS}>
+        <span className={MODEL_COLUMN}>Model</span>
+        <span className={TOKENS_COLUMN}>Tokens</span>
+        <span className={UNCACHED_COLUMN}>Uncached</span>
+        <span className={DATE_COLUMN}>Started</span>
+        <span className={DURATION_COLUMN}>Duration</span>
+      </span>
+    </div>
+  );
+}
+
+/** The last row of the run list, pinned to the bottom while the runs scroll: how many runs there were, the tokens they used and how long they took, all summed up. */
 function TotalRow({ runCount, tokens, duration }: { runCount: number; tokens: TokenCounts | null; duration: number }) {
   return (
-    <div className="flex min-h-7 shrink-0 items-center gap-3 border-t border-(--line) px-4 font-medium">
+    <div className="sticky bottom-0 z-10 flex min-h-8 shrink-0 items-center gap-3 border-t border-(--line) bg-(--factory-bg) px-4 py-1.5 font-medium">
       <span className="w-7 shrink-0" />
       <span className="w-28 shrink-0 text-neutral-100">Total</span>
       <span className="text-neutral-400">
         {runCount} {runCount === 1 ? "run" : "runs"}
       </span>
       <span className="flex-1" />
-      <span className={MODEL_COLUMN} />
-      <TokensCell tokens={tokens} className="text-neutral-100" />
-      <span className={DATE_COLUMN} />
-      <span className={`${DURATION_COLUMN} text-neutral-100`}>{formatRunDuration(duration)}</span>
+      <span className={COLUMNS}>
+        <span className={MODEL_COLUMN} />
+        <TokensCells tokens={tokens} className="text-neutral-100" centered />
+        <span className={DATE_COLUMN} />
+        <span className={`${DURATION_COLUMN} justify-center text-neutral-100`}>{formatRunDuration(duration)}</span>
+      </span>
     </div>
   );
 }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { modelText, openableRuns, runModelWindows, shownRun, sumTokens, tokensTitle, totalTokens } from "./factory-runs.utils";
+import { modelText, openableRuns, runModelWindows, shownRun, sumTokens, tokensTitle, totalTokens, uncachedTokens } from "./factory-runs.utils";
 
 describe("openableRuns", () => {
   it("collects the runs with a step result or a transcript", () => {
@@ -34,6 +34,10 @@ describe("totalTokens and tokensTitle", () => {
 
   it("sums every kind of token the run used", () => {
     expect(totalTokens(tokens)).toBe(216_986_185);
+  });
+
+  it("counts the tokens outside the cache reads as uncached", () => {
+    expect(uncachedTokens(tokens)).toBe(1_837_548);
   });
 
   it("names each kind with its count", () => {

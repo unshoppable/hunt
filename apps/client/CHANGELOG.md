@@ -1,3 +1,10 @@
+## 0.158.0 (2026-11-08)
+
+### 🚀 Features
+
+- **client:** narrow the token columns of the Factory runs to the numbers ([b494cb5](https://github.com/unshoppable/hunt/commit/b494cb5))
+- rename the human-review step to pr-gate and merge once GitHub approves ([4031d94](https://github.com/unshoppable/hunt/commit/4031d94))
+
 ## 0.157.0 (2026-11-08)
 
 ### 🚀 Features

@@ -1,3 +1,9 @@
+## 0.35.0 (2026-11-08)
+
+### 🚀 Features
+
+- rename the human-review step to pr-gate and merge once GitHub approves ([4031d94](https://github.com/unshoppable/hunt/commit/4031d94))
+
 ## 0.34.0 (2026-11-08)
 
 ### 🚀 Features

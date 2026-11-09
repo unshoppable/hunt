@@ -23,7 +23,7 @@ import type { AppPage, PreviewStatus } from "../preview/preview.types";
 import type { GithubViewer, PullRequestDetails, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread } from "../review/review.types";
 import type { PullRequest, PullRequestState } from "../sessions/pull-requests.types";
 import type { RemoteLink, SessionVm } from "../sessions/remote/remote-session.types";
-import type { PullRequestRef, SessionEnding, SessionView, Workspace } from "../sessions/session.types";
+import type { PullRequestRef, SessionEnding, SessionMode, SessionView, Workspace } from "../sessions/session.types";
 import type { SwfPipelineFiles } from "../sessions/swf-pipeline.types";
 import type { CliInstall, GithubTokenStatus, RemoteSecretSummary, VmSettings } from "../settings/settings.types";
 import type { LocalServicesStatus, Machine, TerminalTarget, TmuxWindow } from "../terminal/terminal.types";
@@ -129,8 +129,9 @@ export const commands = {
     pullRequestBranch: string | null,
     newBranch: string | null,
     workspace: Workspace,
+    mode: SessionMode,
   ) =>
-    invoke<SessionView>("create_session", { id, repoPath, baseRef, title, pullRequest, diffBaseRef, pullRequestBranch, newBranch, workspace }),
+    invoke<SessionView>("create_session", { id, repoPath, baseRef, title, pullRequest, diffBaseRef, pullRequestBranch, newBranch, workspace, mode }),
   /** Starts the sub session `id` (a fresh UUID the caller picked) in the parent's worktree; a `selection` (sub chat from the diff) goes into the agent's context. */
   createSubSession: (id: string, parentId: string, title: string, selection: SelectionContext | null) =>
     invoke<SessionView>("create_sub_session", { id, parentId, title, selection }),

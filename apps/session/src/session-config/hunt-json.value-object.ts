@@ -119,6 +119,10 @@
  *   "Guardrail" button invokes and whose criteria decide when the button lights up: kebab-case of letters and digits,
  *   at most 64 characters, `guardrail` without it. The client writes the skill from its template when a session
  *   starts in a worktree that lacks it; the VM only validates the name.
+ * - `ticketSkill`: optional, the name of the Claude Code skill the agent of a client's ticket session follows to write
+ *   the GitHub issue of a task before anyone codes it, named like `guardrailSkill`, `ticket` without it. The client
+ *   writes the skill from its template when a ticket session starts in a worktree that lacks it; the VM only validates
+ *   the name.
  * - `declinedGuardrailsFile`: optional, the file the client appends a guardrail suggestion to when the user declines
  *   it and that the guardrail skill greps; it follows the rules of a service's `cwd` and is
  *   `.claude/declined-guardrails.jsonl` without it. The VM only validates it.
@@ -171,7 +175,7 @@ import { at, parseField, parseOptionalField, Problems, record } from "./problems
 import { ServiceConfig } from "./service-config.value-object.ts";
 import { SwfSettings } from "./swf-settings.value-object.ts";
 
-const ROOT_FIELDS = ["version", "adrDir", "guardrailSkill", "declinedGuardrailsFile", "swf", "services", "checks"];
+const ROOT_FIELDS = ["version", "adrDir", "guardrailSkill", "ticketSkill", "declinedGuardrailsFile", "swf", "services", "checks"];
 const SWF_FIELDS = ["model", "effort", "maxGateRuns", "questionPrefix", "projectStatus", "mergeMethod", "humanReviewPaths", "steps", "skills"];
 const PROJECT_STATUS_FIELDS = ["inProgress", "inReview", "done"];
 const STEP_FIELDS = ["skill", "model", "effort", "maxReturns", "minSeverity", "checks"];
@@ -196,6 +200,8 @@ const ZodHuntJsonState = z
     adrDir: z._default(z.nullable(ZodWorktreeFolder), null),
     /** The skill of the client's "Guardrail" button; null for the client's default. */
     guardrailSkill: z._default(z.nullable(ZodSkillName), null),
+    /** The skill the agent of a client's ticket session follows; null for the client's default. */
+    ticketSkill: z._default(z.nullable(ZodSkillName), null),
     /** The file of the declined guardrail suggestions relative to the worktree; null for the client's default. */
     declinedGuardrailsFile: z._default(z.nullable(ZodWorktreeFile), null),
     /** The settings of the poller's sessions; null without the `swf` section. */
@@ -295,6 +301,7 @@ function parseRoot(document: unknown, problems: Problems): HuntJsonDraft | undef
     version: parseField(ZodContractVersion, root.version, "version", problems),
     adrDir: parseOptionalField(ZodWorktreeFolder, root.adrDir, "adrDir", problems),
     guardrailSkill: parseOptionalField(ZodSkillName, root.guardrailSkill, "guardrailSkill", problems),
+    ticketSkill: parseOptionalField(ZodSkillName, root.ticketSkill, "ticketSkill", problems),
     declinedGuardrailsFile: parseOptionalField(ZodWorktreeFile, root.declinedGuardrailsFile, "declinedGuardrailsFile", problems),
     swf: parseSwf(root.swf, declaredNames(root.checks), problems),
     services: parseServices(root.services, problems),

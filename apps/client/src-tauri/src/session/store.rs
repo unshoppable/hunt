@@ -85,7 +85,9 @@ pub struct SessionRecord {
 
 /// What a session is for. `Edit` works on the code of its worktree, `GitReview` reviews the pull request `pull_request`
 /// names, `Swf` is a session of the gateway's software-factory poller (`RemoteOrigin::Swf`), whose pipeline record the
-/// Factory tab shows (`session::swf`). Mirror of `SessionMode` in src/sessions/session.types.ts.
+/// Factory tab shows (`session::swf`), `Ticket` writes the GitHub issue of a task before anyone codes it, following the
+/// repository's ticket skill (`agent/ticket_skill.rs`). Sub chats keep their parent's mode. Mirror of `SessionMode` in
+/// src/sessions/session.types.ts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum SessionMode {
@@ -93,6 +95,7 @@ pub enum SessionMode {
     Edit,
     GitReview,
     Swf,
+    Ticket,
 }
 
 /// Where a session works. `Worktree` is a worktree Hunt creates and deletes with the session, on a new
@@ -712,6 +715,7 @@ mod tests {
         assert_eq!(stored["mode"], serde_json::json!("git-review"));
         assert_eq!(serde_json::to_value(SessionMode::Edit).unwrap(), serde_json::json!("edit"));
         assert_eq!(serde_json::to_value(SessionMode::Swf).unwrap(), serde_json::json!("swf"));
+        assert_eq!(serde_json::to_value(SessionMode::Ticket).unwrap(), serde_json::json!("ticket"));
 
         let sub = SessionRecord::sub_session(Uuid::new_v4(), "sub".into(), &parent, None);
         assert_eq!(sub.mode, SessionMode::GitReview);

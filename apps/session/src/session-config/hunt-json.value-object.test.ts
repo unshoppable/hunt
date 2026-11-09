@@ -201,6 +201,7 @@ describe("HuntJson services", () => {
       ...["/srv/adr", "../adr", "a/./b", "", 1].map((adrDir): [unknown, string[]] => [{ ...web({}), adrDir }, [`adrDir: ${CWD_RULE}`]]),
       ...["", "Guardrail", "guard rail", "-guardrail", "a--b", "a".repeat(65), 1].map((guardrailSkill): [unknown, string[]] => [{ ...web({}), guardrailSkill }, [`guardrailSkill: ${SKILL_NAME_RULE}`]]),
       ...["/srv/declines.jsonl", "../declines.jsonl", "", 1].map((declinedGuardrailsFile): [unknown, string[]] => [{ ...web({}), declinedGuardrailsFile }, [`declinedGuardrailsFile: ${FILE_RULE}`]]),
+      ...["", "Ticket", "-ticket", 1].map((ticketSkill): [unknown, string[]] => [{ ...web({}), ticketSkill }, [`ticketSkill: ${SKILL_NAME_RULE}`]]),
       [{ ...web({}), swf: "claude-opus-5-5" }, ["swf: must be an object"]],
       [{ ...web({}), swf: { model: "claude-opus-5-5", effort: "high", humanReviewPaths: ["**/migrations/**"], skills: SKILLS, color: "red" } }, ["swf.color: unknown field"]],
       [{ ...web({}), swf: {} }, [`swf.steps: ${SKILLS_RULE}`]],
@@ -523,7 +524,7 @@ describe("HuntJson checks", () => {
 
 describe("HuntJson", () => {
   it("has no services, checks or swf settings without hunt.json", () => {
-    expect(HuntJson.none().toJSON()).toEqual({ version: 3, adrDir: null, guardrailSkill: null, declinedGuardrailsFile: null, swf: null, services: [], checks: [] });
+    expect(HuntJson.none().toJSON()).toEqual({ version: 3, adrDir: null, guardrailSkill: null, ticketSkill: null, declinedGuardrailsFile: null, swf: null, services: [], checks: [] });
     expect(HuntJson.fromDocument(undefined).huntJson?.isEqualTo(HuntJson.none())).toBe(true);
   });
 
@@ -695,6 +696,7 @@ describe("environments", () => {
 
   it("accepts the name of the guardrail skill", () => {
     expect(problemsOf({ ...web({}), guardrailSkill: "team-lessons-2" })).toEqual([]);
+    expect(problemsOf({ ...web({}), ticketSkill: "spec" })).toEqual([]);
   });
 
   it("accepts the file of the declined guardrail suggestions", () => {

@@ -68,9 +68,11 @@ export type SessionView = {
 
 /**
  * What a session is for (mirror of `SessionMode` in src-tauri/src/session/store.rs): `edit` works on a branch, `git-review`
- * reviews a pull request, `swf` is a session of the gateway's poller for a GitHub issue, whose pipeline the Factory tab shows.
+ * reviews a pull request, `swf` is a session of the gateway's poller for a GitHub issue, whose pipeline the Factory tab shows,
+ * `ticket` writes the GitHub issue of a task before anyone codes it, following the repository's ticket skill. Sub chats
+ * keep their parent's mode.
  */
-export type SessionMode = "edit" | "git-review" | "swf";
+export type SessionMode = "edit" | "git-review" | "swf" | "ticket";
 
 /** What the preparation of a worktree's `node_modules` (clone from the repository, else install) is doing or ended with. */
 export type DependencyStatus = { phase: "running" | "ready" | "failed"; message: string };

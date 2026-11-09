@@ -6,14 +6,18 @@ import { baseName } from "../common/path/path.utils";
 import { issueLabel, remoteOriginTitle, repositoryLabel } from "./remote/remote-origin.utils";
 
 /**
- * The pull request or issue a session works on, shown as `#123` with its own icon on the sidebar's repository line.
- * The tone follows GitHub: an issue is amber, an open pull request green, a draft grey, a merged one purple, a closed
- * one red; `neutral` while the pull request's state is not known yet.
+ * The pull request or issue a session works on, shown as `#123` with its own icon on the sidebar's repository line, or
+ * the mark of a ticket session, which writes an issue rather than working on one. The tone follows GitHub: an issue
+ * is amber, an open pull request green, a draft grey, a merged one purple, a closed one red; `neutral` while the pull
+ * request's state is not known yet.
  */
-export type SessionReference = { kind: "pullRequest" | "issue"; label: string; title: string; tone: ReferenceTone };
+export type SessionReference = { kind: "pullRequest" | "issue" | "ticket"; label: string; title: string; tone: ReferenceTone };
 export type ReferenceTone = "amber" | "green" | "grey" | "purple" | "red" | "neutral";
 
-/** The pull request a session reviews (in `pullRequestState` as last fetched), else the issue it works on; null for a session on neither. */
+/**
+ * The pull request a session reviews (in `pullRequestState` as last fetched), else the issue it works on, else the mark
+ * of a ticket session; null for a coding session on neither.
+ */
 export function sessionReference(session: SessionView, pullRequestState: PullRequestState | null = null): SessionReference | null {
   if (session.pullRequest) {
     const state = pullRequestState ? describePullRequestState(pullRequestState) : null;
@@ -26,6 +30,9 @@ export function sessionReference(session: SessionView, pullRequestState: PullReq
   }
   const issue = issueLabel(session);
   if (issue) return { kind: "issue", label: issue, title: remoteOriginTitle(session) ?? "", tone: "amber" };
+  if (session.mode === "ticket" && !session.parentId) {
+    return { kind: "ticket", label: "Ticket", title: "Writes the GitHub issue of a task before anyone codes it", tone: "amber" };
+  }
   return null;
 }
 

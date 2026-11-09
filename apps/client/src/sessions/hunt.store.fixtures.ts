@@ -41,5 +41,5 @@ export function storedSession(id: string, title: string): SessionView {
   };
 }
 
-export const TARGET = { repoPath: "/repo", baseRef: "main", workspace: "worktree" as const, pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch: null };
+export const TARGET = { repoPath: "/repo", baseRef: "main", workspace: "worktree" as const, pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch: null, mode: "edit" as const };
 export const START = { setup: { configValues: { model: "fable", effort: "high" }, modeId: "plan" }, prompt: { text: "build it", images: [] } };

@@ -52,7 +52,9 @@ pub async fn list_sessions(app: AppHandle, registry: State<'_, SessionRegistry>)
 /// out, on a new `<branch>-<n>` off it, whose push lands on it. `new_branch` names a branch the user asked for instead
 /// of the generated `<base>-<n>` (`git::next_session_branch`): created off `base_ref` in a worktree, or at `HEAD` of
 /// the checkout, which switches to it; like a pull request's branch it is the session's base, so a push lands on it
-/// under its own name, and deleting the session keeps it.
+/// under its own name, and deleting the session keeps it. `mode` is what the session is for as the UI chose it; `Ticket`
+/// makes it a session that writes the GitHub issue of a task first: its start writes the repository's ticket skill when
+/// missing and its agent follows that skill.
 #[tauri::command]
 pub async fn create_session(
     app: AppHandle,
@@ -67,6 +69,7 @@ pub async fn create_session(
     pull_request_branch: Option<String>,
     new_branch: Option<String>,
     workspace: Workspace,
+    mode: crate::session::store::SessionMode,
 ) -> Result<SessionView, String> {
     ensure_new_id(&app, id)?;
     let repo_path = PathBuf::from(repo_path);
@@ -124,6 +127,7 @@ pub async fn create_session(
 
     let mut record = SessionRecord::new(id, title, repo_path, worktree_path.clone(), branch, base_ref, base_commit);
     record.pull_request = pull_request;
+    record.mode = mode;
     record.derive_mode();
     record.diff_base = diff_base;
     record.workspace = workspace;

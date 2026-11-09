@@ -161,7 +161,7 @@ export const ZodGlobPatterns = z.pipe(
 /** `swf.model` and `swf.steps.<step>.model`: the full ID of a Claude model, never an alias. */
 export const ZodModelId = z.string({ error: MODEL_RULE }).check(z.refine((model) => model.length <= MAX_MODEL_LENGTH && MODEL_ID.test(model), MODEL_RULE));
 
-/** `guardrailSkill`, `swf.steps.<step>.skill` and the values of `swf.skills`: the name of a Claude Code skill. */
+/** `guardrailSkill`, `ticketSkill`, `swf.steps.<step>.skill` and the values of `swf.skills`: the name of a Claude Code skill. */
 export const ZodSkillName = z.string({ error: SKILL_NAME_RULE }).check(
   z.refine((skill) => skill.length <= MAX_SKILL_NAME_LENGTH && SKILL_NAME.test(skill), SKILL_NAME_RULE),
 );

@@ -215,7 +215,16 @@ first prompt creates the session and titles it. The view's header has "PR review
 the view's body with a list in the chat pane (no popover), of the repository's open pull requests or of the session
 VMs the gateway lists; choosing a pull request starts a review session on its branch, choosing a remote session shows
 it, adopting it first when this Mac does not know it (`apps/client/src/sessions/PullRequestList.tsx`,
-`SessionVmList.tsx`, `list_session_vms`). The bar under the composer picks the workspace (a worktree or the
+`SessionVmList.tsx`, `list_session_vms`). The header's "Ticket" button switches the view to ticket sessions (the mode
+`ticket` of `create_session` and `SessionRecord.mode`, shown as a "Ticket" badge in the sidebar): the agent writes the
+GitHub issue of the idea typed into the composer before anyone codes it. Its start writes the repository's ticket skill,
+`.claude/skills/<name>/SKILL.md` with the name `ticketSkill` of `hunt.json` (`ticket` without it), from
+`apps/client/prompts/ticket/ticket.skill.md` when the file is missing (`src-tauri/src/agent/ticket_skill.rs`), and its
+system prompt (`ticket.system-prompt.md`) tells the agent to invoke that skill first, to check the idea against the
+guardrails, ADRs and Hunt's diagrams, to interview the user one question at a time with options and a recommendation,
+to stop only when a fresh agent could implement the issue from its text alone, and to file it with `gh` on the user's go,
+then title the session after it. A repository with a skill of its own for this, such as a `/spec` skill, names it as
+`ticketSkill` and the template is never written. The bar under the composer picks the workspace (a worktree or the
 repository's checkout) and the base branch; choosing a base branch starts the worktree session off it right away,
 without a prompt, titled after the repository like one started by choosing a repository; text typed into the prompt
 box but not sent stays unsent in the new session's box, whichever pick started it. The branch menu's "New branch…" names a branch the session creates instead
@@ -831,7 +840,9 @@ see "Remote sessions") reads them from hunt.json. An optional
 and an optional `cwd` (`"checks": {"test": {"command": "npm test", "cwd": "apps/web"}}`); `services` is optional too,
 so a `hunt.json` may declare checks only. An optional `adrDir` names the folder of the repository's architectural
 decision records (`"adrDir": "docs/adr"`, `.claude/resources/adrs` without it), which the guardrails window lists and
-writes; the VM only validates it. An optional `guardrailSkill` names the Claude Code skill the chat's "Guardrail"
+writes; the VM only validates it. An optional `ticketSkill` names the Claude Code skill the agent of a ticket session
+follows (`"ticketSkill": "spec"`, `ticket` without it; see "Sessions and the agent"); the VM only validates the name.
+An optional `guardrailSkill` names the Claude Code skill the chat's "Guardrail"
 button invokes (`"guardrailSkill": "team-lessons"`, `guardrail` without it; see "Guardrails"); the VM only validates
 the name. An optional `declinedGuardrailsFile` names the file "Decline" appends a guardrail suggestion to
 (`"declinedGuardrailsFile": "docs/declined-guardrails.jsonl"`, `.claude/declined-guardrails.jsonl` without it); the VM
@@ -1165,7 +1176,7 @@ both and the record comment mirrors `pipeline.json` (`hunt-ctl swf-record <id>` 
 runner starts; it never counts as activity). `hunt-ctl status` reports
 the pipeline as `swf` (`null` without one), and `.hunt/` neither syncs nor
 is committed, so a client that pulls the session gets the pipeline from the VM, not from GitHub: Hunt gives the adopted
-session the mode `swf` (`SessionRecord.mode`, `store.rs`; `git-review` for a pull request review, else `edit`) and pulls
+session the mode `swf` (`SessionRecord.mode`, `store.rs`; `git-review` for a pull request review, `ticket` for a ticket session, else `edit`) and pulls
 `.hunt/swf/` into its local worktree (`apps/client/src-tauri/src/session/swf.rs`) when the session is opened, after every turn
 the status channel reports ended and with the retrieval, announcing each pull as `swf:pulled`; the Factory tab reads the
 folder there (`read_swf_pipeline`, `read_swf_step`), also once the VM is gone; the issue moves to the `inProgress`

@@ -31,7 +31,7 @@ use crate::graph;
 use crate::platform::control;
 use crate::platform::shell::find_on_path;
 use crate::session::attribution;
-use crate::session::store::Workspace;
+use crate::session::store::{SessionMode, Workspace};
 
 const ACP_SCRIPT: &str = "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
 /// Turns on Claude in Chrome for a local agent, so that it drives the user's Chrome through Claude's extension. Claude
@@ -619,29 +619,34 @@ pub fn system_prompt_append(app: &AppHandle, hunt_session_id: Uuid, context_prom
         append.push('\n');
         let client = crate::platform::shell::shell_quote(&control::client_wrapper_path(worktree).to_string_lossy());
         append.push_str(&crate::graph::fill_prompt(CLIENT_PROMPT, &[("huntClient", &client)]));
-        if let Some(workspace) = workspace_prompt(app, hunt_session_id) {
+        for part in record_prompts(app, hunt_session_id, worktree) {
             append.push('\n');
-            append.push_str(&workspace);
+            append.push_str(&part);
         }
     }
     append.push_str(context_prompt.as_deref().unwrap_or_default());
     append
 }
 
-/// The system prompt part that names the workspace the user chose for the Hunt session `hunt_session_id`, which its sub
-/// chats share; `None` when the session's record cannot be read.
-fn workspace_prompt(app: &AppHandle, hunt_session_id: Uuid) -> Option<String> {
+/// The system prompt parts that follow from the record of the Hunt session `hunt_session_id`: the workspace the user
+/// chose, which its sub chats share, and for a ticket session the ticket rules with the repository's ticket skill
+/// (`ticket_skill::prompt`); none when the session's record cannot be read.
+fn record_prompts(app: &AppHandle, hunt_session_id: Uuid, worktree: &Path) -> Vec<String> {
     let record = match crate::session::store::find_session(app, hunt_session_id) {
         Ok(record) => record,
         Err(error) => {
-            eprintln!("reading session {hunt_session_id} for its workspace prompt failed: {error}");
-            return None;
+            eprintln!("reading session {hunt_session_id} for its system prompt failed: {error}");
+            return Vec::new();
         }
     };
-    Some(match record.workspace {
+    let mut parts = vec![match record.workspace {
         Workspace::Worktree => crate::graph::fill_prompt(WORKTREE_WORKSPACE_PROMPT, &[("branch", &record.branch)]),
         Workspace::Checkout => CHECKOUT_WORKSPACE_PROMPT.to_string(),
-    })
+    }];
+    if record.mode == SessionMode::Ticket {
+        parts.push(crate::agent::ticket_skill::prompt(worktree));
+    }
+    parts
 }
 
 /// The `session/new` and `session/load` meta the adapter reads the system prompt addition from.

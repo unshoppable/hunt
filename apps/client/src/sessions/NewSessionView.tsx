@@ -19,7 +19,7 @@ import { HEADER_BAR } from "../ui/bars.constants";
 import { SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
 import { Dropdown } from "../ui/Dropdown";
 import type { DropdownOption } from "../ui/floating-menu.utils";
-import { BranchIcon, ChevronDownIcon, CloseIcon, CloudIcon, FolderIcon, GitHubIcon, PlusIcon } from "../ui/Icons";
+import { BranchIcon, ChevronDownIcon, CloseIcon, CloudIcon, FolderIcon, GitHubIcon, PlusIcon, TicketIcon } from "../ui/Icons";
 import { NewBranchPopover } from "./NewBranchPopover";
 import { PullRequestList } from "./PullRequestList";
 import { RepositoryMenu } from "./RepositoryMenu";
@@ -113,6 +113,8 @@ export function NewSessionView({
   /** Set when the user chose a repository: the session starts as soon as the repository's branches are known. */
   const [startsWhenLoaded, setStartsWhenLoaded] = useState(false);
   const [view, setView] = useState<View>("start");
+  /** Set while the view starts ticket sessions: the agent writes the GitHub issue of the idea instead of coding it. */
+  const [isTicket, setIsTicket] = useState(false);
   /** Which repository menu is open: the one under the heading's repository name or the one in the target bar. */
   const [repoMenu, setRepoMenu] = useState<"heading" | "bar" | null>(null);
   const headingRepoButtonRef = useRef<HTMLButtonElement>(null);
@@ -213,9 +215,9 @@ export function NewSessionView({
     startSession(null, plainTarget(current), null);
   }
 
-  /** Where a session that reviews no pull request works: in the chosen workspace of the repository, off `ref`, on the new branch when one is named. */
+  /** Where a session that reviews no pull request works: in the chosen workspace of the repository, off `ref`, on the new branch when one is named; a ticket session while the Ticket button is pressed. */
   function plainTarget(ref: string): WorktreeTarget {
-    return { repoPath, baseRef: ref, workspace, pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch };
+    return { repoPath, baseRef: ref, workspace, pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch, mode: isTicket ? "ticket" : "edit" };
   }
 
   /** Makes `path` the repository and starts a session in it as soon as its branch is known. */
@@ -287,6 +289,7 @@ export function NewSessionView({
       diffBaseRef: targetBranch,
       pullRequestBranch: selected.headRefName,
       newBranch: null,
+      mode: "git-review",
     };
     startSession(selected.title, target, null);
     setTab(null, "diff");
@@ -466,6 +469,17 @@ export function NewSessionView({
             <button
               type="button"
               disabled={!repoPath}
+              onClick={() => setIsTicket((current) => !current)}
+              className={LIST_TOGGLE}
+              title={repoPath ? "Write the GitHub issue of a task first: the agent interviews you, checks the idea against the architecture and files a ticket an agent can implement" : "Choose a repository first"}
+              aria-pressed={isTicket}
+            >
+              <TicketIcon className="size-4" />
+              Ticket
+            </button>
+            <button
+              type="button"
+              disabled={!repoPath}
               onClick={() => toggleView("pullRequests")}
               className={LIST_TOGGLE}
               title={repoPath ? "Start a review session of an open pull request of this repository" : "Choose a repository first"}
@@ -496,7 +510,7 @@ export function NewSessionView({
         <div className="flex min-h-0 flex-1 flex-col justify-center overflow-y-auto py-8 pr-12">
           <div className="chat-column px-5 text-center">
             <h1 className="text-3xl font-medium tracking-tight text-neutral-100">
-              What should we build
+              {isTicket && !parent ? "What should the ticket be about" : "What should we build"}
               {parent ? (
                 <>
                   {" in "}
@@ -561,7 +575,7 @@ export function NewSessionView({
                 pickConfig(configId, value, configSelects.find((select) => select.id === "model")?.value ?? null);
               }}
               extension={targetBar}
-              placeholder="Describe what to build or change"
+              placeholder={isTicket && !parent ? "Describe the idea; the agent asks the rest and writes the GitHub issue" : "Describe what to build or change"}
               initialDraft={initialPrompt}
               onDraftChange={(draft) => {
                 draftRef.current = draft;
@@ -571,7 +585,9 @@ export function NewSessionView({
                   ? "Starting the session…"
                   : !hasTarget
                     ? "Choose a repository to start the session right away"
-                    : "enter starts the session · shift+enter adds a line · choosing a repository or a base branch starts one right away"
+                    : isTicket && !parent
+                      ? "enter starts the ticket session · shift+enter adds a line · the agent interviews you one question at a time and files the issue on your go"
+                      : "enter starts the session · shift+enter adds a line · choosing a repository or a base branch starts one right away"
               }
             />
             {error || branchError ? (

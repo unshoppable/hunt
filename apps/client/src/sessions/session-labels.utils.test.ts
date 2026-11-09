@@ -54,6 +54,12 @@ describe("sessionReference", () => {
     expect(sessionReference(sessions[0])).toBeNull();
   });
 
+  it("marks a ticket session, but not its sub chats", () => {
+    const ticket = { ...session("t", "Ticket", "feat/x"), mode: "ticket" as const };
+    expect(sessionReference(ticket)).toEqual({ kind: "ticket", label: "Ticket", title: "Writes the GitHub issue of a task before anyone codes it", tone: "amber" });
+    expect(sessionReference({ ...ticket, parentId: "p" })).toBeNull();
+  });
+
   it("colours a pull request by its state like GitHub", () => {
     const review = { ...session("r", "Review", "feat/x"), pullRequest: { number: 1, url: "https://github.com/o/r/pull/1" } };
     expect(sessionReference(review, { state: "OPEN", isDraft: false })).toMatchObject({ tone: "green", title: "Reviews pull request https://github.com/o/r/pull/1 (open)" });

@@ -20,7 +20,7 @@ mod sessions;
 mod swf;
 mod terminal;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use agent_client_protocol::schema::v1::{
     SessionConfigKind, SessionConfigOption, SessionConfigSelectOption, SessionConfigSelectOptions, SessionNotification, SessionUpdate,
@@ -278,8 +278,13 @@ async fn activate(
     }
     // The guardrail skill exists before the system prompt quotes its criteria.
     if record.worktree_path.is_dir() {
-        if let Err(error) = ensure_guardrail_skill(app, &record).await {
+        if let Err(error) = ensure_skill(app, &record, guardrail_skill::ensure).await {
             eprintln!("writing the guardrail skill into the worktree of session {id} failed: {error}");
+        }
+        if record.mode == SessionMode::Ticket {
+            if let Err(error) = ensure_skill(app, &record, crate::agent::ticket_skill::ensure).await {
+                eprintln!("writing the ticket skill into the worktree of session {id} failed: {error}");
+            }
         }
     }
     let context_prompt = record.selection.as_ref().map(SelectionContext::to_system_prompt);
@@ -775,12 +780,13 @@ fn worktree_file(record: &SessionRecord, path: &str) -> Result<PathBuf, String> 
     Ok(record.worktree_path.join(path))
 }
 
-/// Writes the repository's guardrail skill into the session's worktree unless it exists (`guardrail_skill::ensure`);
-/// the new file counts as the session's own change.
-async fn ensure_guardrail_skill(app: &AppHandle, record: &SessionRecord) -> Result<(), String> {
+/// Writes a skill of the repository into the session's worktree unless it exists, through `ensure`
+/// (`guardrail_skill::ensure`, `ticket_skill::ensure`), which returns the path it wrote; the new file counts as the
+/// session's own change.
+async fn ensure_skill(app: &AppHandle, record: &SessionRecord, ensure: fn(&Path) -> Result<Option<String>, String>) -> Result<(), String> {
     let mut written = None;
     attribution::record_write(app, &record.worktree_path, record.id, || {
-        written = guardrail_skill::ensure(&record.worktree_path)?;
+        written = ensure(&record.worktree_path)?;
         Ok(())
     })
     .await?;

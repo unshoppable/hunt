@@ -158,7 +158,7 @@ describe("createSession", () => {
     expect(pending.draft).toBeNull();
     expect(useAgentDefaultsStore.getState().recentRepoPaths).toEqual(["/repo"]);
     expect(pending.chats[pending.sessions[0].id].items).toEqual([{ kind: "user", id: expect.any(String), text: "build it", images: [], messageId: expect.any(String) }]);
-    expect(vi.mocked(invoke).mock.calls).toEqual([["create_session", { id: pending.sessions[0].id, repoPath: "/repo", baseRef: "main", title: "Build it", pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch: null, workspace: "worktree" }]]);
+    expect(vi.mocked(invoke).mock.calls).toEqual([["create_session", { id: pending.sessions[0].id, repoPath: "/repo", baseRef: "main", title: "Build it", pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch: null, workspace: "worktree", mode: "edit" }]]);
 
     finish();
     const id = await creation;
@@ -189,7 +189,7 @@ describe("createSession", () => {
     const id = await useHuntStore.getState().createSession(TARGET, null, { ...START, prompt: null });
     expect(useHuntStore.getState().sessions[0].title).toBe("repo");
     expect(useHuntStore.getState().untitledIds).toEqual([id]);
-    expect(vi.mocked(invoke).mock.calls[0]).toEqual(["create_session", { id, repoPath: "/repo", baseRef: "main", title: "repo", pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch: null, workspace: "worktree" }]);
+    expect(vi.mocked(invoke).mock.calls[0]).toEqual(["create_session", { id, repoPath: "/repo", baseRef: "main", title: "repo", pullRequest: null, diffBaseRef: null, pullRequestBranch: null, newBranch: null, workspace: "worktree", mode: "edit" }]);
 
     await useHuntStore.getState().sendPrompt(id, "Fix the login bug\nwith details");
     await vi.waitFor(() => expect(useHuntStore.getState().sessions[0].title).toBe("Fix the login bug"));
@@ -215,6 +215,7 @@ describe("createSession", () => {
       pullRequest: { number: 12, url: "https://github.com/acme/app/pull/12" },
       diffBaseRef: "origin/main",
       pullRequestBranch: "fix/sentry/admin-ui-errors",
+      mode: "git-review" as const,
     };
 
     const creation = useHuntStore.getState().createSession(review, "#12 Review", { ...START, prompt: null });
@@ -232,6 +233,7 @@ describe("createSession", () => {
         pullRequestBranch: "fix/sentry/admin-ui-errors",
         newBranch: null,
         workspace: "worktree",
+        mode: "git-review",
       },
     ]);
     finish();

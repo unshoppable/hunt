@@ -2,7 +2,7 @@ import { commands } from "../ipc/commands";
 import type { ChatItem, ClosedEvent } from "../chat/chat.types";
 import type { SelectionContext } from "../editor/selection-context.types";
 import type { PullRequestState } from "./pull-requests.types";
-import type { PullRequestRef, SessionEnding, SessionView, SummaryEvent, Workspace } from "./session.types";
+import type { PullRequestRef, SessionEnding, SessionMode, SessionView, SummaryEvent, Workspace } from "./session.types";
 import type { ChatTurns, PromptDraft, SessionChat } from "../chat/chat.store-slice";
 import type { HuntGet, HuntSet, HuntState } from "./hunt.store";
 import { createEmptyChat } from "../chat/chat-reducer.utils";
@@ -42,6 +42,8 @@ export type WorktreeTarget = {
    * keeps it.
    */
   newBranch: string | null;
+  /** What the session is for: a pull request review, a ticket session (the start view's "Ticket" button), else `edit`; a sub chat keeps its parent's. */
+  mode: SessionMode;
 };
 
 /** The agent setup a chat currently runs with, so a sub session can start like its parent. */
@@ -164,7 +166,7 @@ function placeholderSession(id: string, title: string, target: WorktreeTarget, p
     leftoverVm: null,
     dependencies: null,
     hasLocalWorktree: false,
-    mode: target.pullRequest ? "git-review" : "edit",
+    mode: target.mode,
     dismissedGuardrails: [],
   };
 }
@@ -400,11 +402,11 @@ export function createSessionSlice(set: HuntSet, get: HuntGet, turns: ChatTurns)
 
     createSession: async (target, title, start) => {
       const id = crypto.randomUUID();
-      const { repoPath, baseRef, pullRequest, diffBaseRef, pullRequestBranch, newBranch, workspace } = target;
+      const { repoPath, baseRef, pullRequest, diffBaseRef, pullRequestBranch, newBranch, workspace, mode } = target;
       const listedTitle = placeholderTitle(id, title, repoPath);
       useAgentDefaultsStore.getState().rememberRepoPath(repoPath);
       listPlaceholder(placeholderSession(id, listedTitle, target, null, null), start, true);
-      const create = () => commands.createSession(id, repoPath, baseRef, listedTitle, pullRequest, diffBaseRef, pullRequestBranch, newBranch, workspace);
+      const create = () => commands.createSession(id, repoPath, baseRef, listedTitle, pullRequest, diffBaseRef, pullRequestBranch, newBranch, workspace, mode);
       return completeCreation(id, create, start, null);
     },
 
@@ -420,6 +422,7 @@ export function createSessionSlice(set: HuntSet, get: HuntGet, turns: ChatTurns)
         diffBaseRef: parent.diffBase,
         pullRequestBranch: null,
         newBranch: null,
+        mode: parent.mode,
       };
       const listedTitle = placeholderTitle(id, title, parent.repoPath);
       listPlaceholder(placeholderSession(id, listedTitle, target, parent, selection), start, isActivated);

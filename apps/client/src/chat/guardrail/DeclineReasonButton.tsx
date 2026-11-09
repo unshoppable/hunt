@@ -56,7 +56,7 @@ export function DeclineReasonButton({ disabled, onDecline }: { disabled: boolean
           id={listId}
           label="Why do you decline the suggestion?"
           options={DECLINE_REASONS}
-          selectedId={null}
+          selectedIds={[]}
           activeIndex={activeIndex}
           onActivate={setActiveIndex}
           onPick={pick}

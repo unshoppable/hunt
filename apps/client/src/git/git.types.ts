@@ -31,6 +31,9 @@ export type GitRef = {
   behind: number;
   /** The worktree (main checkout or linked) that has the local branch checked out; git refuses to delete such a branch. */
   worktreePath: string | null;
+  /** The author of the commit the ref points at: the closest git comes to who created a branch. */
+  author: string;
+  authorEmail: string;
 };
 
 /** Every branch and tag, the checked-out branch (`HEAD` when detached) and the commits a push would publish. */

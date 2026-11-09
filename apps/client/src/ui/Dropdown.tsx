@@ -37,10 +37,12 @@ export type MenuSearch = {
  */
 export function Dropdown({
   value,
+  selectedIds,
   options,
   onChange,
   onReselect = false,
   title,
+  label: labelOverride,
   disabled = false,
   placeholder = "",
   isSearchable = false,
@@ -50,12 +52,19 @@ export function Dropdown({
   className,
 }: {
   value: string;
+  /**
+   * Makes the list a multiple choice: these options show a check mark, picking one calls `onChange` with its id and
+   * keeps the list open; `value` then only names the option the list opens on.
+   */
+  selectedIds?: readonly string[];
   options: DropdownOption[];
   onChange: (id: string) => void;
   /** Call `onChange` for the selected option too, e.g. when picking an option is an action and not a choice. */
   onReselect?: boolean;
   /** Tooltip and accessible name of the trigger and its list. */
   title: string;
+  /** Text of the trigger in place of the selected option's name, e.g. a summary of a multiple choice. */
+  label?: string;
   disabled?: boolean;
   placeholder?: string;
   isSearchable?: boolean;
@@ -72,7 +81,7 @@ export function Dropdown({
   const [activeIndex, setActiveIndex] = useState(-1);
   const [query, setQuery] = useState("");
   const selectedIndex = options.findIndex((option) => option.id === value);
-  const label = options[selectedIndex]?.name ?? (value || placeholder);
+  const label = labelOverride ?? options[selectedIndex]?.name ?? (value || placeholder);
   const shownOptions = isSearchable ? filterOptions(options, query) : options;
 
   useEffect(() => {
@@ -105,6 +114,10 @@ export function Dropdown({
   function pick(index: number) {
     const option = shownOptions[index];
     if (!option || option.isDisabled) return;
+    if (selectedIds) {
+      onChange(option.id);
+      return;
+    }
     close();
     if (onReselect || option.id !== value) {
       onChange(option.id);
@@ -229,7 +242,7 @@ export function Dropdown({
           id={listId}
           label={title}
           options={shownOptions}
-          selectedId={value}
+          selectedIds={selectedIds ?? [value]}
           activeIndex={activeIndex}
           onActivate={setActiveIndex}
           onPick={pick}
@@ -263,7 +276,7 @@ export function OptionMenu({
   id,
   label,
   options,
-  selectedId,
+  selectedIds,
   activeIndex,
   onActivate,
   onPick,
@@ -274,8 +287,8 @@ export function OptionMenu({
   id: string;
   label: string;
   options: DropdownOption[];
-  /** The option shown with a check mark, if any. */
-  selectedId: string | null;
+  /** The options shown with a check mark. */
+  selectedIds: readonly string[];
   /** The highlighted option; -1 for none. */
   activeIndex: number;
   onActivate: (index: number) => void;
@@ -345,7 +358,7 @@ export function OptionMenu({
       <ul ref={listRef} id={id} role="listbox" aria-label={label} onMouseDown={(event) => event.preventDefault()} className="min-h-0 overflow-y-auto p-1 empty:hidden">
         {options.map((option, index) => {
           const isActive = index === activeIndex;
-          const isSelected = option.id === selectedId;
+          const isSelected = selectedIds.includes(option.id);
           return (
             <li
               key={option.id}
@@ -362,6 +375,7 @@ export function OptionMenu({
               onClick={() => onPick(index)}
               className={`flex items-center gap-3 rounded px-2.5 py-1.5 ${option.isDisabled ? "text-neutral-600" : isActive ? "bg-(--row-selected) text-neutral-100" : "text-neutral-200"}`}
             >
+              {option.icon}
               <span className="min-w-0 flex-1">
                 <span className="block truncate">{option.name}</span>
                 {option.description ? <span className="block text-[12px] leading-snug text-neutral-500">{option.description}</span> : null}

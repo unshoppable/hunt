@@ -179,7 +179,7 @@ export function TextRow({
           id={listId}
           label={ariaLabel}
           options={suggestions}
-          selectedId={value}
+          selectedIds={[value]}
           activeIndex={activeIndex}
           onActivate={setActiveIndex}
           onPick={pick}

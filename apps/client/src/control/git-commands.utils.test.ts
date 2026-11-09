@@ -7,7 +7,7 @@ function commit(id: string): Commit {
 }
 
 function ref(name: string, patch: Partial<GitRef> = {}): GitRef {
-  return { name, kind: "local", target: "abc", upstream: null, ahead: 0, behind: 0, worktreePath: null, ...patch };
+  return { name, kind: "local", target: "abc", upstream: null, ahead: 0, behind: 0, worktreePath: null, author: "", authorEmail: "", ...patch };
 }
 
 describe("commitsStartingWith", () => {

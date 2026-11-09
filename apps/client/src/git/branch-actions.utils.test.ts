@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { GitRef } from "./git.types";
 import { branchActions, localBranchesWithoutOrigin, originBranchName } from "./branch-actions.utils";
 
-const ref = (name: string, kind: GitRef["kind"], upstream: string | null = null): GitRef => ({ name, kind, target: "0".repeat(40), upstream, ahead: 0, behind: 0, worktreePath: null });
+const ref = (name: string, kind: GitRef["kind"], upstream: string | null = null): GitRef => ({ name, kind, target: "0".repeat(40), upstream, ahead: 0, behind: 0, worktreePath: null, author: "", authorEmail: "" });
 const BOUND = "The session's worktree is bound to its branch";
 const session = { head: "feat/general/x", pushes: { branch: "feat/general/x", target: "master" }, isRemoteSession: false, isPollerSession: false, checkoutBlocked: BOUND };
 const repository = { head: "master", pushes: null, isRemoteSession: false, isPollerSession: false, checkoutBlocked: null };

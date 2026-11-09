@@ -17,6 +17,7 @@ import { confirmDestructive } from "../ui/confirm.utils";
 import { useLoad } from "../ui/load.hook";
 import { errorText } from "../ui/error-text.utils";
 import { BUSY_LABELS, branchActions, localBranchesWithoutOrigin, originBranchName, type BranchAction } from "./branch-actions.utils";
+import { refsByAuthors } from "./ref-authors.utils";
 import { PushTargetDialog, RenameBranchDialog } from "./BranchDialogs";
 import { CommitFiles } from "./CommitFiles";
 import { CommitLog } from "./CommitLog";
@@ -114,6 +115,8 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   const [isRetargeting, setIsRetargeting] = useState(false);
   /** What the running branch action is, shown in the branch tree's header; `null` while none runs. */
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
+  const authors = useSettingsStore((state) => state.gitAuthorFilter);
+  const setAuthors = useSettingsStore((state) => state.setGitAuthorFilter);
   const diffFontSize = useSettingsStore((state) => state.panes.diff.fontSize);
   const diffLineHeight = useSettingsStore((state) => state.panes.diff.lineHeight);
   const diffFontFamily = useSettingsStore((state) => state.panes.diff.fontFamily);
@@ -232,12 +235,16 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   const menuActions = useMemo(() => (menu ? branchActions(menu.ref, { head: refs?.head ?? "HEAD", pushes, isRemoteSession: !!remote, isPollerSession: remote?.origin === "swf", checkoutBlocked }) : []),
     [menu, refs, pushes, remote, checkoutBlocked],
   );
-  /** Local branches origin lacks that no session of the repository has checked out, which the branch tree's button deletes. */
+  /**
+   * Local branches origin lacks that no session of the repository has checked out, which the branch tree's button
+   * deletes; while the tree is narrowed to authors, only theirs.
+   */
   const prunable = useMemo(() => {
     if (!refs || !repoPath) return [];
     const kept = new Set([refs.head, ...sessions.filter((candidate) => candidate.repoPath === repoPath).map((candidate) => candidate.branch)]);
-    return localBranchesWithoutOrigin(refs.refs, kept);
-  }, [refs, repoPath, sessions]);
+    const shown = new Set(refsByAuthors(refs.refs, authors).map((ref) => ref.name));
+    return localBranchesWithoutOrigin(refs.refs, kept).filter((name) => shown.has(name));
+  }, [refs, repoPath, sessions, authors]);
   /** The branches of origin a push could land on, without the `origin/` prefix. */
   const originBranches = useMemo(() => (refs?.refs ?? []).map((ref) => (ref.kind === "remote" ? originBranchName(ref.name) : null)).filter((name): name is string => !!name), [refs]);
 
@@ -327,10 +334,12 @@ export function GitPanel({ scope }: { scope: GitScope }) {
           refs={refs}
           pushes={pushes}
           filter={filter.reference}
+          authors={authors}
           menuFor={menu?.ref.name ?? null}
           busyLabel={busyLabel}
           prunable={prunable}
           onFilter={(reference) => setFilter({ ...filter, reference })}
+          onAuthors={setAuthors}
           onContextMenu={(ref, x, y) => setMenu({ ref, x, y })}
           onFetch={() => void fetchOrigin()}
           onPrune={() => void pruneBranches()}

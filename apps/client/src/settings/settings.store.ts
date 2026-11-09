@@ -356,6 +356,8 @@ type SettingsState = {
   popupSizes: Record<PopupKey, PopupSize>;
   detachedPopups: Record<DetachablePopupKey, boolean>;
   gitLogColumns: GitLogColumns;
+  /** The authors the Git tab's branch tree is narrowed to, by the name their commits carry; empty shows everyone. */
+  gitAuthorFilter: string[];
   /** Share of a side-by-side diff's width the original side takes; the user drags the gutter to change it. */
   splitDiffShare: number;
   /** Height in px the user dragged the chat's prompt box to; null sizes the box to its text. */
@@ -397,6 +399,7 @@ type SettingsState = {
   setPopupDetached: (key: DetachablePopupKey, isDetached: boolean) => void;
   resetDetachedPopups: () => void;
   setGitLogColumns: (columns: GitLogColumns) => void;
+  setGitAuthorFilter: (authors: string[]) => void;
   setSplitDiffShare: (share: number) => void;
   setPromptHeight: (height: number | null) => void;
   setSubChatPromptHeight: (height: number | null) => void;
@@ -447,6 +450,7 @@ export type PersistedState = {
   popupSizes?: Partial<Record<PopupKey, PopupSize>>;
   detachedPopups?: Partial<Record<DetachablePopupKey, boolean>>;
   gitLogColumns?: Partial<GitLogColumns>;
+  gitAuthorFilter?: string[];
   splitDiffShare?: number;
   promptHeight?: number | null;
   subChatPromptHeight?: number | null;
@@ -683,6 +687,7 @@ export const useSettingsStore = create<SettingsState>()(
       popupSizes: DEFAULT_POPUP_SIZES,
       detachedPopups: DEFAULT_DETACHED_POPUPS,
       gitLogColumns: DEFAULT_GIT_LOG_COLUMNS,
+      gitAuthorFilter: [],
       splitDiffShare: DEFAULT_SPLIT_DIFF_SHARE,
       promptHeight: null,
       subChatPromptHeight: null,
@@ -752,6 +757,7 @@ export const useSettingsStore = create<SettingsState>()(
       setPopupDetached: (key, isDetached) => set((state) => ({ detachedPopups: { ...state.detachedPopups, [key]: isDetached } })),
       resetDetachedPopups: () => set({ detachedPopups: DEFAULT_DETACHED_POPUPS }),
       setGitLogColumns: (columns) => set({ gitLogColumns: { author: Math.round(columns.author), date: Math.round(columns.date) } }),
+      setGitAuthorFilter: (authors) => set({ gitAuthorFilter: authors }),
       setSplitDiffShare: (share) => set({ splitDiffShare: clampSplitDiffShare(share) }),
       setPromptHeight: (height) => set({ promptHeight: height === null ? null : Math.round(height) }),
       setSubChatPromptHeight: (height) => set({ subChatPromptHeight: height === null ? null : Math.round(height) }),
@@ -791,6 +797,7 @@ export const useSettingsStore = create<SettingsState>()(
         popupSizes: state.popupSizes,
         detachedPopups: state.detachedPopups,
         gitLogColumns: state.gitLogColumns,
+        gitAuthorFilter: state.gitAuthorFilter,
         splitDiffShare: state.splitDiffShare,
         promptHeight: state.promptHeight,
         subChatPromptHeight: state.subChatPromptHeight,

@@ -1,13 +1,16 @@
 import { Fragment, useMemo, useState, type MouseEvent } from "react";
 import type { GitRef, RefList } from "./git.types";
 import { useFolderIconUrl } from "../ui/file-icons/file-icons.hook";
-import { ICON_BUTTON_XS } from "../ui/buttons.constants";
-import { BranchIcon, ChevronIcon, FetchIcon, Spinner, TrashIcon } from "../ui/Icons";
+import { ICON_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
+import { Dropdown } from "../ui/Dropdown";
+import { BranchIcon, ChevronIcon, FetchIcon, MentionIcon, Spinner, TrashIcon } from "../ui/Icons";
 import { toggleInCollapsed } from "../common/tree/tree-expansion.utils";
 import type { TreeNavRow } from "../common/tree/tree-navigation.utils";
 import { useTreeNavigation } from "../ui/tree-navigation.hook";
 import type { PushRoute } from "./branch-actions.utils";
 import { buildRefTree, groupPaths, type RefTreeNode } from "./ref-groups.utils";
+import { refAuthors, refsByAuthors } from "./ref-authors.utils";
+import { Avatar } from "../ui/Avatar";
 
 /** Collapsed groups, kept across session switches for the window's lifetime; tags start collapsed. */
 const collapsedGroups = new Set<string>(["tags"]);
@@ -17,6 +20,9 @@ type Row = { node: RefTreeNode; depth: number };
 /** Row key of "All branches"; every other row is keyed by its node's path. */
 const ALL_KEY = "";
 
+/** Option id of the author filter that shows every author. */
+const EVERYONE = "";
+
 /**
  * The branch tree beside the log: Local, Remote and Tags, nested by the slashes in their names. A click on a branch
  * or tag shows only its history, a second click shows every branch again, a double click keeps its history shown as
@@ -24,18 +30,21 @@ const ALL_KEY = "";
  * (`onContextMenu`, the branch stays highlighted while `menuFor` names it); the arrow keys move the filter from branch to
  * branch and open or close the groups. The checked-out branch shows how far it is
  * ahead of or behind its upstream, and the session's branch where a push lands (`pushes`), since Hunt pushes it onto
- * the branch the session was created from, never under its own name. The toolbar fetches origin (`onFetch`) and deletes
- * the local branches origin lacks (`prunable`, `onPrune`) and spins at its right end while an action runs; the header
- * then shows `busyLabel` in place of the checked-out branch.
+ * the branch the session was created from, never under its own name. The toolbar fetches origin (`onFetch`), deletes
+ * the local branches origin lacks (`prunable`, `onPrune`), narrows the tree to the branches and tags whose last commit
+ * one of `authors` wrote (`onAuthors`, a multiple choice; the parent narrows `prunable` with it too) and spins at its
+ * right end while an action runs; the header then shows `busyLabel` in place of the checked-out branch.
  */
 export function RefTree({
   refs,
   pushes,
   filter,
+  authors,
   menuFor,
   busyLabel,
   prunable,
   onFilter,
+  onAuthors,
   onContextMenu,
   onFetch,
   onPrune,
@@ -43,18 +52,32 @@ export function RefTree({
   refs: RefList | null;
   pushes: PushRoute | null;
   filter: string;
+  /** The authors the tree is narrowed to; empty shows every branch and tag. */
+  authors: readonly string[];
   menuFor: string | null;
   busyLabel: string | null;
   /** The local branches that have no branch on origin and are not checked out anywhere, which `onPrune` deletes. */
   prunable: string[];
   onFilter: (reference: string) => void;
+  onAuthors: (authors: string[]) => void;
   onContextMenu: (ref: GitRef, x: number, y: number) => void;
   onFetch: () => void;
   onPrune: () => void;
 }) {
   const folderIconUrl = useFolderIconUrl();
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set(collapsedGroups));
-  const tree = useMemo(() => (refs ? buildRefTree(refs.refs, refs.head) : []), [refs]);
+  const knownAuthors = useMemo(() => (refs ? refAuthors(refs.refs) : []), [refs]);
+  const tree = useMemo(() => (refs ? buildRefTree(refsByAuthors(refs.refs, authors), refs.head) : []), [refs, authors]);
+  const authorOptions = useMemo(
+    () => [
+      { id: EVERYONE, name: "Everyone", icon: <MentionIcon className="size-5 shrink-0 text-neutral-500" /> },
+      ...knownAuthors.map((author) => ({ id: author.name, name: author.name, icon: <Avatar login={author.login ?? author.name} size="size-5" /> })),
+    ],
+    [knownAuthors],
+  );
+  /** The chosen authors in the order the list shows them, for the trigger's avatars. */
+  const chosen = useMemo(() => knownAuthors.filter((author) => authors.includes(author.name)), [knownAuthors, authors]);
+  const toggleAuthor = (name: string) => onAuthors(name === EVERYONE ? [] : authors.includes(name) ? authors.filter((author) => author !== name) : [...authors, name]);
 
   const rows = useMemo(() => {
     const result: Row[] = [];
@@ -133,8 +156,29 @@ export function RefTree({
         >
           <TrashIcon className="size-4" />
         </button>
+        <Dropdown
+          value={authors[0] ?? EVERYONE}
+          selectedIds={authors.length ? authors : [EVERYONE]}
+          options={authorOptions}
+          onChange={toggleAuthor}
+          title="Show the branches and tags whose last commit one of the chosen authors wrote"
+          label={chosen.length > 1 ? `${chosen.length} authors` : undefined}
+          disabled={!refs}
+          icon={
+            chosen.length ? (
+              <span className="flex shrink-0 -space-x-1.5">
+                {chosen.map((author) => (
+                  <Avatar key={author.name} login={author.login ?? author.name} size="size-5" />
+                ))}
+              </span>
+            ) : (
+              <MentionIcon className="size-3.5 shrink-0 text-neutral-500" />
+            )
+          }
+          className={`${SECONDARY_BUTTON_XS} min-w-0 flex-1 px-2`}
+        />
         {busyLabel ? (
-          <span role="status" aria-label={busyLabel} title={busyLabel} className="ml-auto flex size-7 shrink-0 items-center justify-center text-neutral-400">
+          <span role="status" aria-label={busyLabel} title={busyLabel} className="flex size-7 shrink-0 items-center justify-center text-neutral-400">
             <Spinner className="size-4" />
           </span>
         ) : null}

@@ -5,7 +5,7 @@ import type { DocumentChangedEvent, DocumentContentChange, DocumentState } from 
 import type { ChangeBlock } from "../../editor/line-diff.types";
 import { monacoLanguage } from "../../editor/language-id.utils";
 import { refreshSemanticTokens, typeScriptWorkerFor } from "../../editor/semantic-tokens.monaco";
-import { isInsideFolder } from "../../common/path/path.utils";
+import { baseName, dirName, isInsideFolder } from "../../common/path/path.utils";
 import { parseImportSpecifiers } from "../imports.utils";
 import { lspClientFor, type LspClient } from "../lsp/lsp-client.service";
 import { toLspRange, toMonacoRange } from "../lsp/lsp-protocol.utils";
@@ -492,6 +492,16 @@ export class DocumentWorkspace {
     this.reportedDirty.delete(path);
     document.model.dispose();
     void this.lsp.enqueue(() => commands.documentClose(this.sessionId, path)).catch((error) => console.warn(`failed to close ${path}:`, error));
+  }
+
+  /**
+   * Whether the file `path` is gone from the worktree, deleted or moved by something other than the project tree (an
+   * agent, a shell). A folder that cannot be listed is gone too: the path was opened before, so it lies inside the
+   * worktree.
+   */
+  async isMissing(path: string): Promise<boolean> {
+    const entries = await commands.listDir(this.sessionId, dirName(path)).catch(() => null);
+    return !entries?.some((entry) => entry.name === baseName(path) && !entry.isDir);
   }
 
   /**

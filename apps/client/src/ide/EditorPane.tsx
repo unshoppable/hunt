@@ -83,6 +83,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
   const activatePane = useIdeStore((state) => state.activatePane);
   const activateTab = useIdeStore((state) => state.activateTab);
   const closeTab = useIdeStore((state) => state.closeTab);
+  const closeTabsOf = useIdeStore((state) => state.closeTabsOf);
   const clearPendingPosition = useIdeStore((state) => state.clearPendingPosition);
   const isLocked = useHuntStore((state) => isWorktreeLocked(state.sessions, state.remoteLinks, sessionId));
 
@@ -373,7 +374,12 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
           noteCaret(sessionId, { paneId: pane.id, path: activePath, line: caret.lineNumber, column: caret.column });
         }
       },
-      onError: (reason) => setError(errorText(reason)),
+      // A tab whose file vanished closes (in every pane) instead of showing the failed read.
+      onError: (reason) => {
+        const path = activePath;
+        if (!path) return;
+        void workspace.isMissing(path).then((isMissing) => (isMissing ? closeTabsOf(sessionId, path) : setError(errorText(reason))));
+      },
     },
     [workspace, activePath, pane.id, pendingPosition, sessionId, clearPendingPosition],
     { isEnabled: !!activePath },

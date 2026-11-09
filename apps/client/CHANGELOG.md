@@ -1,3 +1,13 @@
+## 0.160.0 (2026-11-09)
+
+### 🚀 Features
+
+- **client:** narrow the Git tab's branch tree to the authors of the branches' last commits ([2da44f1](https://github.com/unshoppable/hunt/commit/2da44f1))
+
+### 🩹 Fixes
+
+- **client:** close an editor tab whose file vanished instead of showing the failed read ([a0d9f8d](https://github.com/unshoppable/hunt/commit/a0d9f8d))
+
 ## 0.159.0 (2026-11-08)
 
 ### 🚀 Features

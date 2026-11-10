@@ -1,8 +1,11 @@
 import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import type { Commit } from "../git/git.types";
+import { commands } from "../ipc/commands";
 import { PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS } from "../ui/buttons.constants";
 import { BranchIcon } from "../ui/Icons";
 import { ResizeGrips } from "../ui/ResizeGrips";
 import { useDismiss } from "../ui/dismiss.hook";
+import { useLoad } from "../ui/load.hook";
 import { usePopupSize } from "../ui/popup-size.hook";
 import { useViewportSize } from "../ui/viewport-size.hook";
 
@@ -15,12 +18,13 @@ export type PushMode = "push" | "commitAndPush";
 
 /**
  * Popover above the changelist's footer that names, before anything is pushed, the branch on `origin` the push lands
- * on and where it runs. Its confirm button holds the focus, so Enter pushes; Escape or a click outside closes it, a
+ * on, the commits it publishes (those `origin/<target>` lacks, newest first) and where it runs. Its confirm button holds the focus, so Enter pushes; Escape or a click outside closes it, a
  * press on one of `anchorRefs` closes without reopening. It hangs from the footer's left or right end (`align`), never
  * wider than the footer so that the panel does not clip it, and is as tall as its content up to the remembered height;
  * dragging its top or outer edge resizes it.
  */
 export function PushPopover({
+  sessionId,
   mode,
   branch,
   target,
@@ -33,6 +37,7 @@ export function PushPopover({
   onConfirm,
   onClose,
 }: {
+  sessionId: string;
   mode: PushMode;
   /** The session's own branch, the one pushed. */
   branch: string;
@@ -64,6 +69,9 @@ export function PushPopover({
   const maxWidth = footerWidth === null ? viewport.width * MAX_SHARE : Math.min(footerWidth, viewport.width * MAX_SHARE);
   const { size, isHeightSet, grips } = usePopupSize("push", { min: MIN_SIZE, max: { width: maxWidth, height: viewport.height * MAX_SHARE } });
   useDismiss(rootRef, onClose, { anchorRefs });
+  /** The commits the push publishes; `null` until loaded or when loading failed. */
+  const [commits, setCommits] = useState<Commit[] | null>(null);
+  useLoad(() => commands.unpushedCommits(sessionId), { onValue: setCommits, onError: () => setCommits(null) }, [sessionId]);
 
   const remoteTarget = `origin/${target}`;
   const title =
@@ -92,6 +100,17 @@ export function PushPopover({
           <BranchIcon className="size-3.5 shrink-0 text-neutral-400" />
           <span className="truncate text-white">{remoteTarget}</span>
         </div>
+        {commits?.length ? (
+          <ul className="mb-2 flex flex-col gap-0.5" aria-label={`Commits ${remoteTarget} lacks`}>
+            {commits.map((commit) => (
+              <li key={commit.id} className="flex min-w-0 items-baseline gap-2" title={`${commit.id}\n${commit.subject}`}>
+                <span className="shrink-0 font-mono text-neutral-500">{commit.id.slice(0, 7)}</span>
+                <span className="truncate text-neutral-200">{commit.subject}</span>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+        {mode === "commitAndPush" && commits?.length ? <p className="mb-2 text-neutral-400">The new commit goes on top of them.</p> : null}
         <p className="text-neutral-400">
           From <span className="font-mono text-neutral-300">{branch}</span>. {how}
         </p>

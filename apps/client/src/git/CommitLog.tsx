@@ -257,6 +257,7 @@ function LogRow({
       }}
       style={{ top, height }}
       data-selected={isSelected}
+      data-shared={commit.isShared}
       className="tree-row absolute right-0 left-0 flex cursor-default items-center select-none"
     >
       <GraphCell row={row} width={graphWidth} height={height} />

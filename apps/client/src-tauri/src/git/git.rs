@@ -1101,8 +1101,8 @@ pub async fn is_merging(worktree: &Path) -> bool {
 
 /// Pushes the worktree's `HEAD` to the branch `target` on `origin` and makes `origin/<target>` the upstream of the
 /// worktree's branch. When `origin/<target>` has commits `HEAD` lacks, the worktree's branch is rebased onto it first
-/// (`rebase_onto_origin`).
-pub async fn push_branch(worktree: &Path, target: &str) -> Result<(), String> {
+/// (`rebase_onto_origin`). Returns the number of commits the push published.
+pub async fn push_branch(worktree: &Path, target: &str) -> Result<u32, String> {
     ensure_branch_name(worktree, target).await?;
     if current_branch(worktree).await? == "HEAD" {
         return Err("the worktree has no branch checked out".into());
@@ -1111,7 +1111,9 @@ pub async fn push_branch(worktree: &Path, target: &str) -> Result<(), String> {
     if is_behind_origin(worktree, target).await {
         rebase_onto_origin(worktree, target).await?;
     }
-    push_head(worktree, target).await
+    let count = unpushed_commit_count(worktree, target).await?;
+    push_head(worktree, target).await?;
+    Ok(count)
 }
 
 /// Pushes the worktree's `HEAD` to the branch `target` on `origin` and makes that the upstream of the worktree's branch;
@@ -1240,20 +1242,39 @@ pub async fn force_push_local_branch(worktree: &Path, branch: &str) -> Result<()
     Ok(())
 }
 
-/// Number of commits a push to the branch `target` on `origin` would publish: those `origin/<target>`, as fetched last,
-/// lacks or, without a remote-tracking ref of it, those no branch of `origin` has. A detached HEAD has nothing to push.
-pub async fn unpushed_commit_count(worktree: &Path, target: &str) -> Result<u32, String> {
+/// The revision arguments that select the commits a push to the branch `target` on `origin` would publish: those
+/// `origin/<target>`, as fetched last, lacks or, without a remote-tracking ref of it, those no branch of `origin` has.
+/// `None` for a detached HEAD, which has nothing to push.
+async fn unpushed_revisions(worktree: &Path, target: &str) -> Result<Option<Vec<String>>, String> {
     ensure_branch_name(worktree, target).await?;
     if current_branch(worktree).await? == "HEAD" {
-        return Ok(0);
+        return Ok(None);
     }
     let remote_ref = format!("refs/remotes/origin/{target}");
-    let output = if rev_parse(worktree, &remote_ref).await.is_ok() {
-        run_git(worktree, &["rev-list", "--count", &format!("{remote_ref}..HEAD"), "--"]).await?
+    Ok(Some(if rev_parse(worktree, &remote_ref).await.is_ok() {
+        vec![format!("{remote_ref}..HEAD")]
     } else {
-        run_git(worktree, &["rev-list", "--count", "HEAD", "--not", "--remotes=origin", "--"]).await?
-    };
+        vec!["HEAD".into(), "--not".into(), "--remotes=origin".into()]
+    }))
+}
+
+/// Number of commits a push to the branch `target` on `origin` would publish, see `unpushed_revisions`.
+pub async fn unpushed_commit_count(worktree: &Path, target: &str) -> Result<u32, String> {
+    let Some(revisions) = unpushed_revisions(worktree, target).await? else { return Ok(0) };
+    let mut args = vec!["rev-list", "--count"];
+    args.extend(revisions.iter().map(String::as_str));
+    args.push("--");
+    let output = run_git(worktree, &args).await?;
     output.trim().parse().map_err(|error| format!("failed to count unpushed commits: {error}"))
+}
+
+/// The commits a push to the branch `target` on `origin` would publish, newest first, see `unpushed_revisions`.
+pub async fn unpushed_commits(worktree: &Path, target: &str) -> Result<Vec<Commit>, String> {
+    let Some(revisions) = unpushed_revisions(worktree, target).await? else { return Ok(Vec::new()) };
+    let mut args = vec!["log", LOG_FORMAT];
+    args.extend(revisions.iter().map(String::as_str));
+    args.push("--");
+    Ok(parse_log(&run_git(worktree, &args).await?))
 }
 
 /// Updates the worktree's remote-tracking ref of `branch` from `origin`; `false` when `origin` has no such branch.
@@ -1333,6 +1354,9 @@ pub struct Commit {
     pub subject: String,
     /// Branches and tags at the commit as `git log --decorate` names them (`HEAD -> master`, `origin/master`, `tag: v1.0`), without `<remote>/HEAD`.
     pub refs: Vec<String>,
+    /// Under a filter by a branch: whether the commit is not the branch's own work, because the checked-out branch has
+    /// it too, or the default branch when the filter is the checked-out branch. Always false otherwise.
+    pub is_shared: bool,
 }
 
 /// A page of the log: the commits reachable from `reference` (every branch, remote branch and tag when empty) whose
@@ -1430,19 +1454,62 @@ fn ensure_revision(reference: &str) -> Result<(), String> {
 
 /// The commits of `query`, newest first in date order (every parent comes after its children).
 pub async fn log(repo: &Path, query: &LogQuery) -> Result<Vec<Commit>, String> {
-    let range = log_range(repo, query.reference.trim()).await?;
+    let reference = query.reference.trim();
+    let range = log_range(repo, reference).await?;
     let text = query.text.trim();
-    if !text.is_empty() {
-        return filtered_log(repo, &range, text, query.skip, query.limit).await;
+    let mut commits = if text.is_empty() {
+        let skip = format!("--skip={}", query.skip);
+        let limit = format!("--max-count={}", query.limit.clamp(1, 5000));
+        let mut args = vec!["log", "--date-order", LOG_FORMAT, skip.as_str(), limit.as_str()];
+        args.extend(range);
+        args.push("--");
+        parse_log(&run_git(repo, &args).await?)
+    } else {
+        filtered_log(repo, &range, text, query.skip, query.limit).await?
+    };
+    if let Some(own) = own_commits(repo, reference).await? {
+        for commit in &mut commits {
+            commit.is_shared = !own.contains(&commit.id);
+        }
     }
+    Ok(commits)
+}
 
-    let skip = format!("--skip={}", query.skip);
-    let limit = format!("--max-count={}", query.limit.clamp(1, 5000));
-    let mut args = vec!["log", "--date-order", LOG_FORMAT, skip.as_str(), limit.as_str()];
-    args.extend(range);
-    args.push("--");
-    let output = run_git(repo, &args).await?;
-    Ok(parse_log(&output))
+/// The commits of the branch `reference` that its base lacks: the filtered branch's own work. The base is the
+/// checked-out branch, or the default branch when `reference` is the checked-out branch itself (also as its remote
+/// copy). `None` when `reference` is not a branch or is the default branch, so nothing is marked as shared.
+async fn own_commits(repo: &Path, reference: &str) -> Result<Option<HashSet<String>>, String> {
+    let name = if rev_parse(repo, &format!("refs/heads/{reference}")).await.is_ok() {
+        reference
+    } else if rev_parse(repo, &format!("refs/remotes/{reference}")).await.is_ok() {
+        reference.split_once('/').map_or(reference, |(_, name)| name)
+    } else {
+        return Ok(None);
+    };
+    let base = if name == current_branch(repo).await? {
+        match default_branch(repo).await {
+            Some(base) if base.split_once('/').map_or(base.as_str(), |(_, name)| name) != name => base,
+            _ => return Ok(None),
+        }
+    } else {
+        "HEAD".to_string()
+    };
+    let output = run_git(repo, &["rev-list", "--max-count=5000", reference, "--not", base.as_str(), "--"]).await?;
+    Ok(Some(output.split_whitespace().map(str::to_string).collect()))
+}
+
+/// The branch the repository's work goes into: the remote branch `origin/HEAD` points at, else a local `main` or
+/// `master`.
+async fn default_branch(repo: &Path) -> Option<String> {
+    if let Ok(output) = run_git(repo, &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"]).await {
+        return Some(output.trim().to_string());
+    }
+    for name in ["main", "master"] {
+        if rev_parse(repo, &format!("refs/heads/{name}")).await.is_ok() {
+            return Some(name.to_string());
+        }
+    }
+    None
 }
 
 /// The revisions of the log of `reference`: every branch, remote branch and tag when it is empty, else the branch or tag.
@@ -1541,6 +1608,7 @@ fn parse_log(output: &str) -> Vec<Commit> {
                 authored_at,
                 subject: subject.to_string(),
                 refs: refs.split(", ").filter(|name| !name.is_empty() && !name.ends_with("/HEAD")).map(str::to_string).collect(),
+                is_shared: false,
             })
         })
         .collect()
@@ -1925,6 +1993,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn log_marks_the_commits_of_a_branch_filter_that_are_not_its_own_work() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        git(repo, &["checkout", "-q", "-b", "feat/x"]).await;
+        git(repo, &["commit", "-q", "--allow-empty", "-m", "on feat"]).await;
+        git(repo, &["update-ref", "refs/remotes/origin/feat/x", "HEAD"]).await;
+        git(repo, &["checkout", "-q", "main"]).await;
+        git(repo, &["commit", "-q", "--allow-empty", "-m", "on main"]).await;
+        let shared = |commits: &[Commit]| commits.iter().map(|commit| (commit.subject.clone(), commit.is_shared)).collect::<Vec<_>>();
+        let query = |reference: &str, text: &str| LogQuery { reference: reference.into(), text: text.into(), skip: 0, limit: 50 };
+
+        let commits = log(repo, &query("feat/x", "")).await.unwrap();
+        assert_eq!(shared(&commits), [("on feat".to_string(), false), ("init".to_string(), true)]);
+
+        let commits = log(repo, &query("origin/feat/x", "n")).await.unwrap();
+        assert_eq!(shared(&commits), [("on feat".to_string(), false), ("init".to_string(), true)]);
+
+        // The default branch, every ref and a tag mark nothing.
+        for reference in ["main", ""] {
+            assert!(log(repo, &query(reference, "")).await.unwrap().iter().all(|commit| !commit.is_shared));
+        }
+        git(repo, &["tag", "v1", "feat/x"]).await;
+        assert!(log(repo, &query("v1", "")).await.unwrap().iter().all(|commit| !commit.is_shared));
+
+        // The checked-out branch is measured against the default branch.
+        git(repo, &["checkout", "-q", "feat/x"]).await;
+        let commits = log(repo, &query("feat/x", "")).await.unwrap();
+        assert_eq!(shared(&commits), [("on feat".to_string(), false), ("init".to_string(), true)]);
+        git(repo, &["update-ref", "refs/remotes/origin/main", "main"]).await;
+        git(repo, &["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]).await;
+        let commits = log(repo, &query("origin/feat/x", "")).await.unwrap();
+        assert_eq!(shared(&commits), [("on feat".to_string(), false), ("init".to_string(), true)]);
+    }
+
+    #[tokio::test]
     async fn reset_moves_the_branch_in_each_mode() {
         let dir = fixture().await;
         let repo = dir.path();
@@ -2243,7 +2346,7 @@ mod tests {
         std::fs::write(repo.join("tracked.txt"), "two\n").unwrap();
         commit_files(&repo, &["tracked.txt".into()], "one").await.unwrap();
 
-        push_branch(&repo, "develop").await.unwrap();
+        assert_eq!(push_branch(&repo, "develop").await.unwrap(), 1);
 
         let pushed = run_git(origin.path(), &["rev-parse", "develop"]).await.unwrap();
         assert_eq!(pushed, run_git(&repo, &["rev-parse", "HEAD"]).await.unwrap());
@@ -2516,6 +2619,10 @@ mod tests {
         std::fs::write(repo.join("tracked.txt"), "four\n").unwrap();
         commit_files(&repo, &["tracked.txt".into()], "three").await.unwrap();
         assert_eq!(unpushed_commit_count(&repo, "develop").await.unwrap(), 2);
+        let commits = unpushed_commits(&repo, "develop").await.unwrap();
+        let subjects: Vec<&str> = commits.iter().map(|commit| commit.subject.as_str()).collect();
+        assert_eq!(subjects, vec!["three", "two"]);
+        assert_eq!(unpushed_commits(&repo, "feature/new").await.unwrap().len(), 2);
     }
 
     #[tokio::test]

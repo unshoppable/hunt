@@ -76,6 +76,11 @@ pub async fn start_session_vm(
     let steps = StartSteps::new(progress, Some(known_ssh));
     let Some(vm) = api.start_vm(id, &steps).await? else { return Ok(None) };
     steps.join().await;
+    // A VM the gateway moved is a new instance with a host key of its own, and its new zone may still hold the key
+    // of the session's VM that was there before an earlier move.
+    if vm != *known {
+        ssh::forget_host_key(&vm, ssh_dir).await?;
+    }
     let ssh = ssh::Ssh::open(&vm, ssh_dir).await?;
     release::ensure_ready(&ssh, progress).await?;
     Ok(Some((ssh, vm)))

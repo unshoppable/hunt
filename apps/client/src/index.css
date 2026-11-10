@@ -83,6 +83,9 @@
   --row-active: rgba(255, 255, 255, 0.09);
   /* The active row of every tree, list and popover (WebStorm's selection blue). */
   --row-selected: #2e436e;
+  /* A log row of a commit that is not the filtered branch's own work. */
+  --row-shared: rgba(255, 255, 255, 0.11);
+  --row-shared-hover: rgba(255, 255, 255, 0.15);
   /* A four-pointed sparkle with a small companion star (the agent button of ui/AgentButton.tsx); the symbol for the agent. */
   --sparkle-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M8 1.5c.4 2.9 2.6 5.1 5.5 5.5-2.9.4-5.1 2.6-5.5 5.5-.4-2.9-2.6-5.1-5.5-5.5 2.9-.4 5.1-2.6 5.5-5.5Z'/%3E%3Cpath d='M12.5 10.5c.2 1.1 1 1.9 2 2-1 .2-1.8 1-2 2-.2-1-1-1.8-2-2 1-.2 1.8-1 2-2Z'/%3E%3C/svg%3E");
   /* Blue to violet, for the agent symbol. */
@@ -91,7 +94,7 @@
 
 /* A row that spans its tree or list (project tree, changelist, Git tab, file search): hover and selection fill a rounded rectangle 6px
    inside the pane edges, behind the content, so a folder color still spans the row. data-selected="true" marks the active row,
-   data-menu-open="true" the row whose context menu is open. Layered as a component, so an `absolute` utility keeps the row positioned. */
+   data-menu-open="true" the row whose context menu is open, data-shared="true" a log row whose commit is not the filtered branch's own work. Layered as a component, so an `absolute` utility keeps the row positioned. */
 @layer components {
   .tree-row {
     position: relative;
@@ -105,8 +108,14 @@
     border-radius: 0.25rem;
     pointer-events: none;
   }
+  .tree-row[data-shared="true"]::before {
+    background-color: var(--row-shared);
+  }
   .tree-row:hover::before {
     background-color: var(--row-hover);
+  }
+  .tree-row[data-shared="true"]:hover::before {
+    background-color: var(--row-shared-hover);
   }
   .tree-row[data-menu-open="true"]::before {
     background-color: var(--row-active);

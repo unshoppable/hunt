@@ -161,7 +161,7 @@ export function ChangeList({
   const checked = useMemo(() => new Set(storedChecked), [storedChecked]);
   const [collapsed, setCollapsedState] = useState<Set<string>>(() => collapsedBySession.get(sessionId) ?? new Set());
   const [dialog, setDialog] = useState<Dialog>(null);
-  /** Shown in the footer once a review went out, until the next dialog opens. */
+  /** Shown in the footer once a review went out, or above the commit actions after a commit or push, until the next dialog opens. */
   const [notice, setNotice] = useState<string | null>(null);
   /** Bumped after shelf and push operations so the shelf list and the push state reload even when the file list is unchanged. */
   const [shelfVersion, setShelfVersion] = useState(0);
@@ -556,8 +556,8 @@ export function ChangeList({
                 uncheckPaths(paths);
                 worktreeChanged();
               }}
-              onPushed={() => {
-                setNotice(`Pushed to ${target}`);
+              onPushed={(count) => {
+                setNotice(count ? `Pushed ${count} ${count === 1 ? "commit" : "commits"} to origin/${target}` : `Nothing to push: origin/${target} already has every commit`);
                 worktreeChanged();
               }}
               onShelve={() => void openShelveDialog()}

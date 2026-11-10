@@ -8,6 +8,8 @@ export type Commit = {
   subject: string;
   /** Branches and tags at the commit as `git log --decorate` names them: `HEAD -> master`, `origin/master`, `tag: v1.0`. */
   refs: string[];
+  /** Under a filter by a branch: the commit is not the branch's own work, because the checked-out branch has it too, or the default branch when the filter is the checked-out branch. */
+  isShared: boolean;
 };
 
 /**

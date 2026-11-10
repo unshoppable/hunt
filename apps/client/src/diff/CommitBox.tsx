@@ -37,7 +37,9 @@ let draggedHeight: number | null = null;
  * with the commit and shelve actions for the checked files below it and a push button on the right, enabled while the
  * branch has commits `origin`'s `target` lacks. A type menu at the start of the box picks the conventional commit prefix
  * the commit puts before the message; a typed `type: ` prefix moves into it. The chosen type is remembered per session,
- * and a sub session without a choice of its own follows its parent session's. A long error scrolls inside a capped area, so the file list keeps its room. The commit button's chevron also offers "Commit and Push". ⌘⏎ commits in place; the push button, "Commit and
+ * and a sub session without a choice of its own follows its parent session's. The owner's `notice` (committed, pushed)
+ * shows above the actions, where an error replaces it; a long error scrolls inside a capped area, so the file list keeps
+ * its room. The commit button's chevron also offers "Commit and Push". ⌘⏎ commits in place; the push button, "Commit and
  * Push" and ⇧⌘⏎ first open a `PushPopover` that names `origin/<target>` and pushes on confirm. The message stays in the
  * box after a commit. `onCommit` and `onShelve` return false when the owner declined the action, e.g. after a warning
  * about unsaved edits.
@@ -72,7 +74,8 @@ export function CommitBox({
   notice: string | null;
   onCommit: () => Promise<boolean>;
   onCommitted: (paths: string[]) => void;
-  onPushed: () => void;
+  /** Called after a push with the number of commits it published, 0 when `origin` had them all already. */
+  onPushed: (count: number) => void;
   onShelve: () => void;
 }) {
   const parentId = useHuntStore((state) => state.sessions.find((session) => session.id === sessionId)?.parentId ?? null);
@@ -165,8 +168,7 @@ export function CommitBox({
   async function push(failure: string) {
     setStep("push");
     try {
-      await commands.pushBranch(sessionId);
-      onPushed();
+      onPushed(await commands.pushBranch(sessionId));
     } catch (reason) {
       setError(`${failure}: ${String(reason)}`);
     }
@@ -246,7 +248,11 @@ export function CommitBox({
         ) : null}
         <ResizeGrips edges={{ top: true, bottom: true }} {...grips} />
       </div>
-      {error ? <p className="mb-2 max-h-32 shrink-0 overflow-y-auto whitespace-pre-wrap text-red-400">{error}</p> : null}
+      {error ? (
+        <p className="mb-2 max-h-32 shrink-0 overflow-y-auto whitespace-pre-wrap text-red-400">{error}</p>
+      ) : notice ? (
+        <p className="mb-2 shrink-0 whitespace-pre-wrap text-neutral-400">{notice}</p>
+      ) : null}
       <div className="relative flex shrink-0 items-center gap-2">
         <div className={`relative flex ${isLocked ? "opacity-40" : ""}`}>
           <button
@@ -315,7 +321,7 @@ export function CommitBox({
         >
           Shelve…
         </button>
-        <span className="ml-auto truncate text-neutral-500">{notice ?? (paths.length ? `${paths.length} selected` : "")}</span>
+        <span className="ml-auto truncate text-neutral-500">{paths.length ? `${paths.length} selected` : ""}</span>
         <button
           ref={pushButtonRef}
           type="button"
@@ -338,6 +344,7 @@ export function CommitBox({
         </button>
         {pushMode ? (
           <PushPopover
+            sessionId={sessionId}
             mode={pushMode}
             branch={branch}
             target={target}

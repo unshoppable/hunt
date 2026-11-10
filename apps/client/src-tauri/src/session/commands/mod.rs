@@ -144,6 +144,7 @@ command_handler![
     changes::commit_files,
     changes::push_branch,
     changes::unpushed_commit_count,
+    changes::unpushed_commits,
     git::list_branches,
     git::current_branch,
     git::fetch_repo_branch,

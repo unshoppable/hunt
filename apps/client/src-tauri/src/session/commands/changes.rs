@@ -10,7 +10,7 @@ use uuid::Uuid;
 
 use super::{push_target, remote_host, session_file, worktree_file, worktree_session};
 use crate::agent::swf_skills;
-use crate::git::{self, ChangedFile, FileDiff, Shelf};
+use crate::git::{self, ChangedFile, Commit, FileDiff, Shelf};
 use crate::ide::disk_file::{self, DiskStamp};
 use crate::remote;
 use crate::remote::ssh::{ssh_dir, Ssh};
@@ -330,7 +330,7 @@ async fn commit_followed(app: &AppHandle, id: Uuid, worktree: &Path, paths: &[St
 /// is pushed from its VM under its own name with the poller's stored token, so that the push shows the poller's GitHub
 /// App like the rest of what its agent does on GitHub.
 #[tauri::command]
-pub async fn push_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
+pub async fn push_branch(app: AppHandle, id: Uuid) -> Result<u32, String> {
     let record = worktree_session(&app, id)?;
     let Some((owner, target)) = remote_host(&app, &record) else {
         return git::push_branch(&record.worktree_path, &push_target(&record, None).await).await;
@@ -339,13 +339,21 @@ pub async fn push_branch(app: AppHandle, id: Uuid) -> Result<(), String> {
         return git::push_branch(&record.worktree_path, &push_target(&record, Some(&target)).await).await;
     }
     if target.origin.keeps_vm_tokens() {
+        // Counted against `origin` as of now, so that a push the VM made before, say, a failed `hunt-ctl` reports 0.
+        let count = match git::fetch_branch(&record.worktree_path, &target.branch).await {
+            Ok(_) => git::unpushed_commit_count(&record.worktree_path, &target.branch).await.unwrap_or(0),
+            Err(error) => {
+                eprintln!("failed to fetch the branch {} of session {id} before the push: {error}", target.branch);
+                0
+            }
+        };
         let ssh = Ssh::open(&target.vm, &ssh_dir()?).await?;
         remote::commit::push_stored(&ssh, owner).await?;
         // The local remote-tracking ref learns about the VM's push, so `unpushed_commit_count` stops offering one.
         if let Err(error) = git::fetch_branch(&record.worktree_path, &target.branch).await {
             eprintln!("failed to fetch the pushed branch {} of session {id}: {error}", target.branch);
         }
-        return Ok(());
+        return Ok(count);
     }
     push_followed(&app, owner, &record.worktree_path, &push_target(&record, Some(&target)).await).await
 }
@@ -359,13 +367,21 @@ pub async fn unpushed_commit_count(app: AppHandle, id: Uuid) -> Result<u32, Stri
     git::unpushed_commit_count(&record.worktree_path, &push_target(&record, remote.as_ref()).await).await
 }
 
+/// The commits `push_branch` would publish, newest first, counted like `unpushed_commit_count`.
+#[tauri::command]
+pub async fn unpushed_commits(app: AppHandle, id: Uuid) -> Result<Vec<Commit>, String> {
+    let record = worktree_session(&app, id)?;
+    let remote = remote_host(&app, &record).map(|(_, target)| target);
+    git::unpushed_commits(&record.worktree_path, &push_target(&record, remote.as_ref()).await).await
+}
+
 /// Pushes the commits of the remote session `id`, checked out in its local worktree `worktree`, to the branch `target`
 /// on `origin` from here, while no sync of the session runs: the branch is brought to the same commit here and on the
 /// VM (`sync::follow_head`); when `origin/<target>` moved on, the branch is rebased onto it here, with the local Git
 /// identity, and the VM's branch moves to the rebased commit (`remote::commit::move_vm_head`), which the local branch
 /// follows from then on; then `HEAD` is pushed. A branch that moved on both sides fails the push with the message of
-/// the alignment.
-async fn push_followed(app: &AppHandle, id: Uuid, worktree: &Path, target: &str) -> Result<(), String> {
+/// the alignment. Returns the number of commits the push published.
+async fn push_followed(app: &AppHandle, id: Uuid, worktree: &Path, target: &str) -> Result<u32, String> {
     sync::exclusive(app, id, |_| async move {
         let remote = store::find_session(app, id)?.remote.ok_or("failed to push: the session runs locally now")?;
         let ssh = Ssh::open(&remote.vm, &ssh_dir()?).await?;
@@ -380,7 +396,9 @@ async fn push_followed(app: &AppHandle, id: Uuid, worktree: &Path, target: &str)
                 }
             })?;
         }
-        git::push_head(worktree, target).await
+        let count = git::unpushed_commit_count(worktree, target).await?;
+        git::push_head(worktree, target).await?;
+        Ok(count)
     })
     .await
 }

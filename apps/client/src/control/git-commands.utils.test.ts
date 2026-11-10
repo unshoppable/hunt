@@ -3,7 +3,7 @@ import type { Commit, GitRef } from "../git/git.types";
 import { commitEntry, commitsStartingWith, describeLogFilter, logEntry, refsSummary } from "./git-commands.utils";
 
 function commit(id: string): Commit {
-  return { id, parents: [], author: "Ada", authorEmail: "ada@example.com", authoredAt: "2026-11-01T10:00:00Z", subject: `subject of ${id}`, refs: [] };
+  return { id, parents: [], author: "Ada", authorEmail: "ada@example.com", authoredAt: "2026-11-01T10:00:00Z", subject: `subject of ${id}`, refs: [], isShared: false };
 }
 
 function ref(name: string, patch: Partial<GitRef> = {}): GitRef {

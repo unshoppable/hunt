@@ -296,11 +296,14 @@ export const commands = {
   commitFiles: (id: string, paths: string[], message: string) => invoke<void>("commit_files", { id, paths, message }),
   /**
    * Pushes the session's commits to the branch it was created from on `origin` (`pushTarget` in `sessions/remote/remote-session.utils.ts`),
-   * rebased onto it first when it moved on; the session's own branch never reaches `origin`.
+   * rebased onto it first when it moved on; the session's own branch never reaches `origin`. Resolves to the number of
+   * commits the push published, 0 when `origin` had them all already.
    */
-  pushBranch: (id: string) => invoke<void>("push_branch", { id }),
+  pushBranch: (id: string) => invoke<number>("push_branch", { id }),
   /** Number of commits `pushBranch` would publish; 0 when they are on `origin` already. */
   unpushedCommitCount: (id: string) => invoke<number>("unpushed_commit_count", { id }),
+  /** The commits `pushBranch` would publish, newest first. */
+  unpushedCommits: (id: string) => invoke<Commit[]>("unpushed_commits", { id }),
   /** Language (English name, e.g. `German`) of the agent output Hunt asks for itself: diagram labels, summaries, titles. */
   setAiLanguage: (language: string) => invoke<void>("set_ai_language", { language }),
   /** System prompt addition for every agent session started afterwards; empty switches it off. */

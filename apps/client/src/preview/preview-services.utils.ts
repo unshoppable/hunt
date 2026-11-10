@@ -42,6 +42,33 @@ export function isPreviewActive(status: PreviewStatus | null): boolean {
   return Boolean(status?.vmRunning && hasRunningService(status));
 }
 
+/**
+ * The services to start so that every app that runs on the running VM is complete: the ones that neither run nor start
+ * and are linked through `uses`, in either direction and over other services, to one that runs or starts; in the order
+ * of hunt.json. Nothing while the VM is off or no service runs.
+ */
+export function servicesToComplete(status: PreviewStatus): string[] {
+  if (!status.vmRunning) return [];
+  const links = new Map(status.services.map((service) => [service.name, new Set<string>()]));
+  for (const service of status.services) {
+    for (const used of service.uses) {
+      if (!links.has(used) || used === service.name) continue;
+      links.get(service.name)?.add(used);
+      links.get(used)?.add(service.name);
+    }
+  }
+  const reached = new Set(status.services.filter(isServiceRunning).map((service) => service.name));
+  const pending = [...reached];
+  for (let name = pending.pop(); name !== undefined; name = pending.pop()) {
+    for (const linked of links.get(name) ?? []) {
+      if (reached.has(linked)) continue;
+      reached.add(linked);
+      pending.push(linked);
+    }
+  }
+  return status.services.filter((service) => reached.has(service.name) && !isServiceRunning(service)).map((service) => service.name);
+}
+
 /** Whether the port of a service of hunt.json listens on the VM. */
 export function hasRespondingService(status: PreviewStatus): boolean {
   return status.services.some((service) => service.responds);

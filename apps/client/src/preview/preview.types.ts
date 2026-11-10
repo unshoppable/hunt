@@ -18,6 +18,11 @@ export type PreviewService = {
   state: PreviewServiceState;
   responds: boolean;
   invocation: string | null;
+  /**
+   * The other services whose public URL its environment holds (`${services.<name>.publicUrl}` in hunt.json); the services
+   * linked this way make up one app. Empty while the VM's records predate them.
+   */
+  uses: string[];
 };
 
 /**

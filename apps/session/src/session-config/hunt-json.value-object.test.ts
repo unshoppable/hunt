@@ -1197,10 +1197,10 @@ describe("configCli", () => {
       output: {
         ok: true,
         services: [
-          { name: "backend", port: 3000, tls: true, guarded: false },
-          { name: "ui", port: 4200, tls: false, guarded: true },
-          { name: "docs", port: 4400, tls: true, guarded: true },
-          { name: "admin", port: 4800, tls: false, guarded: false },
+          { name: "backend", port: 3000, tls: true, guarded: false, uses: ["ui", "admin"] },
+          { name: "ui", port: 4200, tls: false, guarded: true, uses: ["backend"] },
+          { name: "docs", port: 4400, tls: true, guarded: true, uses: [] },
+          { name: "admin", port: 4800, tls: false, guarded: false, uses: [] },
         ],
         services_prompt: expected.servicesPrompt,
         agent_md: "# Services\nStart backend with ui.",

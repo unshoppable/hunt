@@ -1459,7 +1459,7 @@ cmd_session_config() {
     jq -r '.problems[]?' <<<"$result" >&2 2>/dev/null || true
     die "hunt.json or hunt.agent.md is not valid (see above)"
   fi
-  update_meta "$id" '. + {preview: {domain: $domain, services: [$result.services[] | {name, port, tls, guarded}]}}' \
+  update_meta "$id" '. + {preview: {domain: $domain, services: [$result.services[] | {name, port, tls, guarded, uses: (.uses // [])}]}}' \
     --arg domain "$domain" --argjson result "$result"
   stop_undeclared_services "$id"
   systemctl enable --quiet "$PROXY_UNIT"
@@ -1821,7 +1821,8 @@ cmd_preview_status() {
 
 # ---- Session VM: the services of hunt.json ---------------------------------------------------------------------------
 # `session-config` writes each service's environment to SERVICES_DIR/<name>.env and records the services in meta.json as
-# .preview.services, [{name, port, tls, guarded}]; hunt-service@<name>.service runs one (apps/session/vm/hunt-service).
+# .preview.services, [{name, port, tls, guarded, uses}], where uses names the services whose public URL its environment
+# holds; hunt-service@<name>.service runs one (apps/session/vm/hunt-service).
 # An enabled service starts again when the VM boots, so a preview link that wakes the VM brings the app back with it.
 
 # Prints the id of the VM's only session, whose services `session-config` recorded; fails without one or with several.
@@ -1876,15 +1877,15 @@ stop_undeclared_services() {
   systemctl reset-failed "${units[@]}" 2>/dev/null || true
 }
 
-# Prints the services of meta.json $1 as a JSON array of {name, port, tls, guarded, enabled, state, responds,
-# invocation}, with their url after guarded when $2, the session's short id, is given. state is running, starting (also
+# Prints the services of meta.json $1 as a JSON array of {name, port, tls, guarded, uses, enabled, state, responds,
+# invocation}, with their url after uses when $2, the session's short id, is given. state is running, starting (also
 # while systemd waits to restart the service), failed or stopped, from one `systemctl show` for all services. responds
 # tells whether the port is among the local_ports; no request is sent, so the service's log never shows these checks.
 # invocation is the unit's InvocationID, which changes with every start of the service, or null while it does not run.
 service_report() {
   local file=$1 short=${2-} services states listening
   local -a units=()
-  services=$(jq -c --arg short "$short" '.preview.domain as $domain | [.preview.services[]? | {name, port, tls, guarded}
+  services=$(jq -c --arg short "$short" '.preview.domain as $domain | [.preview.services[]? | {name, port, tls, guarded, uses: (.uses // [])}
     + (if $short == "" then {} else {url: "https://\($short)-\(.port)\(if .guarded then "" else "-open" end).\($domain)"} end)]' "$file")
   if [[ $services == '[]' ]]; then
     echo '[]'

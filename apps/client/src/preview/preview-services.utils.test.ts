@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PreviewService, PreviewStatus } from "./preview.types";
-import { describeService, hasRespondingService, hasRunningService, isPreviewActive, isServiceRunning, offersStart, withLastKnown } from "./preview-services.utils";
+import { describeService, hasRespondingService, hasRunningService, isPreviewActive, isServiceRunning, offersStart, servicesToComplete, withLastKnown } from "./preview-services.utils";
 
 function service(name: string, patch: Partial<PreviewService> = {}): PreviewService {
   return {
@@ -13,6 +13,7 @@ function service(name: string, patch: Partial<PreviewService> = {}): PreviewServ
     state: "stopped",
     responds: false,
     invocation: null,
+    uses: [],
     ...patch,
   };
 }
@@ -100,5 +101,32 @@ describe("withLastKnown", () => {
     expect(withLastKnown(off, empty)).toBe(empty);
     expect(withLastKnown(null, VM_OFF)).toBe(VM_OFF);
     expect(withLastKnown(status([]), VM_OFF)).toBe(VM_OFF);
+  });
+});
+
+describe("servicesToComplete", () => {
+  const backend = (patch: Partial<PreviewService> = {}) => service("ppp-rl-backend", { uses: ["ppp-rl-admin-ui"], ...patch });
+  const adminUi = (patch: Partial<PreviewService> = {}) => service("ppp-rl-admin-ui", { uses: ["ppp-rl-backend"], ...patch });
+
+  it("names the stopped and failed services of an app one of whose services runs or starts", () => {
+    expect(servicesToComplete(status([backend({ state: "running" }), adminUi()]))).toEqual(["ppp-rl-admin-ui"]);
+    expect(servicesToComplete(status([backend({ state: "failed" }), adminUi({ state: "starting" })]))).toEqual(["ppp-rl-backend"]);
+  });
+
+  it("follows the links in either direction and over other services, in the order of hunt.json", () => {
+    const services = [
+      service("med-backend"),
+      service("med-admin-ui", { uses: ["med-backend"], state: "running" }),
+      service("med-ui", { uses: ["med-backend"] }),
+      service("med-report-generator"),
+    ];
+    expect(servicesToComplete(status(services))).toEqual(["med-backend", "med-ui"]);
+  });
+
+  it("leaves the other apps, an app none of whose services runs, a VM that is off and links to undeclared services alone", () => {
+    expect(servicesToComplete(status([backend({ state: "running" }), adminUi({ state: "running" }), service("med-backend", { uses: ["med-ui"] })]))).toEqual([]);
+    expect(servicesToComplete(status([backend(), adminUi()]))).toEqual([]);
+    expect(servicesToComplete(status([backend({ state: "running" }), adminUi()], { vmRunning: false }))).toEqual([]);
+    expect(servicesToComplete(status([service("api", { uses: ["gone", "api"], state: "running" })]))).toEqual([]);
   });
 });

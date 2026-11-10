@@ -11,7 +11,7 @@ function tmuxWindow(id: string, name: string, change: Partial<TmuxWindow> = {}):
 }
 
 function service(name: string): PreviewService {
-  return { name, port: 4200, url: `https://${name}.example`, guarded: false, tls: true, enabled: true, state: "running", responds: true, invocation: "1" };
+  return { name, port: 4200, url: `https://${name}.example`, guarded: false, tls: true, enabled: true, state: "running", responds: true, invocation: "1", uses: [] };
 }
 
 describe("parseWindowTabKey", () => {

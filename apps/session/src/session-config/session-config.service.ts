@@ -49,6 +49,8 @@ interface ServiceSummary {
   port: number;
   tls: boolean;
   guarded: boolean;
+  /** The other services whose `${services.<name>.publicUrl}` its variables name; together they make up one app. */
+  uses: string[];
 }
 
 /** Everything the session VM needs of hunt.json and the session's host names. */
@@ -255,7 +257,10 @@ export function runSessionConfig(args: string[]): SessionConfigResult {
     writeAtomic(options.envOut, envFile(config.env, "The session's environment, written by Hunt."));
     writeAtomic(options.caddyOut, `${JSON.stringify(config.proxy, null, 2)}\n`);
     writeServiceEnvs(options.servicesDir, config.serviceEnvs);
-    const services = config.services.map(({ name, port, tls, guarded }) => ({ name, port, tls, guarded }));
+    const services = config.services.map((service): ServiceSummary => {
+      const { name, port, tls, guarded } = service;
+      return { name, port, tls, guarded, uses: service.referencedServices.filter((used) => used !== name) };
+    });
     result = {
       ok: true,
       services,

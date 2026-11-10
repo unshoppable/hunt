@@ -14,7 +14,7 @@
  * temporary file and a rename, mode 0644; the services' files, which hold remote secrets and only systemd reads, get
  * 0600. It creates --services-dir (0755) when it is missing and deletes the `*.env` files there of services that
  * hunt.json no longer declares; other files stay. Prints one line of JSON:
- * `{"ok": true, "services": [{"name", "port", "tls", "guarded"}], "services_prompt": "…", "agent_md": "…",
+ * `{"ok": true, "services": [{"name", "port", "tls", "guarded", "uses"}], "services_prompt": "…", "agent_md": "…",
  * "swf_steps": {"maxGateRuns": 5, "questionPrefix": "❓ RÜCKFRAGE", "projectStatus": {"inProgress", "inReview", "done"},
  * "mergeMethod": "squash", "steps": {"plan": {"skill", "model", "effort", "maxReturns", "minSeverity", "gate"}, …}}}` with the
  * services in the order of hunt.json, the section of the agent's prompt that lists them (or says there are none), the

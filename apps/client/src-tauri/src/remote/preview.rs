@@ -87,6 +87,9 @@ pub struct PreviewService {
     /// systemd's ID of the unit's current run, new with every start and restart; `None` while the unit does not run or
     /// the VM's hunt-ctl predates it. The Terminal tab connects to the service's terminal again when it changes.
     pub invocation: Option<String>,
+    /// The other services whose public URL its environment holds (`${services.<name>.publicUrl}` in hunt.json); the
+    /// services linked this way make up one app. Empty while the VM's `meta.json` predates them.
+    pub uses: Vec<String>,
 }
 
 /// The state of a service's unit.
@@ -115,6 +118,8 @@ struct ServiceOutput {
     responds: bool,
     #[serde(default)]
     invocation: Option<String>,
+    #[serde(default)]
+    uses: Vec<String>,
 }
 
 /// Reads the output of `hunt-ctl preview-status` for session `id` with its URLs on `domain`.
@@ -125,6 +130,9 @@ pub fn parse_status(output: &serde_json::Value, id: Uuid, domain: &str) -> Resul
     for service in output.services {
         if !is_service_name(&service.name) {
             return Err(format!("failed to read the preview status: {:?} is not a service name", service.name));
+        }
+        if let Some(used) = service.uses.iter().find(|used| !is_service_name(used)) {
+            return Err(format!("failed to read the preview status: {used:?} is not a service name"));
         }
         let url = if service.guarded { port_url(id, domain, service.port) } else { open_url(id, domain, service.port) };
         services.push(PreviewService {
@@ -137,6 +145,7 @@ pub fn parse_status(output: &serde_json::Value, id: Uuid, domain: &str) -> Resul
             state: service.state,
             responds: service.responds,
             invocation: service.invocation.filter(|invocation| !invocation.is_empty()),
+            uses: service.uses,
         });
     }
     Ok(PreviewStatus { vm_running: true, services })
@@ -203,7 +212,7 @@ mod tests {
         let output = json!({
             "services": [
                 {"name": "med-backend", "port": 3000, "tls": true, "guarded": false, "enabled": true, "state": "running",
-                 "responds": true, "url": "https://evil.example", "invocation": "0f1e2d3c4b5a69788796a5b4c3d2e1f0"},
+                 "responds": true, "url": "https://evil.example", "invocation": "0f1e2d3c4b5a69788796a5b4c3d2e1f0", "uses": ["med-ui"]},
                 {"name": "med-ui", "port": 4400, "tls": false, "guarded": true, "enabled": false, "state": "stopped", "responds": false,
                  "invocation": ""}
             ],
@@ -224,6 +233,7 @@ mod tests {
                     state: PreviewServiceState::Running,
                     responds: true,
                     invocation: Some("0f1e2d3c4b5a69788796a5b4c3d2e1f0".into()),
+                    uses: vec!["med-ui".into()],
                 },
                 PreviewService {
                     name: "med-ui".into(),
@@ -235,6 +245,7 @@ mod tests {
                     state: PreviewServiceState::Stopped,
                     responds: false,
                     invocation: None,
+                    uses: Vec::new(),
                 },
             ]
         );
@@ -261,6 +272,12 @@ mod tests {
         assert_eq!(
             parse_status(&json!({"services": [service("../api", "running")]}), id, "p.example.com"),
             Err("failed to read the preview status: \"../api\" is not a service name".to_string())
+        );
+        let mut uses_invalid = service("api", "running");
+        uses_invalid["uses"] = json!(["Ui"]);
+        assert_eq!(
+            parse_status(&json!({"services": [uses_invalid]}), id, "p.example.com"),
+            Err("failed to read the preview status: \"Ui\" is not a service name".to_string())
         );
         for invalid in [
             json!({"services": [service("api", "stopping")]}),

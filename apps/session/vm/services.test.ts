@@ -85,9 +85,9 @@ const SKILLS = HUNT_JSON.swf.skills;
 
 /** The services of HUNT_JSON as meta.json records them. */
 const DECLARED = {
-  api: { port: 3000, tls: false, guarded: false },
-  admin: { port: 4200, tls: false, guarded: true },
-  ui: { port: 4400, tls: true, guarded: true },
+  api: { port: 3000, tls: false, guarded: false, uses: ["admin"] },
+  admin: { port: 4200, tls: false, guarded: true, uses: ["api"] },
+  ui: { port: 4400, tls: true, guarded: true, uses: [] },
 };
 
 /** The InvocationID the fake systemctl reports for the service `name` while it runs or starts. */
@@ -96,7 +96,7 @@ function invocationOf(name: string): string {
 }
 
 /** A service as `hunt-ctl service` reports it, from its declaration and state. */
-function reported(name: keyof typeof DECLARED, state: Partial<{ enabled: boolean; state: string; responds: boolean }> = {}) {
+function reported(name: keyof typeof DECLARED, state: Partial<{ enabled: boolean; state: string; responds: boolean; uses: string[] }> = {}) {
   const declared = DECLARED[name];
   const host = declared.guarded ? `7c0c6f2e-${declared.port}` : `7c0c6f2e-${declared.port}-open`;
   const report = { name, ...declared, url: `https://${host}.${DOMAIN}`, enabled: false, state: "stopped", responds: false, ...state };
@@ -413,7 +413,13 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
       "systemctl reload-or-restart hunt-proxy.service",
     ]);
     expect(sh("ls /etc/hunt/services").stdout).toBe("admin.env\n");
-    expect(huntCtlJson("service", "status").services).toEqual([reported("admin", { enabled: true, state: "running", responds: true })]);
+    expect(huntCtlJson("service", "status").services).toEqual([reported("admin", { enabled: true, state: "running", responds: true, uses: [] })]);
+  });
+
+  it("reports no used services for a meta.json that session-config wrote before it recorded them", () => {
+    sessionConfig();
+    sh(`f=/srv/hunt/sessions/${ID}/meta.json; jq 'del(.preview.services[].uses)' "$f" >"$f.tmp" && mv "$f.tmp" "$f"`);
+    expect(huntCtlJson("service", "status").services).toEqual([reported("api", { uses: [] }), reported("admin", { responds: true, uses: [] }), reported("ui")]);
   });
 
   it("starts, restarts and stops services and reports every service with its URL, state and answer", () => {
@@ -496,9 +502,9 @@ describe.skipIf(!hasDocker())("the services of hunt.json in a Debian container",
     huntCtlJson("service", "start", "admin");
     const expected = {
       services: [
-        { name: "api", port: 3000, tls: false, guarded: false, enabled: false, state: "stopped", responds: false, invocation: null },
-        { name: "admin", port: 4200, tls: false, guarded: true, enabled: true, state: "running", responds: true, invocation: invocationOf("admin") },
-        { name: "ui", port: 4400, tls: true, guarded: true, enabled: false, state: "stopped", responds: false, invocation: null },
+        { name: "api", port: 3000, tls: false, guarded: false, uses: ["admin"], enabled: false, state: "stopped", responds: false, invocation: null },
+        { name: "admin", port: 4200, tls: false, guarded: true, uses: ["api"], enabled: true, state: "running", responds: true, invocation: invocationOf("admin") },
+        { name: "ui", port: 4400, tls: true, guarded: true, uses: [], enabled: false, state: "stopped", responds: false, invocation: null },
       ],
       listening: [4200],
     };

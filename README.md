@@ -949,7 +949,10 @@ shows every service with its state, preview URL and whether it answers, with *St
 other ports that listen too, except the reserved ones (`RESERVED_PORTS`: Caddy, Docker, the
 preview proxy and its review server, the desktop, LLMNR and the Ops Agent), which no service may take and the preview proxy refuses; Hunt builds the URLs from the session ID and the preview domain the gateway reported at the handoff, the VM reports only
 port numbers. While no service runs, *Start the app* sends the agent a normal prompt to start the services the task
-needs, which starts a VM that is off.
+needs, which starts a VM that is off. Services whose `env` names each other's `${services.<name>.publicUrl}` make up one
+app (`uses` in meta.json, recorded by `session-config`): opening the session, the first status that finds the VM running
+starts the stopped services of every app one of whose services runs (`servicesToComplete`), so a UI comes back with
+its backend.
 
 Every HTML page of a guarded port host carries a review widget, like Amp's: a *Review* button in the corner starts
 picking, the element under the pointer is outlined, a click picks it and opens a comment box, and *Add* posts the

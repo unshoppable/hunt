@@ -4,7 +4,7 @@ import { commands } from "../ipc/commands";
 import type { PreviewService } from "../preview/preview.types";
 import type { LocalService, Machine, ScriptRunRequest, TmuxWindow } from "./terminal.types";
 import { ownerLabel } from "../diff/attribution.utils";
-import { describeService, hasRespondingService, isServiceRunning, offersStart, type Description } from "../preview/preview-services.utils";
+import { describeService, hasRespondingService, isServiceRunning, offersStart, servicesToComplete, type Description } from "../preview/preview-services.utils";
 import { sessionMarks } from "../sessions/session-labels.utils";
 import { usePreviewStore } from "../preview/preview.store";
 import { useHuntStore } from "../sessions/hunt.store";
@@ -55,7 +55,8 @@ type FocusRequest = { key: string | null; count: number };
  * shell.
  * The panel stays mounted while another tab shows, so its terminals keep their connections. It asks for the processes
  * when it mounts and whenever it shows, then every few seconds, also while another tab shows; the VM only while the
- * session is connected, which proves a running VM.
+ * session is connected, which proves a running VM. Once per mount, the first read that finds the VM running starts the
+ * stopped services of the apps that run there.
  */
 export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isVisible: boolean }) {
   const isLive = useHuntStore((state) => Boolean(state.sessions.find((session) => session.id === sessionId)?.isLive));
@@ -138,6 +139,21 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
     }, POLL_MS);
     return () => window.clearInterval(timer);
   }, [sessionId, isVisible, isLive, isRemote, hasPreviewDomain, loadWindows, refreshServices, refreshLocalServices]);
+
+  // Opening a remote session completes the apps on its VM once: the first status read after the mount that finds the VM
+  // running starts the stopped services of every app one of whose services runs (see `servicesToComplete`).
+  const statusAtMountRef = useRef(previewStatus);
+  const hasCompletedAppsRef = useRef(false);
+  useEffect(() => {
+    if (!isRemote || hasCompletedAppsRef.current || !previewStatus?.vmRunning || previewStatus === statusAtMountRef.current) return;
+    hasCompletedAppsRef.current = true;
+    for (const name of servicesToComplete(previewStatus)) {
+      useServicesStore
+        .getState()
+        .start(sessionId, name)
+        .catch((reason: unknown) => setError(errorText(reason)));
+    }
+  }, [sessionId, isRemote, previewStatus]);
 
   // Without tabs (none read yet, or all gone) the stored key stays, so a tab picked before still shows once they arrive.
   useEffect(() => {

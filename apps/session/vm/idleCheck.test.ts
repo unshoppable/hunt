@@ -10,6 +10,8 @@ const NOW_MS = 1_800_000_000_000;
 const MINUTE_MS = 60_000;
 /** The default of IDLE_CHECKS. */
 const IDLE_RUNS = 15;
+/** Every test runs the script several times; the 5 s default of vitest is too short when nx runs all projects in parallel. */
+const TEST_TIMEOUT_MS = 30_000;
 
 /**
  * Commands the script runs that read the machine, replaced by scripts that read the fixture: `date` prints NOW_MS,
@@ -56,7 +58,7 @@ interface Fixture {
   idleRuns?: number | null;
 }
 
-describe("hunt-idle-check", () => {
+describe("hunt-idle-check", { timeout: TEST_TIMEOUT_MS }, () => {
   const dirs: string[] = [];
 
   afterEach(() => {

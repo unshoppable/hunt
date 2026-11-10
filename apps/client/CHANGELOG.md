@@ -1,3 +1,14 @@
+## 0.163.0 (2026-11-10)
+
+### 🚀 Features
+
+- **client:** open the frontend services of a remote session's preview in "Browser" ([d0d84da](https://github.com/unshoppable/hunt/commit/d0d84da))
+- **client:** offer the installed agent's current models in the start view ([e87f178](https://github.com/unshoppable/hunt/commit/e87f178))
+
+### 🩹 Fixes
+
+- **client:** show the VM desktop at once and without its lagging pointer ([fea638e](https://github.com/unshoppable/hunt/commit/fea638e))
+
 ## 0.162.1 (2026-11-10)
 
 ### 🩹 Fixes

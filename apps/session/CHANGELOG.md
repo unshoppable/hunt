@@ -1,3 +1,13 @@
+## 0.36.3 (2026-11-10)
+
+### 🚀 Features
+
+- **client:** offer the installed agent's current models in the start view ([e87f178](https://github.com/unshoppable/hunt/commit/e87f178))
+
+### 🩹 Fixes
+
+- **client:** show the VM desktop at once and without its lagging pointer ([fea638e](https://github.com/unshoppable/hunt/commit/fea638e))
+
 ## 0.36.2 (2026-11-10)
 
 ### 🚀 Features

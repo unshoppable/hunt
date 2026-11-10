@@ -1,3 +1,9 @@
+## 0.161.0 (2026-11-10)
+
+### 🚀 Features
+
+- **client:** report what a push published and list the commits it will push ([9d15637](https://github.com/unshoppable/hunt/commit/9d15637))
+
 ## 0.160.0 (2026-11-09)
 
 ### 🚀 Features

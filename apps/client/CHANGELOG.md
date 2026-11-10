@@ -1,3 +1,9 @@
+## 0.162.0 (2026-11-10)
+
+### 🚀 Features
+
+- **client:** start the stopped services of a running app when a remote session opens ([4d86b59](https://github.com/unshoppable/hunt/commit/4d86b59))
+
 ## 0.161.0 (2026-11-10)
 
 ### 🚀 Features

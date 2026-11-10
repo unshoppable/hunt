@@ -12,6 +12,12 @@ import { describeDesktop, hasLostConnection, type Tone } from "./desktop-status.
 import { useDesktopStore } from "./desktop.store";
 import { KeyTranslator } from "./key-translator.domain";
 
+/**
+ * How long after its capture the SDK shows a frame, in ms. Its default of 60 holds every frame back for even pacing; 0
+ * shows each as it arrives, about 25 ms after its capture through the SSH forward, so the VM's pointer follows sooner.
+ */
+const LATENCY_TARGET_MS = 0;
+
 const TONE_COLOR: Record<Tone, string> = {
   ok: "text-green-300",
   pending: "text-neutral-300",
@@ -69,7 +75,7 @@ export function DesktopPanel({ sessionId, isVisible }: { sessionId: string; isVi
     const canvas = canvasRef.current;
     const textInput = textInputRef.current;
     if (!endpoint || !stage || !canvas || !textInput) return;
-    const session = new WaymoteSession({ endpoint: endpoint.url, audio: false, remoteDisplay: { mode: "observe", element: stage } });
+    const session = new WaymoteSession({ endpoint: endpoint.url, audio: false, latency: LATENCY_TARGET_MS, remoteDisplay: { mode: "observe", element: stage } });
     session.attachSurface({ canvas, textInputElement: textInput, controlOnFocus: true });
     const translator = KeyTranslator.start();
     const replacements = new WeakSet<Event>();

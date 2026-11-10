@@ -979,7 +979,9 @@ annotation (`parseAnnotatedPrompt`, which reads the text alone, so it holds afte
 session's status channel opens; `hunt-ctl stop` drops them.
 
 The *Desktop* tab next to it (`apps/client/src/desktop/DesktopPanel.tsx`) shows the VM's desktop, where the agent drives
-Chromium, through the Waymote SDK (`@rockorager/waymote`), with audio off. The first time the tab shows, it calls
+Chromium, through the Waymote SDK (`@rockorager/waymote`), with audio off. Vite patches the SDK
+(`apps/client/scripts/waymote-patch.utils.ts`): unpatched it drops the burst of chunks the gateway sends a new client,
+keyframe included, and a desktop that stands still sends no other, so the tab stayed black. The first time the tab shows, it calls
 `desktop_open` (`apps/client/src-tauri/src/remote/desktop.rs`), which asks the gateway whether the VM runs (it is not
 started), forwards a free port on this Mac's 127.0.0.1 to the VM's 127.0.0.1:9231 over the shared SSH connection
 (`ssh -O forward`), checks `/healthz` with Hunt's origin and returns `http://127.0.0.1:<port>`, from which the SDK opens
@@ -989,6 +991,9 @@ the session's agent or the session ends and when Hunt quits, and otherwise ends 
 loses its connection, the panel calls `desktop_open` again, which replaces a forward that no longer answers. The panel
 stays mounted while another tab shows, so the stream survives tab switches. The VM's output stays at 1280×720, scaled
 into the panel: Debian 12's sway 1.7 reports its headless output without modes, so Waymote's resize finds no output.
+The stream carries no pointer, so this Mac's own, which does not lag, is the only one: the desktop's cursor theme
+(`apps/session/vm/desktop/start`) makes every cursor of sway and Chromium one transparent pixel, at the price of the
+hand and the text cursor; a VM whose release predates the theme shows its pointer too.
 Clicking the stream gives it the keyboard: Escape and every ⌘ combination go to the VM instead of Hunt, since the stage
 is a remote input that Hunt's shortcuts skip (`isRemoteInput` in `src/ui/shortcuts.utils.ts`); clicking outside gives the keys
 back. The SDK sends each key as its Linux key code in the gateway's US layout, plus its character while no modifier is

@@ -4,11 +4,17 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 // @ts-expect-error type error without @types/node package
 import process from "node:process";
+import { isWaymoteSdk, patchWaymoteSdk } from "./scripts/waymote-patch.utils.ts";
 const host = process.env.TAURI_DEV_HOST;
 
 // https://vite.dev/config/
 export default defineConfig(() => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [
+    react(),
+    tailwindcss(),
+    // Waymote's SDK loses the picture of a desktop that stands still (see scripts/waymote-patch.utils.ts).
+    { name: "hunt-waymote-patch", transform: (code: string, id: string) => (isWaymoteSdk(id) ? patchWaymoteSdk(code) : null) },
+  ],
 
   // Tauri copies its bundle resources (node_modules packages, the VM artifact) into src-tauri/target; never test those.
   test: { exclude: [...configDefaults.exclude, "src-tauri/**"] },
@@ -17,7 +23,11 @@ export default defineConfig(() => ({
   // pre-bundling them avoids a dev reload on first use. The worker's dependency must also survive every re-optimization
   // of this shared cache (a second Vite server on this root rewrites it with the dependencies it has seen): a worker
   // whose import answers 504 "Outdated Optimize Dep" dies silently, and with it every semantic color.
-  optimizeDeps: { include: ["elkjs/lib/elk-api.js", "monaco-editor/languages/features/typescript/ts.worker.js"] },
+  // Waymote's SDK stays out of the pre-bundle, which no plugin transforms: it is served as its own module and patched.
+  optimizeDeps: {
+    include: ["elkjs/lib/elk-api.js", "monaco-editor/languages/features/typescript/ts.worker.js"],
+    exclude: ["@rockorager/waymote"],
+  },
 
   build: {
     outDir: "../../dist/apps/client",

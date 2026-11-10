@@ -2,13 +2,38 @@
 # The desktop of a session VM (hunt-desktop.service), run as the agent: a headless sway, the Chromium the agent drives
 # over CDP on 127.0.0.1:9222 (./browser) and the Waymote gateway on 127.0.0.1:9230, which streams the desktop as H.264
 # to the Desktop tab of the desktop client through hunt-proxy's desktop server on 127.0.0.1:9231. The client resizes
-# the output to its tab. When any of the three exits, the script exits and systemd starts the desktop again.
+# the output to its tab. The stream carries no pointer: the Desktop tab shows the client's own over it, which does not
+# lag, so sway and Chromium get a cursor theme whose every cursor is one transparent pixel. When any of the three exits,
+# the script exits and systemd starts the desktop again.
 set -euo pipefail
 
 readonly DESKTOP_DIR=${BASH_SOURCE[0]%/*}
 readonly WAYMOTE_DIR=/opt/hunt/agent/waymote
 readonly GATEWAY_LISTEN=127.0.0.1:9230
 : "${XDG_RUNTIME_DIR:?XDG_RUNTIME_DIR must be the runtime folder of the desktop}"
+
+# The cursor theme "default" of a search path of its own: an Xcursor file with one transparent 1x1 image under every
+# name sway and Chromium ask for; Chromium draws its own bitmap for a name the theme lacks.
+readonly CURSORS_DIR=$XDG_RUNTIME_DIR/cursors
+readonly -a CURSOR_NAMES=(
+  default arrow top_left_arrow hand1 hand2 pointer pointing_hand xterm text ibeam vertical-text watch wait progress
+  left_ptr_watch crosshair cross cell plus help question_arrow context-menu move fleur all-scroll size_all grab grabbing
+  openhand closedhand dnd-none dnd-copy dnd-move dnd-link copy alias link not-allowed no-drop crossed_circle forbidden
+  zoom-in zoom-out col-resize row-resize sb_h_double_arrow sb_v_double_arrow h_double_arrow v_double_arrow ew-resize
+  ns-resize nesw-resize nwse-resize n-resize s-resize e-resize w-resize ne-resize nw-resize se-resize sw-resize top_side
+  bottom_side left_side right_side top_left_corner top_right_corner bottom_left_corner bottom_right_corner size_ver
+  size_hor size_bdiag size_fdiag
+)
+rm -rf -- "$CURSORS_DIR"
+mkdir -p "$CURSORS_DIR/default/cursors"
+# Xcursor: the file header with one table entry, then an image chunk of nominal size 24 with a single pixel 0x00000000.
+printf 'Xcur\x10\x00\x00\x00\x00\x00\x01\x00\x01\x00\x00\x00\x02\x00\xfd\xff\x18\x00\x00\x00\x1c\x00\x00\x00' >"$CURSORS_DIR/default/cursors/left_ptr"
+printf '\x24\x00\x00\x00\x02\x00\xfd\xff\x18\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00\x01\x00\x00\x00' >>"$CURSORS_DIR/default/cursors/left_ptr"
+printf '\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00' >>"$CURSORS_DIR/default/cursors/left_ptr"
+for name in "${CURSOR_NAMES[@]}"; do
+  ln -s left_ptr "$CURSORS_DIR/default/cursors/$name"
+done
+export XCURSOR_PATH=$CURSORS_DIR XCURSOR_THEME=default XCURSOR_SIZE=24
 
 # sway renders in software without input devices; the output is created by the headless backend.
 export WLR_BACKENDS=headless WLR_HEADLESS_OUTPUTS=1 WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman

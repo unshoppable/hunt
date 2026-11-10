@@ -420,6 +420,14 @@ export function TerminalPanel({ sessionId, isVisible }: { sessionId: string; isV
             </button>
           </div>
         ) : null}
+        {activeTab?.service && !activeTab.target ? (
+          <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-neutral-500">
+            <p>{activeTab.service.name} is stopped; its last run's output stays in ~/logs/{activeTab.service.name}.log on the VM.</p>
+            <button type="button" onClick={() => void startService(activeTab.service?.name)} className={SECONDARY_BUTTON_XS}>
+              Start {activeTab.service.name}
+            </button>
+          </div>
+        ) : null}
         {hasReadWindows && !tabs.length ? (
           <div className="flex h-full flex-col items-center justify-center gap-3 text-[13px] text-neutral-500">
             <p>{isRemote ? "No process runs on the VM yet." : "No terminal is open."}</p>

@@ -52,6 +52,12 @@ describe("terminalTabs", () => {
     expect(tabs.map((tab) => tab.key)).toEqual(["window:vm:@2"]);
   });
 
+  it("shows no terminal for a stopped service on the VM, but a failed one's log", () => {
+    const tabs = terminalTabs([service("api", "stopped"), service("web", "failed")], [], [], false);
+    expect(tabs.map((tab) => tab.target)).toEqual([null, { kind: "service", name: "web" }]);
+    expect(tabs[0].service?.name).toBe("api");
+  });
+
   it("lists a local session's services first, each with the window that runs it, which no other tab shows", () => {
     const web = window("@2", "web", { service: "web" });
     const tabs = terminalTabs([], [], [window("@1", "shell"), web, window("@3", "old", { service: "removed" })], false, [localService("api"), localService("web")]);

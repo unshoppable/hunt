@@ -16,7 +16,10 @@ export type TerminalTab = {
   key: string;
   label: string;
   title: string;
-  /** What the tab's terminal shows; null for a local service that no window ran yet. */
+  /**
+   * What the tab's terminal shows; null for a local service that no window ran yet and for a stopped service on the VM,
+   * whose last run's log the tab no longer shows (a failed one's it does).
+   */
   target: TerminalTarget | null;
   /** The service on the VM the tab shows; null otherwise. */
   service: PreviewService | null;
@@ -55,7 +58,7 @@ export function terminalTabs(
       key: `service:${service.name}`,
       label: service.name,
       title: `The service ${service.name} of hunt.json on the VM; its output goes to ~/logs/${service.name}.log`,
-      target: { kind: "service", name: service.name },
+      target: service.state === "stopped" ? null : { kind: "service", name: service.name },
       service,
       localService: null,
       window: null,

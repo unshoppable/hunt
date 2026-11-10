@@ -1059,9 +1059,11 @@ can create, start and delete VMs; only root and `hunt-gw` reach it, and everyone
 The *Terminal* tab (`apps/client/src/terminal/TerminalPanel.tsx`, xterm.js) shows one tab per process of the app, like
 the tabs of a local terminal. Each service of `hunt.json` gets a tab that takes input while the service runs: it
 attaches, as `agent`, a view session grouped with the session `<name>` of the service's tmux server
-(`tmux -S /run/hunt-service-<name>/tmux`), destroyed when it detaches; while no server runs it follows the log
-(`tail -F ~/logs/<name>.log`). Each window of the tmux session `app`, in which the agent runs its other
-long-running processes, gets a tab that takes input: it attaches to a tmux session of its own grouped with `app`
+(`tmux -S /run/hunt-service-<name>/tmux`), destroyed when it detaches; while no server runs, a failed service's tab
+follows the log (`tail -F ~/logs/<name>.log`), and a stopped one's shows no terminal but its Start button, so that it
+does not keep showing the last run's output (`terminalTabs` in `terminal/terminal-tabs.utils.ts`). Each window of the
+tmux session `app`, in which the agent runs its other long-running processes, gets a tab that takes input: it attaches
+to a tmux session of its own grouped with `app`
 (`hunt-view-<terminal id>`, no status bar, mouse on, destroyed with the terminal), so several tabs show different windows
 at once. Every window logs to `~/logs/<window name>.log` through the VM's `/etc/tmux.conf` (`apps/session/vm/tmux.conf`,
 which `hunt-ctl install` puts there and loads into a running server), whose hooks are those of this Mac's configuration

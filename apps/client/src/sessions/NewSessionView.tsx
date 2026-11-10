@@ -4,7 +4,7 @@ import { commands } from "../ipc/commands";
 import { useHuntStore } from "./hunt.store";
 import type { AgentSetup, SessionStart, WorktreeTarget } from "./session.store-slice";
 import type { PromptDraft } from "../chat/chat.store-slice";
-import { commandsFor, useAgentDefaultsStore } from "../chat/agent-defaults.store";
+import { commandsFor, refreshKnownOptions, useAgentDefaultsStore } from "../chat/agent-defaults.store";
 import { useSessionViewStore } from "./inspector.store";
 import { configuredVmSettings, useSettingsStore } from "../settings/settings.store";
 import { findSelectOption, listChoiceOptions, listModes } from "../chat/config-options.utils";
@@ -120,6 +120,7 @@ export function NewSessionView({
   const draftRef = useRef<PromptDraft | null>(initialPrompt);
   const recentReposButtonRef = useRef<HTMLButtonElement>(null);
 
+  useEffect(() => refreshKnownOptions(repoPath), [repoPath]);
   useEffect(() => {
     if (repoPath) return;
     setBranches([]);

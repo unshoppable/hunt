@@ -1,5 +1,5 @@
 import { convertFileSrc, invoke } from "@tauri-apps/api/core";
-import type { SessionNotification } from "@agentclientprotocol/sdk";
+import type { SessionConfigOption, SessionNotification } from "@agentclientprotocol/sdk";
 import type { ClaudeAccounts } from "../accounts/accounts.types";
 import type { PlanUsage } from "../accounts/plan-usage.types";
 import type { Screenshot, SteerOutcome } from "../chat/chat.types";
@@ -319,6 +319,8 @@ export const commands = {
     invoke<void>("decline_guardrail", { id: sessionId, kind, summary, reason }),
   /** The claude.ai plan limits of the signed-in account; spawns a short-lived Claude Code process (~1 s). */
   getPlanUsage: () => invoke<PlanUsage>("get_plan_usage"),
+  /** The config options a new session of the local agent in `cwd` starts with; spawns a short-lived agent (a few seconds). */
+  agentConfigOptions: (cwd: string) => invoke<SessionConfigOption[]>("agent_config_options", { cwd }),
   /** The Claude accounts and the one every Claude Code process starts with. */
   listAccounts: () => invoke<ClaudeAccounts>("list_accounts"),
   /**

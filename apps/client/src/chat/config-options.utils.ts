@@ -15,9 +15,15 @@ export function listChoices(option: SelectConfigOption): SessionConfigSelectOpti
   return option.options.flatMap((entry) => ("options" in entry ? entry.options : [entry]));
 }
 
-/** The choices of a select option as dropdown entries, with the agent's description of each. */
+/**
+ * The choices of a select option as dropdown entries, with the agent's description of each. Of the models only the
+ * current ones: the agent lists the current model of each family by its alias (`opus`, `fable`) and older versions by
+ * their full ID (`claude-fable-5-1`), which stays only while the session runs on it.
+ */
 export function listChoiceOptions(option: SelectConfigOption): DropdownOption[] {
-  return listChoices(option).map((choice) => ({ id: choice.value, name: choice.name, description: choice.description }));
+  return listChoices(option)
+    .filter((choice) => option.id !== "model" || !choice.value.startsWith("claude-") || choice.value === option.currentValue)
+    .map((choice) => ({ id: choice.value, name: choice.name, description: choice.description }));
 }
 
 /**

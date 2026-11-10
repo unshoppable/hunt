@@ -284,8 +284,10 @@ export function createChatTurns(set: HuntSet, get: HuntGet, store: StoreApi<Hunt
       if (update.sessionUpdate === "session_info_update") return !(huntTurnOf(update._meta) && runningTurnIds.has(id));
       return !(update.sessionUpdate === "user_message_chunk" && update.messageId && ownMessageIds.has(update.messageId));
     });
+    // The start view starts sessions on this Mac, so it offers the options of the local agent; a VM's relay can run another adapter version.
+    const isRemote = get().sessions.some((session) => session.id === id && session.remote);
     for (const notification of applied) {
-      if (notification.update.sessionUpdate === "config_option_update") {
+      if (notification.update.sessionUpdate === "config_option_update" && !isRemote) {
         useAgentDefaultsStore.getState().rememberOptions(notification.update.configOptions);
       }
     }

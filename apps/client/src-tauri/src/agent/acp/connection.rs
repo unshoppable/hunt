@@ -35,7 +35,7 @@ use crate::platform::shell::find_on_path;
 use crate::session::attribution;
 use crate::session::store::Workspace;
 
-const ACP_SCRIPT: &str = "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
+pub(super) const ACP_SCRIPT: &str = "node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js";
 /// Turns on Claude in Chrome for a local agent, so that it drives the user's Chrome through Claude's extension. Claude
 /// Code ignores it while `accounts::TOKEN_ENV` is set, since Claude in Chrome needs the login of `claude /login`.
 const CLAUDE_IN_CHROME_ENV: &str = "CLAUDE_CODE_ENABLE_CFC";

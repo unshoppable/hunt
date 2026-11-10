@@ -1,6 +1,7 @@
 import type { AvailableCommand, SessionConfigOption } from "@agentclientprotocol/sdk";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { commands } from "../ipc/commands";
 
 type AgentDefaultsState = {
   /** Config options the agent announced most recently; offered in the start view before a session exists. */
@@ -84,4 +85,23 @@ export const useAgentDefaultsStore = create<AgentDefaultsState>()(
 export function commandsFor(knownCommands: Record<string, AvailableCommand[]>, repoPath: string): AvailableCommand[] {
   const lists = Object.values(knownCommands);
   return knownCommands[repoPath] ?? lists[lists.length - 1] ?? [];
+}
+
+/** Repositories whose local agent was asked for its config options in this app run; they change only with an update of the adapter, which restarts the app. */
+const askedRepoPaths = new Set<string>();
+
+/**
+ * Asks the local agent once per repository and app run for the config options a new session in `repoPath` starts with
+ * and remembers them, so that the start view offers the models of the installed adapter, not those a session announced last.
+ */
+export function refreshKnownOptions(repoPath: string): void {
+  if (!repoPath || askedRepoPaths.has(repoPath)) return;
+  askedRepoPaths.add(repoPath);
+  commands.agentConfigOptions(repoPath).then(
+    (options) => useAgentDefaultsStore.getState().rememberOptions(options),
+    (error: unknown) => {
+      askedRepoPaths.delete(repoPath);
+      console.warn(String(error));
+    },
+  );
 }

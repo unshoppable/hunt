@@ -31,7 +31,7 @@ use tauri::{AppHandle, Emitter, Manager};
 use uuid::Uuid;
 
 use browser::{close_browser, close_desktop};
-use crate::agent::acp::{connect, AgentTransport, LiveHandles, PermissionRegistry, SessionRegistry, SessionStart};
+use crate::agent::acp::{config_options, connect, AgentTransport, LiveHandles, PermissionRegistry, SessionRegistry, SessionStart};
 use crate::agent::claude_config::claude_dir;
 use crate::agent::{accounts, guardrail_skill, plan_usage};
 use crate::github::github_token;
@@ -223,6 +223,7 @@ command_handler![
     cli_install::cli_install_status,
     cli_install::install_cli,
     plan_usage::get_plan_usage,
+    config_options::agent_config_options,
     accounts::list_accounts,
     accounts::sign_in_account,
     accounts::cancel_sign_in,

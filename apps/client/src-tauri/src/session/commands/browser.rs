@@ -1,5 +1,6 @@
-//! The commands of what shows a session's app: the Chrome of a local session (`crate::agent::browser`) and the remote
-//! desktop of a session VM (`crate::remote::desktop`), both closed in the background when the session's agent ends.
+//! The commands of what shows a session's app: the session's Chrome on this Mac (`crate::agent::browser`), which the
+//! agent of a local session drives, and the remote desktop of a session VM (`crate::remote::desktop`), both closed in
+//! the background when the session's agent ends.
 
 use std::path::PathBuf;
 
@@ -36,7 +37,7 @@ pub fn close_desktop(app: &AppHandle, id: Uuid) {
 }
 
 /// The apps of the local session `id` that show a page now (see `crate::agent::app_pages`); none for a remote session,
-/// whose apps run on its VM. "Browser" is enabled while there is one.
+/// whose pages the window reads from its preview (`preview_status`). "Browser" is enabled while there is one.
 #[tauri::command]
 pub async fn browser_pages(app: AppHandle, id: Uuid) -> Result<Vec<AppPage>, String> {
     let record = store::find_session(&app, id)?;
@@ -46,22 +47,20 @@ pub async fn browser_pages(app: AppHandle, id: Uuid) -> Result<Vec<AppPage>, Str
     Ok(app_pages::running_pages(&record.worktree_path).await)
 }
 
-/// Opens the Chrome of the local session `id` and brings it to the front (see `crate::agent::browser`).
+/// Opens the Chrome of the session `id` and brings it to the front (see `crate::agent::browser`).
 #[tauri::command]
 pub async fn browser_open(app: AppHandle, id: Uuid) -> Result<(), String> {
     open_browser(&app, id, true).await
 }
 
-/// Opens the Chrome of the local session `id` with a copy of its repository's profile unless it runs; with `raises`, its
-/// window comes to the front with a tab for each app of the session that shows a page and has none yet. The annotations
-/// of its review widget go to the windows as `review:annotation`, each with the screenshot of its element (see
-/// `save_screenshot`) when Hunt could capture it. The command and the control socket (`super::control`) use it; a remote
-/// session has its Chromium on its VM.
+/// Opens the Chrome of the session `id` with a copy of its repository's profile unless it runs; with `raises`, its
+/// window comes to the front with a tab for each app of the session that shows a page and has none yet: at
+/// `localhost` for a local session, at the preview URLs of its VM for a remote one, whose agent drives the Chromium on
+/// the VM instead. The annotations of its review widget go to the windows as `review:annotation`, each with the
+/// screenshot of its element (see `save_screenshot`) when Hunt could capture it. The command and the control socket
+/// (`super::control`) use it.
 pub async fn open_browser(app: &AppHandle, id: Uuid, raises: bool) -> Result<(), String> {
     let record = store::find_session(app, id).map_err(|error| format!("failed to open the browser: {error}"))?;
-    if record.remote.is_some() {
-        return Err("failed to open the browser: the session runs on a VM".into());
-    }
     let browser_dir = store::browser_dir(app)?;
     let emitter = app.clone();
     let on_annotation: AnnotationSink = std::sync::Arc::new(move |annotation, screenshot| match screenshot {
@@ -78,8 +77,17 @@ pub async fn open_browser(app: &AppHandle, id: Uuid, raises: bool) -> Result<(),
         }
         None => relay_watch::emit_annotation(&emitter, id, annotation),
     });
-    let urls: Vec<String> =
-        if raises { app_pages::running_pages(&record.worktree_path).await.into_iter().map(|page| page.url).collect() } else { Vec::new() };
+    let pages = if !raises {
+        Vec::new()
+    } else if record.remote.is_some() {
+        let status = super::remote::preview_status(app.clone(), app.state::<SessionRegistry>(), id)
+            .await
+            .map_err(|error| format!("failed to open the browser: {error}"))?;
+        app_pages::remote_pages(&status)
+    } else {
+        app_pages::running_pages(&record.worktree_path).await
+    };
+    let urls: Vec<String> = pages.into_iter().map(|page| page.url).collect();
     app.state::<BrowserRegistry>().open(id, &record.repo_path, &browser_dir, on_annotation, raises, &urls).await
 }
 

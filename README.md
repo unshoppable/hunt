@@ -195,7 +195,9 @@ the main agent. The relay of a remote session passes the same traffic through (`
 
 Every local session has a Google Chrome of its own, in a window of its own, which its agent drives through Playwright
 MCP, as an agent on a session VM drives its Chromium (`apps/client/src-tauri/src/agent/browser.rs`). Two sessions never share
-a Chrome, since Playwright MCP takes over every tab of the Chrome it connects to.
+a Chrome, since Playwright MCP takes over every tab of the Chrome it connects to. A remote session has such a Chrome
+too, for the user alone: "Browser" opens the preview URLs of its VM's frontend services in it, with the review widget
+and its screenshots as below, while its agent stays on the VM's Chromium (the *Desktop* tab).
 
 - **Agent side**: the agent starts with the MCP server `playwright`, the wrapper `apps/client/scripts/browserMcp.mjs`,
   run by the `node` on the PATH with the session's CDP port (reserved at the agent's start) and the control socket of
@@ -210,7 +212,9 @@ a Chrome, since Playwright MCP takes over every tab of the Chrome it connects to
   accepts connections on its `port` (`agent/app_pages.rs`, polled every 5 s by `browser_pages`). A click opens a tab at
   `http://localhost:<port>` (`https://` with `tls`) for each such service whose origin no tab shows yet: a new Chrome
   starts with them, a running one gets them over CDP (`Target.setDiscoverTargets` keeps each tab's URL), an empty tab
-  is reused.
+  is reused. For a remote session the services are those of its preview that answer on the VM (`preview_status` marks
+  the frontend services of the worktree's hunt.json), each at its preview URL; the widget the review server adds to
+  such a page finds the injected one and does nothing.
 - **Profile per repository**: a new Chrome gets a copy of the repository's profile (`<app data>/browser/<repo hash>/
   profile`) in `<app data>/browser/sessions/<session id>`, without Chrome's locks and caches, so the sign-ins made in
   an earlier session of the repository are there. When the Chrome ends (its agent or session stops, Hunt quits, or the
@@ -835,7 +839,7 @@ wrapper and `/etc/hunt/github-token`.
 `hunt-ctl session-config` reads the repository's `hunt.json` (contract version 3, `apps/session/src/session-config/hunt-json.value-object.ts`). It
 lists every service of the repository, a monorepo all of its apps, with its `command`, an optional `cwd`, its `port`,
 `tls` (the port speaks HTTPS), `guarded` (behind IAP, the default), `review` (the review widget on its pages, the
-default; see below), `frontend` (it shows pages in a browser, such as a dev server: "Browser" of a local session opens
+default; see below), `frontend` (it shows pages in a browser, such as a dev server: "Browser" opens
 a tab for it; see "Local browser") and `env`, whose values may name a service's URL as
 `${services.<name>.publicUrl}`, `remoteSecrets`, variables whose values are remote secrets (`"$<NAME>"`, see "Remote
 sessions"), and `worktreeInclude`, the ignored files the service needs, as glob patterns, which every worktree and

@@ -164,9 +164,9 @@ export const commands = {
    */
   desktopOpen: (id: string) => invoke<DesktopEndpoint>("desktop_open", { id }),
   /**
-   * Opens the Chrome of the local session `id` with a copy of its repository's browser profile, or brings the running one
-   * to the front, with a tab for each of its `browserPages` that has none yet; the annotations of its review widget arrive
-   * as `review:annotation`.
+   * Opens the Chrome of the session `id` with a copy of its repository's browser profile, or brings the running one to the
+   * front, with a tab for each of its app pages that has none yet (`browserPages`, or the frontend services of a remote
+   * session's preview that answer); the annotations of its review widget arrive as `review:annotation`.
    */
   browserOpen: (id: string) => invoke<void>("browser_open", { id }),
   /** The frontend services of a local session's hunt.json that run now, in its order; "Browser" opens a tab for each. */

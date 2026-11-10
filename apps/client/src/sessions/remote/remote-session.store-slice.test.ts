@@ -124,6 +124,20 @@ describe("remote sessions", () => {
     expect(useHuntStore.getState().chats[SESSION].editVersion).toBe(1);
   });
 
+  it("offers the start view only the config options of local sessions, since the relay on a VM can run another adapter version", () => {
+    const local = [{ id: "model", name: "Model", type: "select" as const, currentValue: "fable", options: [{ value: "fable", name: "Fable 5.2" }] }];
+    const relay = [{ id: "model", name: "Model", type: "select" as const, currentValue: "fable", options: [{ value: "fable", name: "Fable 5.1" }] }];
+    useHuntStore.setState({ chats: {}, sessions: [{ ...storedSession(SESSION, "Remote"), remote }, storedSession("local", "Local")] });
+    useAgentDefaultsStore.setState({ knownOptions: [] });
+    const { applyUpdate } = useHuntStore.getState();
+
+    applyUpdate("local", notification({ sessionUpdate: "config_option_update", configOptions: local }));
+    applyUpdate(SESSION, notification({ sessionUpdate: "config_option_update", configOptions: relay }));
+
+    expect(useAgentDefaultsStore.getState().knownOptions).toEqual(local);
+    expect(useHuntStore.getState().chats[SESSION].configOptions).toEqual(relay);
+  });
+
   it("shows the mode the agent reports in its mode option", () => {
     useHuntStore.setState({ chats: {} });
     useHuntStore.getState().applyUpdate(SESSION, notification({

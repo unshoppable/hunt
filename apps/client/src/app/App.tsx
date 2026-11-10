@@ -37,7 +37,7 @@ import { isAnyCheckRunning } from "../checks/checks.utils";
 import type { ChecksStatus } from "../checks/checks.types";
 import { DesktopPanel } from "../desktop/DesktopPanel";
 import { useAppPages } from "../preview/app-pages.hook";
-import { browserButtonTitle } from "../preview/app-pages.utils";
+import { browserButtonTitle, remoteAppPages } from "../preview/app-pages.utils";
 import { keepPopupWindowsWarm } from "../ui/detached-popup.utils";
 import { usePopupRequest } from "../ui/popup-request.hook";
 import { useChecksStore } from "../checks/checks.store";
@@ -111,8 +111,12 @@ export function App() {
   const setRightTab = (tab: RightTab) => setTab(shownSessionId, tab);
   const openFile = useIdeStore((state) => state.openFile);
   const openBrowser = useHuntStore((state) => state.openBrowser);
-  /** The frontend services of the shown local session that run; "Browser" is enabled while there is one and opens a tab for each. */
-  const appPages = useAppPages(shownSessionId && !activeRemoteInstance ? shownSessionId : null);
+  /**
+   * The frontend services of the shown session that run, on this Mac or, as its preview says, on its VM; "Browser" is
+   * enabled while there is one and opens a tab for each.
+   */
+  const localAppPages = useAppPages(shownSessionId && !activeRemoteInstance ? shownSessionId : null);
+  const appPages = useMemo(() => (activeRemoteInstance ? remoteAppPages(activePreviewStatus) : localAppPages), [activeRemoteInstance, activePreviewStatus, localAppPages]);
   const ideLayout = useIdeStore((state) => (activeSessionId ? state.sessions[activeSessionId]?.layout : null) ?? EMPTY_IDE_SESSION.layout);
   const openPaths = useMemo(() => [...new Set(ideLayout.panes.flatMap((pane) => pane.tabs))], [ideLayout]);
   const fileSearch = usePopupRequest<null>();
@@ -312,12 +316,12 @@ export function App() {
                 dot={isTerminalBusy ? PROCESS_RUNNING_DOT : null}
               />
               {isFactory ? <TabButton isActive={rightTab === "factory"} onClick={() => setRightTab("factory")} icon={<FactoryIcon />} label="Factory" /> : null}
-              {shownSessionId && !activeRemoteInstance ? (
+              {shownSessionId ? (
                 <button
                   type="button"
                   onClick={() => void openBrowser(shownSessionId)}
                   disabled={isCreatingActive || !appPages.length}
-                  title={browserButtonTitle(appPages)}
+                  title={browserButtonTitle(appPages, Boolean(activeRemoteInstance))}
                   className={`${TAB_BUTTON} gap-1.5 ${TAB_INACTIVE} disabled:cursor-default disabled:bg-transparent disabled:text-neutral-400 disabled:opacity-40`}
                 >
                   <GlobeIcon />

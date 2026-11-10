@@ -90,6 +90,9 @@ pub struct PreviewService {
     /// The other services whose public URL its environment holds (`${services.<name>.publicUrl}` in hunt.json); the
     /// services linked this way make up one app. Empty while the VM's `meta.json` predates them.
     pub uses: Vec<String>,
+    /// Whether the worktree's hunt.json marks it `"frontend": true`: "Browser" opens a tab at `url` while it `responds`.
+    /// The VM does not report it; `mark_frontends` sets it.
+    pub frontend: bool,
 }
 
 /// The state of a service's unit.
@@ -146,9 +149,17 @@ pub fn parse_status(output: &serde_json::Value, id: Uuid, domain: &str) -> Resul
             responds: service.responds,
             invocation: service.invocation.filter(|invocation| !invocation.is_empty()),
             uses: service.uses,
+            frontend: false,
         });
     }
     Ok(PreviewStatus { vm_running: true, services })
+}
+
+/// Marks the services of `status` whose name is in `frontends`, the frontend services of the worktree's hunt.json.
+pub fn mark_frontends(status: &mut PreviewStatus, frontends: &[String]) {
+    for service in &mut status.services {
+        service.frontend = frontends.contains(&service.name);
+    }
 }
 
 /// The status of a session whose VM is off: nothing runs.
@@ -234,6 +245,7 @@ mod tests {
                     responds: true,
                     invocation: Some("0f1e2d3c4b5a69788796a5b4c3d2e1f0".into()),
                     uses: vec!["med-ui".into()],
+                    frontend: false,
                 },
                 PreviewService {
                     name: "med-ui".into(),
@@ -246,9 +258,19 @@ mod tests {
                     responds: false,
                     invocation: None,
                     uses: Vec::new(),
+                    frontend: false,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn mark_frontends_marks_the_named_services_only() {
+        let id = Uuid::parse_str(ID).unwrap();
+        let output = json!({"services": [service("api", "running"), service("ui", "running")]});
+        let mut status = parse_status(&output, id, "p.example.com").unwrap();
+        mark_frontends(&mut status, &["ui".into(), "docs".into()]);
+        assert_eq!(status.services.iter().map(|service| service.frontend).collect::<Vec<_>>(), [false, true]);
     }
 
     #[test]

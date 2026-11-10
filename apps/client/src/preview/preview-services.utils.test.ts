@@ -14,6 +14,7 @@ function service(name: string, patch: Partial<PreviewService> = {}): PreviewServ
     responds: false,
     invocation: null,
     uses: [],
+    frontend: false,
     ...patch,
   };
 }

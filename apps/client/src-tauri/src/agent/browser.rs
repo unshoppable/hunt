@@ -1,6 +1,7 @@
-//! The Chrome of a local session: a Google Chrome of its own, in a window of its own, which the session's agent drives
-//! through Playwright MCP (`apps/client/scripts/browserMcp.mjs`, `--cdp-endpoint` on the session's port) and on whose
-//! pages Hunt shows the review widget. Its profile is a copy of the repository's profile (`<browser dir>/<repo hash>/
+//! The Chrome of a session: a Google Chrome of its own on this Mac, in a window of its own, which the agent of a local
+//! session drives through Playwright MCP (`apps/client/scripts/browserMcp.mjs`, `--cdp-endpoint` on the session's port)
+//! and on whose pages Hunt shows the review widget. A remote session's agent drives the Chromium on its VM instead; its
+//! Chrome here shows the preview of the VM's apps to the user alone. Its profile is a copy of the repository's profile (`<browser dir>/<repo hash>/
 //! profile`) in `<browser dir>/sessions/<session id>`, so the repository's logins are there; when the Chrome ends, the
 //! copy replaces the repository's profile, so the session closed last wins. Chrome starts on demand: when the agent calls
 //! its first browser tool (the wrapper asks through the control socket, `crate::platform::control`) or the user clicks

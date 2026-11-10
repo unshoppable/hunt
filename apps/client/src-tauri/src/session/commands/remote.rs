@@ -14,6 +14,7 @@ use super::{
     EFFORT_CONFIG_ID, MODEL_CONFIG_ID, MODE_CONFIG_ID, REMOTE_SETTINGS,
 };
 use crate::agent::acp::{system_prompt_append, AgentTransport, PermissionRegistry, SessionRegistry};
+use crate::agent::app_pages;
 use crate::agent::claude_config::claude_dir;
 use crate::github::github_token;
 use crate::graph::WatcherRegistry;
@@ -29,11 +30,12 @@ use crate::session::vm_cleanup::{deleted_session_vms, run_pending_cleanups};
 use crate::terminal::tmux;
 
 /// The preview of the remote session `id`: the services of its repository's hunt.json with their state and URLs, and the
-/// other ports that listen on its VM. A VM that is off has none; it is not started. A connected session proves a running
-/// VM, so only an unconnected one asks the gateway.
+/// other ports that listen on its VM, the frontend services of the worktree's hunt.json marked as such. A VM that is off
+/// has none; it is not started. A connected session proves a running VM, so only an unconnected one asks the gateway.
 #[tauri::command]
 pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>, id: Uuid) -> Result<PreviewStatus, String> {
-    let target = store::find_session(&app, id)?.remote.ok_or("failed to read the preview: the session runs locally")?;
+    let record = store::find_session(&app, id)?;
+    let target = record.remote.ok_or("failed to read the preview: the session runs locally")?;
     let domain = target
         .preview_domain
         .as_deref()
@@ -44,7 +46,9 @@ pub async fn preview_status(app: AppHandle, registry: State<'_, SessionRegistry>
     }
     let ssh = remote::ssh::Ssh::open(&target.vm, &ssh_dir()?).await?;
     let status = remote::hunt_ctl(&ssh, &["preview-status", &id.to_string()]).await?;
-    remote::preview::parse_status(&status, id, domain)
+    let mut status = remote::preview::parse_status(&status, id, domain)?;
+    remote::preview::mark_frontends(&mut status, &app_pages::frontend_names(&record.worktree_path));
+    Ok(status)
 }
 
 /// The VM of the remote session `id` as the gateway reports it, for the hover card of the chat header's "On VM" button.

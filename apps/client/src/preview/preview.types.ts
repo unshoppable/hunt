@@ -6,7 +6,7 @@ export type PreviewServiceState = "running" | "starting" | "failed" | "stopped";
  * is `https://<short>-<port>.<domain>` behind the Google login, or `https://<short>-<port>-open.<domain>` without it for
  * a service with `"guarded": false`. An `enabled` service comes back after a VM boot; `responds` says whether its port
  * listens on the VM; `invocation` is systemd's ID of the unit's current run, new with every start, null while it does
- * not run.
+ * not run; `frontend` says whether the worktree's hunt.json marks it `"frontend": true`.
  */
 export type PreviewService = {
   name: string;
@@ -23,6 +23,7 @@ export type PreviewService = {
    * linked this way make up one app. Empty while the VM's records predate them.
    */
   uses: string[];
+  frontend: boolean;
 };
 
 /**
@@ -33,8 +34,8 @@ export type PreviewService = {
 export type PreviewStatus = { vmRunning: boolean; services: PreviewService[] };
 
 /**
- * A hunt.json service of a local session marked `"frontend": true` whose port accepts connections on this Mac (mirror of
- * `AppPage` in src-tauri/src/agent/app_pages.rs); "Browser" opens a tab of the session's Chrome at `url`,
- * `http://localhost:<port>` (`https://` with `tls`).
+ * A hunt.json service marked `"frontend": true` whose port accepts connections, on this Mac for a local session and on
+ * its VM for a remote one (mirror of `AppPage` in src-tauri/src/agent/app_pages.rs); "Browser" opens a tab of the
+ * session's Chrome at `url`: `http://localhost:<port>` (`https://` with `tls`), or the service's preview URL.
  */
 export type AppPage = { name: string; url: string };

@@ -1,3 +1,9 @@
+## 0.162.1 (2026-11-10)
+
+### 🩹 Fixes
+
+- **client:** show no terminal for a stopped service on the VM instead of its last run's log ([ef66653](https://github.com/unshoppable/hunt/commit/ef66653))
+
 ## 0.162.0 (2026-11-10)
 
 ### 🚀 Features

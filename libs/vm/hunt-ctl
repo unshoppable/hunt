@@ -131,7 +131,7 @@ readonly -a DESKTOP_PACKAGES=(sway ffmpeg fonts-noto-cjk)
 # The preview domain of the edge proxy: `install --domain` sets it, later installs keep it.
 readonly DOMAIN_FILE=/etc/hunt/preview-domain
 # The zones session VMs may go into, one per line in order of preference (apps/gateway/src/shared/session-zones.utils.ts): the install
-# writes them from the gateway's instance metadata SESSION_ZONES_ATTRIBUTE, and the edge looks session VMs up in them.
+# writes them from the gateway's instance metadata SESSION_ZONES_ATTRIBUTE.
 readonly SESSION_ZONES_FILE=/etc/hunt/session-zones
 readonly SESSION_ZONES_ATTRIBUTE=hunt-session-zones
 # The session release the gateway installs on session VMs (apps/gateway/src/session-vm/session-vm-ssh.client.ts): `stage-session` keeps it and
@@ -2084,19 +2084,20 @@ session_zones() {
   printf '%s\n' "${zones[@]}"
 }
 
-# Writes the edge's Caddy configuration for domain $1 and the session VMs of project $2 in the zones $3…, which it tries
-# in their order. Both servers serve only the load balancer's ranges and answer its health check on every host; they
+# Writes the edge's Caddy configuration for domain $1 and the session VMs of project $2, whatever zone they are in.
+# Both servers serve only the load balancer's ranges and answer its health check on every host; they
 # remove IAP's headers and cookies, also those a client sent itself, before a request leaves the gateway.
 write_edge_config() {
-  local ranges zones
+  local ranges
   ranges=$(printf '%s\n' "${LB_RANGES[@]}" | jq -R . | jq -cs .)
-  zones=$(printf '%s\n' "${@:3}" | jq -R . | jq -cs .)
-  jq -n --arg domain "${1//./\\.}" --arg project "$2" --argjson zones "$zones" --argjson ranges "$ranges" \
+  jq -n --arg domain "${1//./\\.}" --arg project "$2" --argjson ranges "$ranges" \
     --arg guardedListen ":$EDGE_PORT" --arg openListen ":$EDGE_OPEN_PORT" --arg health "$EDGE_HEALTH_PATH" \
     --arg sessionPort "$SESSION_PROXY_PORT" --arg wake "$WAKE_ADDRESS" '
     # A server on $listen that forwards the hosts matching $pattern to the session VM their first label names and
     # answers what it cannot deliver there (502, 503, 504) with the handler $unreachable. The VM is looked up by its
-    # zonal DNS name in every zone; only the zone that holds it resolves, and no zone at all makes a 503.
+    # global DNS name, which carries no zone: one lookup per request, which Caddy caches while it resolves; a lookup
+    # per zone would repeat every failing one on every request, one at a time across all requests. A VM that does
+    # not exist makes a 503.
     def server($listen; $pattern; $unreachable): {
       listen: [$listen],
       automatic_https: {disable: true},
@@ -2108,11 +2109,10 @@ write_edge_config() {
           terminal: true,
           handle: [{
             handler: "reverse_proxy",
-            dynamic_upstreams: {source: "multi", sources: [$zones[] | {
+            dynamic_upstreams: {source: "multi", sources: [{
               source: "a",
-              name: "vm-hunt-s-{http.regexp.session.1}.\(.).c.\($project).internal.",
+              name: "vm-hunt-s-{http.regexp.session.1}.c.\($project).internal.",
               port: $sessionPort}]},
-            load_balancing: {selection_policy: {policy: "first"}},
             flush_interval: -1,
             headers: {request: {
               set: {Host: ["{http.request.hostport}"]},
@@ -2123,7 +2123,8 @@ write_edge_config() {
     };
     {
       admin: {listen: "unix//tmp/caddy-admin.sock"},
-      # The multi source logs every zone whose lookup fails, which is all zones but one on every request.
+      # The multi source logs a failing lookup under a logger of its own, which a VM that does not exist causes on
+      # every request; without it the logger of the proxy would report each as an error.
       logging: {logs: {default: {level: "WARN", exclude: ["http.reverse_proxy.upstreams.multi"]}}},
       apps: {http: {servers: {
         edge: server($guardedListen; "^([0-9a-f]{8})(-[0-9]{1,5})?\\.\($domain)$"; {handler: "reverse_proxy", upstreams: [{dial: $wake}]}),
@@ -2154,7 +2155,7 @@ ensure_edge() {
   chmod 0644 "$SESSION_ZONES_FILE.tmp"
   mv -f "$SESSION_ZONES_FILE.tmp" "$SESSION_ZONES_FILE"
   install -d -m 0755 "$EDGE_CONFIG_DIR"
-  write_edge_config "$domain" "$project" "${zones[@]}"
+  write_edge_config "$domain" "$project"
   state=$(container_state "$EDGE_NAME")
   if [[ $state == running && $(docker inspect --format '{{.Config.Image}} {{.HostConfig.RestartPolicy.Name}}' "$EDGE_NAME") == "$EDGE_IMAGE unless-stopped" ]]; then
     docker exec "$EDGE_NAME" caddy reload --config /etc/hunt-edge/caddy.json --address unix//tmp/caddy-admin.sock >/dev/null

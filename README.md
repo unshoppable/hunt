@@ -1002,8 +1002,8 @@ text, and a ⌘ or ⌃ letter shortcut on the US key of the letter the Mac's lay
 
 The gateway keeps no sessions. Its edge proxy `hunt-edge` (Caddy in Docker on port 8080 behind the load balancer)
 serves only the load balancer's address ranges, removes IAP's headers and cookies and forwards every preview host with
-its Host header to `vm-hunt-s-<short id>.<zone>.c.<project>.internal:8080`, trying the session zones in their order
-(below): the session VMs' internal DNS names are the whole routing table, and only the zone that holds the VM resolves.
+its Host header to `vm-hunt-s-<short id>.c.<project>.internal:8080`: the session VMs' global internal DNS names, which
+carry no zone, are the whole routing table, so the edge finds a VM in whatever zone it is with one lookup.
 A request it cannot deliver (502, 503 or 504, because the VM is off, still booting or in no session zone) goes to
 `hunt-wake.service` on 127.0.0.1:9180 (`apps/gateway/src/wake/wake.main.ts`). It looks the VM up in every zone through the
 Compute Engine API with the gateway's service account, starts or resumes it for a page load, at most once every 30
@@ -1034,8 +1034,7 @@ any other error of the creation ends the call. Every VM it creates goes on the s
 the name of the template's subnet (read once from the template), so each region of the list needs such a subnet with
 Cloud NAT. When every zone is out of a C4D type, it tries the zones again with the same shape of C4 and then of C3D
 (`fallbackMachineTypes` in `libs/domain/src/session/session-machine-type.types.ts`), and fails naming every type and
-zone only when all are out. Changing the list takes effect with the next install, for the gateway and
-the edge alike. A stopped VM whose own zone reports a stockout for its start moves to the first other session zone with
+zone only when all are out. Changing the list takes effect with the next install. A stopped VM whose own zone reports a stockout for its start moves to the first other session zone with
 capacity, in list order: the gateway snapshots its boot disk (`vm-hunt-s-<short id>-move`), renames the VM to
 `vm-hunt-s-<short id>-moving` and creates a VM from the template in the other zone with a boot disk Compute Engine makes
 from the snapshot and the old VM's labels, machine type and metadata (a creation a stockout refuses leaves no disk

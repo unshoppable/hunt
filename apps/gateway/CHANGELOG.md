@@ -1,3 +1,9 @@
+## 0.49.4 (2026-11-11)
+
+### 🩹 Fixes
+
+- **gateway:** find a session VM with one DNS lookup instead of one per zone ([ec324cb](https://github.com/unshoppable/hunt/commit/ec324cb))
+
 ## 0.49.3 (2026-11-10)
 
 This was a version bump only for gateway to align it with other projects, there were no code changes.

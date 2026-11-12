@@ -15,11 +15,12 @@ import type { RemoteRun } from "../sessions/remote/remote-run.utils";
 import type { AnnotationEvent, EditChanges, SessionView, WorktreePathChanges } from "../sessions/session.types";
 import { asksQuestion } from "../../../../libs/domain/src/shared/question.utils.ts";
 import { createEmptyChat, huntTurnOf, nextItemId, reduceChat, replacedChat, type MessageItem } from "./chat-reducer.utils";
-import { createSessionNaming } from "../sessions/session.store-slice";
+import { agentSetupOf, createSessionNaming } from "../sessions/session.store-slice";
+import { titleFromPrompt } from "../sessions/session-labels.utils";
 import { useAgentDefaultsStore } from "./agent-defaults.store";
 import { usePlanUsageStore } from "../accounts/plan-usage.store";
 import { useSettingsStore } from "../settings/settings.store";
-import { promptSummary } from "./prompt/annotation-prompt.utils";
+import { annotationScreenshots, promptSummary, promptWithAnnotations } from "./prompt/annotation-prompt.utils";
 
 export type SessionMode = { id: string; name: string; description?: string | null };
 
@@ -124,8 +125,9 @@ export type ChatSlice = {
   /** What the prompt box of a session holds but has not sent yet, by session id; the box shows it again when the session is opened again. */
   promptDrafts: Record<string, PromptDraft>;
   /**
-   * The annotations of the review widget a remote session's status channel delivered, by session id, in arrival order;
-   * the composer shows them and sends them along with the next prompt.
+   * The annotations of the review widget that wait for the next prompt, by session id, in arrival order: those a remote
+   * session's status channel delivered and those the widget of a session's Chrome added. The composer shows them and
+   * sends them along with the next prompt.
    */
   annotations: Record<string, StoredBrowserAnnotation[]>;
 
@@ -149,8 +151,19 @@ export type ChatSlice = {
   unqueuePrompt: (id: string, promptId: string) => void;
   /** Remembers what the prompt box of `id` holds (see `promptDrafts`); an empty draft forgets it. */
   setPromptDraft: (id: string, draft: PromptDraft) => void;
-  /** Adds the delivered annotation to its session's (see `annotations`); one whose id the session has already is ignored. */
+  /**
+   * Adds the delivered annotation to its session's (see `annotations`); one whose id the session has already is ignored,
+   * and so is one that is sent at once or goes to a new sub session, which `deliverAnnotation` takes.
+   */
   applyAnnotation: (event: AnnotationEvent) => void;
+  /**
+   * Carries out what the review widget of a session's Chrome asked for beyond adding the annotation to its session's:
+   * sends it as a prompt of its own, like the composer would, and for a new sub session creates that one, activated,
+   * with the parent's agent setup, which gets the annotation as its first prompt or above its composer. A sub session
+   * that cannot be created leaves the annotation above the parent's composer. Only the main window calls this, so that
+   * a prompt is sent and a session created once.
+   */
+  deliverAnnotation: (event: AnnotationEvent) => Promise<void>;
   /** Takes the annotation `annotationId` out of the session `id`'s. */
   removeAnnotation: (id: string, annotationId: string) => void;
   /** Forgets every annotation of the session `id`, once the composer sent them. */
@@ -616,12 +629,34 @@ export function createChatSlice(set: HuntSet, get: HuntGet, turns: ChatTurns): C
       });
     },
 
-    applyAnnotation: ({ huntSessionId, annotation }) => {
+    applyAnnotation: ({ huntSessionId, annotation, sends, createsSubSession }) => {
+      if (sends || createsSubSession) return;
       set((state) => {
         const current = state.annotations[huntSessionId] ?? [];
         if (current.some((known) => known.id === annotation.id)) return state;
         return { annotations: { ...state.annotations, [huntSessionId]: [...current, annotation] } };
       });
+    },
+
+    deliverAnnotation: async ({ huntSessionId, annotation, sends, createsSubSession }) => {
+      if (!sends && !createsSubSession) return;
+      const prompt = { text: promptWithAnnotations([annotation], ""), images: annotationScreenshots([annotation]) };
+      if (!createsSubSession) {
+        await get().sendPrompt(huntSessionId, prompt.text, prompt.images);
+        return;
+      }
+      const add = (id: string) => get().applyAnnotation({ huntSessionId: id, annotation, sends: false, createsSubSession: false });
+      const parentChat = get().chats[huntSessionId];
+      const setup = parentChat ? agentSetupOf(parentChat) : { configValues: {}, modeId: "default" };
+      try {
+        const id = await get().createSubSession(huntSessionId, titleFromPrompt(annotation.comment), null, { setup, prompt: sends ? prompt : null }, true);
+        if (!sends) {
+          add(id);
+        }
+      } catch (error) {
+        console.warn(`failed to create a sub session for an annotation of the review widget: ${String(error)}`);
+        add(huntSessionId);
+      }
     },
 
     removeAnnotation: (id, annotationId) => {

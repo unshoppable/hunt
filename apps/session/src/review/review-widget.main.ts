@@ -1,21 +1,30 @@
 /**
  * The review widget, which the review server (`review-server.service.ts`) adds to every HTML page of a guarded preview
  * host as `/__hunt/review.js` and the desktop app injects into every page of a local session's Chrome: a floating button
- * starts picking, the element under the pointer is outlined, a click picks it and opens a comment box, and "Add" hands
- * the annotation over (`annotation-delivery.utils.ts`: the CDP binding in a local Chrome, else a POST to
- * `/__hunt/review`), from where it reaches the session's composer in the desktop client. Escape cancels picking and
- * closes the box. All of the UI lives in a closed shadow root, so the page's styles and scripts do not reach it; the
- * only global is the guard against a second copy. `scripts/buildReviewWidget.ts` bundles it for the browser, which
+ * starts picking, the element under the pointer is outlined, a click picks it and opens a comment box, which hands
+ * the annotation over (`annotation-delivery.utils.ts`). On a preview host "Add" posts it to `/__hunt/review`, from where
+ * it reaches the composer of the VM's session in the desktop client. In a Chrome Hunt is attached to, the box asks Hunt
+ * through the CDP binding for the sessions of the Chrome's worktree and lists them, below "New sub session", in a
+ * dropdown that starts at the session the Chrome belongs to and keeps the last choice; "Send" hands the annotation to
+ * the chosen session as a prompt at once, and "Add to session" in the menu of the chevron beside it puts it above that
+ * session's composer for the next prompt. Escape cancels picking and closes the box. All of the UI lives in a closed
+ * shadow root, so the page's styles and scripts do not reach it; the only globals are the guard against a second copy
+ * and the callback Hunt answers the sessions through. `scripts/buildReviewWidget.ts` bundles it for the browser, which
  * runs it on load: as a browser script it has no CLI guard and imports no package and no Node built-in.
  */
 import { ANNOTATION_LIMITS, type BrowserAnnotation } from "../../../../libs/domain/src/review/browser-annotation.utils.ts";
-import { deliverAnnotation, mountTiming, type PostJson } from "./annotation-delivery.utils.ts";
+import { deliverAnnotation, hasBinding, mountTiming, requestSessions, type AnnotationDelivery, type PostJson, type ReviewSessions } from "./annotation-delivery.utils.ts";
 import { angularComponent, attributeSource, cssSelector, pickStyles, reactSource, shorten, shortenHtml, type ElementStep } from "./element-info.utils.ts";
 
 const GUARD = "__huntReviewWidget";
 const HOST_TAG = "hunt-review";
 const MAX_SOURCE_ANCESTORS = 12;
 const TOAST_MS = 2_500;
+/** The room in px the menu of the chevron needs below the comment box. */
+const MENU_ROOM = 44;
+/** The value of the session dropdown's entry for a new sub session. */
+const NEW_SESSION = "new";
+const CHEVRON_DOWN = `<svg viewBox="0 0 12 12" width="10" height="10" aria-hidden="true"><path d="M2.5 4.5 6 8l3.5-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
 const STYLE = `
 :host { all: initial; }
@@ -34,14 +43,24 @@ const STYLE = `
 .target { color: #6b7280; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 textarea { width: 100%; min-height: 72px; resize: vertical; padding: 6px 8px; border: 1px solid #d1d5db; border-radius: 6px; color: #111827;
   background: #fff; outline: none; }
-textarea:focus { border-color: #2563eb; }
+textarea:focus, select:focus { border-color: #2563eb; }
+select { width: 100%; height: 28px; padding: 0 6px; border: 1px solid #d1d5db; border-radius: 6px; color: #111827; background: #fff; outline: none; }
 .actions { display: flex; justify-content: flex-end; gap: 6px; }
 button.action { height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid #d1d5db; background: #fff; color: #111827; cursor: pointer; }
 button.primary { border-color: #2563eb; background: #2563eb; color: #fff; }
 button.action:disabled { opacity: 0.5; cursor: default; }
+.split { position: relative; display: flex; }
+.split [data-send] { border-radius: 6px 0 0 6px; }
+.split [data-more] { display: flex; align-items: center; padding: 0 7px; border-radius: 0 6px 6px 0; border-left-color: rgba(255, 255, 255, 0.4); }
+.menu { position: absolute; right: 0; top: calc(100% + 4px); min-width: 100%; padding: 4px; border: 1px solid #d1d5db; border-radius: 6px; background: #fff;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2); }
+.menu button { display: block; width: 100%; height: 26px; padding: 0 8px; border: 0; border-radius: 4px; background: none; color: #111827; text-align: left;
+  white-space: nowrap; cursor: pointer; }
+.menu button:hover, .menu button:focus-visible { background: #eff6ff; outline: none; }
+[hidden] { display: none !important; }
 .error { color: #b91c1c; font-size: 12px; }
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: 56px; z-index: 2147483647; padding: 6px 10px; border-radius: 6px; background: #111827; color: #f9fafb;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); }
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25); max-width: calc(100vw - 32px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 `;
 
 type Phase = "idle" | "picking" | "commenting";
@@ -65,6 +84,9 @@ function start(): void {
   let phase: Phase = "idle";
   let hovered: Element | null = null;
   let commentBox: HTMLDivElement | null = null;
+  /** The sessions Hunt answered last, and the entry of the dropdown the person chose last. */
+  let sessions: ReviewSessions | undefined;
+  let chosenSession: string | undefined;
 
   const isOwn = (target: EventTarget | null) => target === host;
 
@@ -124,43 +146,125 @@ function start(): void {
     commentBox?.remove();
     const box = document.createElement("div");
     box.className = "box";
+    // Only a Chrome Hunt is attached to knows the sessions and can send; a preview host adds to the VM's session.
+    const isAttached = hasBinding(globals);
+    const handOver = isAttached
+      ? `<div class="split"><button class="action primary" type="button" data-send>Send</button><button class="action primary" type="button" data-more
+  aria-haspopup="menu" aria-expanded="false" title="More ways to hand the comment over">${CHEVRON_DOWN}</button><div class="menu" role="menu" hidden><button
+  type="button" role="menuitem" data-add>Add to session</button></div></div>`
+      : `<button class="action primary" type="button" data-add>Add</button>`;
     box.innerHTML = `<div class="target"></div>
+<select aria-label="The session the comment goes to" hidden></select>
 <textarea placeholder="What should the agent change here?"></textarea>
 <div class="error" hidden></div>
-<div class="actions"><button class="action" type="button" data-cancel>Cancel</button><button class="action primary" type="button" data-add>Add</button></div>`;
+<div class="actions"><button class="action" type="button" data-cancel>Cancel</button>${handOver}</div>`;
     const target = part<HTMLDivElement>(box, ".target");
+    const select = part<HTMLSelectElement>(box, "select");
     const textarea = part<HTMLTextAreaElement>(box, "textarea");
     const error = part<HTMLDivElement>(box, ".error");
     const addButton = part<HTMLButtonElement>(box, "[data-add]");
+    const sendButton = box.querySelector<HTMLButtonElement>("[data-send]");
+    const moreButton = box.querySelector<HTMLButtonElement>("[data-more]");
+    const menu = box.querySelector<HTMLDivElement>(".menu");
+    const buttons = [addButton, sendButton, moreButton].filter((button) => button !== null);
     target.textContent = describe(element);
     target.title = target.textContent;
     textarea.maxLength = ANNOTATION_LIMITS.comment;
-    addButton.disabled = true;
-    textarea.addEventListener("input", () => {
-      addButton.disabled = !textarea.value.trim();
-    });
+    let isDelivering = false;
+    const enableButtons = () => {
+      for (const button of buttons) {
+        button.disabled = isDelivering || !textarea.value.trim();
+      }
+    };
+    enableButtons();
+    textarea.addEventListener("input", enableButtons);
     part<HTMLButtonElement>(box, "[data-cancel]").addEventListener("click", () => setPhase("idle"));
 
-    async function add(): Promise<void> {
-      if (!textarea.value.trim() || addButton.disabled) return;
-      addButton.disabled = true;
+    const showMenu = (isShown: boolean) => {
+      if (!menu || !moreButton) return;
+      // The menu opens upwards where the viewport has no room below the box.
+      const opensUp = box.getBoundingClientRect().bottom + MENU_ROOM > window.innerHeight;
+      Object.assign(menu.style, opensUp ? { top: "auto", bottom: "calc(100% + 4px)" } : { top: "calc(100% + 4px)", bottom: "auto" });
+      menu.hidden = !isShown;
+      moreButton.setAttribute("aria-expanded", String(isShown));
+    };
+    moreButton?.addEventListener("click", () => showMenu(Boolean(menu?.hidden)));
+    box.addEventListener("click", (event) => {
+      if (event.target instanceof Node && !moreButton?.contains(event.target)) {
+        showMenu(false);
+      }
+    });
+
+    /** Lists `known` in the dropdown below "New sub session" and selects the entry chosen last, else the Chrome's session. */
+    const listSessions = (known: ReviewSessions) => {
+      const entries = [{ value: NEW_SESSION, label: "New sub session" }, ...known.sessions.map((session) => ({ value: session.id, label: `${session.isSub ? "↳ " : ""}${session.title}` }))];
+      select.replaceChildren(
+        ...entries.map((entry) => {
+          const option = document.createElement("option");
+          option.value = entry.value;
+          option.textContent = entry.label;
+          return option;
+        }),
+      );
+      const preferred = [select.hidden ? undefined : select.value, chosenSession, known.own].find((value) => entries.some((entry) => entry.value === value));
+      select.value = preferred ?? NEW_SESSION;
+      select.hidden = false;
+    };
+    select.addEventListener("change", () => {
+      chosenSession = select.value;
+    });
+    if (sessions) {
+      listSessions(sessions);
+    }
+    requestSessions(globals, (answered) => {
+      sessions = answered;
+      if (commentBox === box) {
+        listSessions(answered);
+      }
+    });
+
+    /** Where the annotation goes: the dropdown's session, the Chrome's own while Hunt has not answered the sessions. */
+    const deliveryOf = (sends: boolean): AnnotationDelivery | undefined => {
+      if (!isAttached) return undefined;
+      if (select.hidden) return { isNew: false, sends };
+      return select.value === NEW_SESSION ? { isNew: true, sends } : { sessionId: select.value, isNew: false, sends };
+    };
+
+    const sessionName = (delivery: AnnotationDelivery): string => {
+      if (delivery.isNew) return "a new sub session";
+      const title = sessions?.sessions.find((session) => session.id === delivery.sessionId)?.title;
+      return title ? `"${shorten(title, 40)}"` : "the session";
+    };
+
+    async function handOverComment(sends: boolean): Promise<void> {
+      const comment = textarea.value.trim();
+      if (!comment || isDelivering) return;
+      isDelivering = true;
+      enableButtons();
       error.hidden = true;
+      const delivery = deliveryOf(sends);
       try {
-        await deliverAnnotation(annotationOf(element, textarea.value.trim()), globals, postJson);
+        await deliverAnnotation(annotationOf(element, comment), delivery, globals, postJson);
         setPhase("idle");
-        toast("Added to the session's next prompt in Hunt");
+        if (!delivery) {
+          toast("Added to the session's next prompt in Hunt");
+        } else {
+          toast(`${delivery.sends ? "Sent" : "Added"} to ${sessionName(delivery)} in Hunt`);
+        }
       } catch (failure) {
-        error.textContent = `Could not add the comment: ${failure instanceof Error ? failure.message : String(failure)}`;
+        error.textContent = `Could not ${sends ? "send" : "add"} the comment: ${failure instanceof Error ? failure.message : String(failure)}`;
         error.hidden = false;
-        addButton.disabled = false;
+        isDelivering = false;
+        enableButtons();
       }
     }
 
-    addButton.addEventListener("click", () => void add());
+    addButton.addEventListener("click", () => void handOverComment(false));
+    sendButton?.addEventListener("click", () => void handOverComment(true));
     textarea.addEventListener("keydown", (event) => {
       if (event.key !== "Enter" || !(event.metaKey || event.ctrlKey)) return;
       event.preventDefault();
-      void add();
+      void handOverComment(isAttached);
     });
     shadow.append(box);
     placeBox(box, element.getBoundingClientRect());
@@ -169,6 +273,7 @@ function start(): void {
   }
 
   function toast(message: string): void {
+    shadow.querySelector(".toast")?.remove();
     const note = document.createElement("div");
     note.className = "toast";
     note.textContent = message;

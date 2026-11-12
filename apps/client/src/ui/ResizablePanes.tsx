@@ -29,9 +29,14 @@ function panesOf(element: HTMLElement): HTMLElement[] {
   return [...element.children].filter((child): child is HTMLElement => child instanceof HTMLElement && child.hasAttribute("data-panel"));
 }
 
-/** The pixels `panes` share out along `orientation`: the group's size without its separators. */
-function paneSpaceOf(panes: HTMLElement[], orientation: "horizontal" | "vertical"): number {
-  return panes.reduce((total, pane) => total + (orientation === "horizontal" ? pane.offsetWidth : pane.offsetHeight), 0);
+/**
+ * The pixels the panes of the group `element` share out along `orientation`: the group's size without its separators.
+ * Not the sum of the panes' `offsetWidth`s: those are rounded one by one, so their sum changes by a pixel while a
+ * separator is dragged, which `showRememberedSizes` would take for a resize of the group.
+ */
+function paneSpaceOf(element: HTMLElement, orientation: "horizontal" | "vertical"): number {
+  const sizeOf = (box: Element) => box.getBoundingClientRect()[orientation === "horizontal" ? "width" : "height"];
+  return [...element.children].reduce((space, child) => (child.hasAttribute("data-panel") ? space : space - sizeOf(child)), sizeOf(element));
 }
 
 /**
@@ -90,7 +95,7 @@ export function PersistentGroup({
     const sizes = readPaneSizes(id);
     if (!element || !sizes) return;
     const panes = panesOf(element);
-    const paneSpace = paneSpaceOf(panes, orientation);
+    const paneSpace = paneSpaceOf(element, orientation);
     if (paneSpace === shownPaneSpace.current) return;
     const layout = layoutFromPixels(sizes, panes.map((pane) => pane.id), fillPane, paneSpace);
     if (!layout) return;
@@ -112,7 +117,7 @@ export function PersistentGroup({
   const rememberSizes = (layout: Layout) => {
     const element = groupElement.current;
     if (!element) return;
-    writePaneSizes(id, pixelsFromLayout(layout, fillPane, paneSpaceOf(panesOf(element), orientation)));
+    writePaneSizes(id, pixelsFromLayout(layout, fillPane, paneSpaceOf(element, orientation)));
   };
 
   // While a toggle animates the panes, each pane's content keeps the larger of its old and new size, so a frame only
@@ -122,7 +127,7 @@ export function PersistentGroup({
     if (!element) return;
     const isHorizontal = orientation === "horizontal";
     const panes = panesOf(element);
-    const paneSpace = paneSpaceOf(panes, orientation);
+    const paneSpace = paneSpaceOf(element, orientation);
     const contents = panes.map((pane) => {
       const content = pane.firstElementChild;
       if (!(content instanceof HTMLElement)) return null;
@@ -169,7 +174,7 @@ export function PersistentGroup({
       restored[paneId] = start[paneId];
     }
     // Layout percentages share out the panes' space, which excludes the separators.
-    const paneSpace = paneSpaceOf(panes, orientation);
+    const paneSpace = paneSpaceOf(element, orientation);
     for (const [paneId, neighbour] of [
       [before, after],
       [after, before],

@@ -29,7 +29,7 @@ type EventPayloads = {
   "remote:link": RemoteLinkEvent;
   /** The relay of a remote session reported another activity through its status channel, or its VM stopped mid-turn. */
   "remote:relay": RelayActivityEvent;
-  /** The review widget on a preview page of a remote session's VM delivered an annotation, for the session's composer. */
+  /** The review widget delivered an annotation: on a preview page of a remote session's VM for the session's composer, in a session's Chrome for what it names. */
   "review:annotation": AnnotationEvent;
   "graph:changed": GraphChangedEvent;
   "session:summary": SummaryEvent;

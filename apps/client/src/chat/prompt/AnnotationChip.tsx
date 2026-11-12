@@ -3,8 +3,8 @@ import { CommentIcon } from "../../ui/Icons";
 
 /**
  * An annotation of the review widget as a chip: a thumbnail of the element's screenshot (else a comment icon), the
- * comment and a short name of the element. The composer passes `children` for its remove button; a sent prompt's bubble
- * shows the chip as is.
+ * comment and a short name of the element, above the composer, which passes `children` for its remove button. A sent
+ * prompt's bubble shows `SentAnnotationCard` instead.
  */
 export function AnnotationChip({ comment, label, title, imageUrl, children }: { comment: string; label: string; title: string; imageUrl?: string; children?: ReactNode }) {
   return (

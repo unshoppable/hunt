@@ -131,6 +131,19 @@ function refreshPulledPipeline(sessionId: string): void {
   void useFactoryStore.getState().refresh(sessionId);
 }
 
+/**
+ * Carries out the annotations the review widget of a session's Chrome wants sent at once or in a new sub session
+ * (`deliverAnnotation`). The main window alone calls it: every window hears `review:annotation`, and the prompt is sent
+ * once.
+ */
+export function useAnnotationDelivery(): void {
+  const deliverAnnotation = useHuntStore((state) => state.deliverAnnotation);
+  useEffect(() => {
+    const subscription = listenTo("review:annotation", (event) => void deliverAnnotation(event));
+    return () => void subscription.then((unlisten) => unlisten());
+  }, [deliverAnnotation]);
+}
+
 /** Feeds the backend's events into the Hunt store for as long as the component is mounted. */
 export function useBackendEvents(): void {
   const refreshSessions = useHuntStore((state) => state.refreshSessions);

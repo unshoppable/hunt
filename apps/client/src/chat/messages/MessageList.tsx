@@ -14,7 +14,7 @@ import { resolveFileLink, resolveFileReference, type FileIndex } from "../file-l
 import { splitFencedCode } from "../code-paste.utils";
 import { huntPromptNotice } from "../hunt-prompt-notice.utils";
 import { parseAnnotatedPrompt } from "../prompt/annotation-prompt.utils";
-import { AnnotationChip } from "../prompt/AnnotationChip";
+import { SentAnnotationCard } from "../prompt/SentAnnotationCard";
 import { formatMessageTime } from "./message-time.utils";
 import { locateExcerpt } from "./code-excerpt.utils";
 import { diffFenceOldText, diffFencePatch } from "./diff-fence.utils";
@@ -108,19 +108,16 @@ export function MessageList({
       }
       const annotated = parseAnnotatedPrompt(item.text);
       const text = annotated ? annotated.text : item.text;
+      // The screenshots of the annotations show in their cards, the images the user attached above them.
+      const screenshotIndexes = new Set(annotated?.annotations.map((annotation) => (annotation.imageNumber ?? 0) - 1));
+      const attachedImages = item.images.filter((_, index) => !screenshotIndexes.has(index));
       return (
         <div className="ml-auto max-w-[85%] rounded-2xl rounded-br-md bg-(--row-active) px-4 py-2.5 whitespace-pre-wrap break-words text-neutral-100">
-          <ChatImages urls={item.images} className={text || annotated ? "mb-2" : ""} />
+          <ChatImages urls={attachedImages} className={text || annotated ? "mb-2" : ""} />
           {annotated ? (
-            <div className={`flex flex-wrap gap-2 whitespace-normal ${text ? "mb-2" : ""}`}>
+            <div className={`flex flex-col items-start gap-2 whitespace-normal ${text ? "mb-2" : ""}`}>
               {annotated.annotations.map((annotation, index) => (
-                <AnnotationChip
-                  key={index}
-                  comment={annotation.comment}
-                  label={annotation.label}
-                  title={[annotation.comment, annotation.label, annotation.page].join("\n")}
-                  imageUrl={annotation.imageNumber ? item.images[annotation.imageNumber - 1] : undefined}
-                />
+                <SentAnnotationCard key={index} annotation={annotation} imageUrl={annotation.imageNumber ? item.images[annotation.imageNumber - 1] : undefined} />
               ))}
             </div>
           ) : null}

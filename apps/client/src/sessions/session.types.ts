@@ -96,7 +96,14 @@ export type SessionEnding = "stop" | "delete" | "forget";
  * its status channel, or in the Chrome of a local session (mirror of `AnnotationEvent` in
  * src-tauri/src/session/relay_watch.rs).
  */
-export type AnnotationEvent = { huntSessionId: string; annotation: StoredBrowserAnnotation };
+export type AnnotationEvent = {
+  huntSessionId: string;
+  annotation: StoredBrowserAnnotation;
+  /** It is sent as a prompt at once instead of waiting above the composer for the next prompt. */
+  sends: boolean;
+  /** It goes to a new sub session of `huntSessionId` instead of that session itself. */
+  createsSubSession: boolean;
+};
 
 /** The pull request a session reviews: enough to show it and to open it on GitHub. */
 export type PullRequestRef = {

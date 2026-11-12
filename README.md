@@ -216,10 +216,19 @@ and its screenshots as below, while its agent stays on the VM's Chromium (the *D
   the frontend services of the worktree's hunt.json), each at its preview URL; the widget the review server adds to
   such a page finds the injected one and does nothing.
 - **Profile per repository**: a new Chrome gets a copy of the repository's profile (`<app data>/browser/<repo hash>/
-  profile`) in `<app data>/browser/sessions/<session id>`, without Chrome's locks and caches, so the sign-ins made in
+  profile`) in `<app data>/browser/sessions/<session id>`, without Chrome's locks and caches (the scripts and Cache
+  storage of its service workers stay: without them the extensions' workers never start), so the sign-ins made in
   an earlier session of the repository are there. When the Chrome ends (its agent or session stops, Hunt quits, or the
-  user quits Chrome), its copy replaces the repository's profile; the session whose Chrome closed last wins.
-- **Review widget**: Hunt attaches to every page of the Chrome over CDP (`Target.setAutoAttach`), adds the binding
+  user quits Chrome), its copy replaces the repository's profile; the session whose Chrome closed last wins. A Chrome
+  that outlives its Hunt process (a crash, a restart of `tauri dev`) keeps its sign-ins too: the next Hunt ends it at
+  its start and lets its copy replace the repository's profile (`recover_leftovers`, skipping a Chrome another Hunt
+  process runs), and "Browser" does the same for the session before it starts a new Chrome. Hunt is not attached to
+  such a Chrome, so its pages would report annotations through the VM, without a screenshot.
+- **Review widget**: Hunt watches the Chrome's pages over CDP (`Target.setDiscoverTargets`) and attaches only to those
+  that show an app of the session (`is_app_page`: a page this Mac serves, or an origin "Browser" opened, such as a
+  preview host), detaching again while such a tab shows something else, such as the Google sign-in in front of a
+  preview. Every other page, extension window and worker stays untouched: an attached debugger breaks a sign-in with a
+  passkey and the windows of extensions. To an attached page Hunt adds the binding
   `__huntReview` and injects the review widget (`apps/client/src-tauri/resources/review.js`, built by
   `client:review-widget` from `apps/session/src/review/review-widget.main.ts`) before the page's own scripts. The widget hands an
   annotation to the binding instead of posting it; Hunt checks it like the review server does, gives it an ID and a time,
@@ -227,7 +236,16 @@ and its screenshots as below, while its agent stays on the VM's Chromium (the *D
   viewport; without an image after an error, a closed tab or 2 s), writes the PNG to
   `<app data>/annotations/<session id>/<annotation id>.png` (deleted with the session), sets its path as `screenshotPath`
   and emits `review:annotation`, so it lands as a chip above the session's composer as on a VM (see "Remote sessions").
-  Neither the page nor a VM can set `screenshotPath`.
+  Neither the page nor a VM can set `screenshotPath`. Through the binding the widget also asks for the sessions an
+  annotation can go to (`review_sessions` in `session/commands/browser.rs`: the main session of the Chrome's worktree
+  and its sub sessions; Hunt answers through the page's `__huntReviewSessions`) and lists them in a dropdown below
+  "New sub session", which starts at the session the Chrome belongs to. "Send" hands the annotation to the chosen
+  session as a prompt of its own at once (queued or steered like a prompt typed while a turn runs); "Add to session" in
+  the menu of the chevron beside it puts it above that session's composer instead. The choice travels with the
+  annotation as `delivery`; Hunt takes a session the list does not hold as the Chrome's own and emits the event with
+  `sends` and `createsSubSession`. The main window alone carries those out (`deliverAnnotation` in
+  `chat/chat.store-slice.ts`), so the prompt is sent once: a new sub session starts with the parent's agent setup and
+  the annotation as its first prompt, or with the annotation above its composer.
 
 Claude in Chrome stays available next to it, with the user's own Chrome and sign-ins: the prompt sends the agent there
 for every site other than the app it works on, and to Playwright when Claude in Chrome is off.
@@ -971,11 +989,12 @@ the widget nor `/__hunt/*`, so strangers cannot write into the session. A servic
 hunt.json, a single page with the response header `x-hunt-review-widget: off`. The review server stores each
 annotation as a file in `/run/hunt-review/annotations`; the status helper (below) takes them out and sends each once
 to Hunt, which emits `review:annotation` and shows it as a chip above the session's composer
-(`apps/client/src/chat/prompt/PromptInput.tsx`). Nothing is sent by itself: the next prompt the user sends carries every chip,
+(`apps/client/src/chat/prompt/PromptInput.tsx`). An annotation of a preview page is not sent by itself (only the widget in a
+Chrome Hunt is attached to offers "Send" and the session dropdown, see "Review widget" above): the next prompt the user sends carries every chip,
 formatted by `apps/client/src/chat/prompt/annotation-prompt.utils.ts` into `apps/client/prompts/chat/browser-annotations.user-prompt.md`,
 also with an empty text, and clears them; an annotation's screenshot (local Chrome only, see "Review widget" above) goes
-along as an image after the attached ones. The chat shows such a prompt as the user's own text with one chip per
-annotation (`parseAnnotatedPrompt`, which reads the text alone, so it holds after a reload and a transcript replay). Annotations that arrive while Hunt does not run wait on the VM until the
+along as an image after the attached ones. The chat shows such a prompt as the user's own text with one card per
+annotation, the element's screenshot above the whole comment (`SentAnnotationCard`, from `parseAnnotatedPrompt`, which reads the text alone, so it holds after a reload and a transcript replay). Annotations that arrive while Hunt does not run wait on the VM until the
 session's status channel opens; `hunt-ctl stop` drops them.
 
 The *Desktop* tab next to it (`apps/client/src/desktop/DesktopPanel.tsx`) shows the VM's desktop, where the agent drives

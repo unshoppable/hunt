@@ -72,6 +72,18 @@ pub fn run() {
         // Chrome, `hunt-client` runs commands of the UI.
         .setup(|app| {
             let handle = app.handle().clone();
+            // The Chromes a Hunt process that died left running hand their sign-ins to their repositories' profiles.
+            let recovering = handle.clone();
+            tauri::async_runtime::spawn(async move {
+                let found = session::store::browser_dir(&recovering).and_then(|dir| Ok((dir, session::store::load_sessions(&recovering)?)));
+                match found {
+                    Ok((browser_dir, sessions)) => {
+                        let sessions: Vec<_> = sessions.into_iter().map(|session| (session.id, session.repo_path)).collect();
+                        recovering.state::<BrowserRegistry>().recover_leftovers(&browser_dir, &sessions).await;
+                    }
+                    Err(error) => eprintln!("failed to recover the browsers left running: {error}"),
+                }
+            });
             tauri::async_runtime::spawn(async move {
                 let socket_path = match session::store::control_dir(&handle) {
                     Ok(control_dir) => control::socket_path(&control_dir),

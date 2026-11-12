@@ -6,8 +6,10 @@
 //! copy replaces the repository's profile, so the session closed last wins. Chrome starts on demand: when the agent calls
 //! its first browser tool (the wrapper asks through the control socket, `crate::platform::control`) or the user clicks
 //! "Browser", which also opens a tab for each running app of the session that shows a page (`crate::agent::app_pages`).
-//! Hunt attaches to every page over CDP, adds the binding `__huntReview` and the widget, captures a PNG of the element
-//! each annotation the widget reports picked, and hands both to the caller's sink. Knows nothing about Tauri;
+//! Hunt attaches over CDP to the pages that show the session's apps, and to nothing else in the Chrome, adds the binding
+//! `__huntReview` and the widget, captures a PNG of the element each annotation the widget reports picked, and hands
+//! both to the caller's sink, with the session the widget's dropdown names and whether it is sent at once (`Delivery`);
+//! the sessions the dropdown lists come from the caller (`ReviewHooks`). Knows nothing about Tauri;
 //! `session/commands/browser.rs` owns the command and the sink.
 
 use std::collections::HashMap;
@@ -19,6 +21,7 @@ use std::time::{Duration, Instant};
 
 use base64::Engine;
 use futures_util::{SinkExt, StreamExt};
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -57,9 +60,67 @@ const SCREENSHOT_TIMEOUT: Duration = Duration::from_secs(2);
 /// The CSS pixels around the picked element that its screenshot shows on each side.
 const SCREENSHOT_PADDING: f64 = 8.0;
 
+/// What the review widget calls the binding with instead of an annotation to ask for the sessions (`SESSIONS_REQUEST`
+/// in `apps/session/src/review/annotation-delivery.utils.ts`).
+const SESSIONS_REQUEST: &str = "sessions";
+
+/// The global of the page the sessions are answered through (`SESSIONS_CALLBACK` there).
+const SESSIONS_CALLBACK: &str = "__huntReviewSessions";
+
 /// What is called with every annotation the review widget of a session's Chrome reports, together with the PNG of the
-/// picked element; `None` when it could not be captured.
-pub type AnnotationSink = Arc<dyn Fn(Annotation, Option<Vec<u8>>) + Send + Sync>;
+/// picked element, `None` when it could not be captured, and where the widget wants it.
+pub type AnnotationSink = Arc<dyn Fn(Annotation, Option<Vec<u8>>, Delivery) + Send + Sync>;
+
+/// What the review widget of a session's Chrome reaches Hunt through.
+#[derive(Clone)]
+pub struct ReviewHooks {
+    pub on_annotation: AnnotationSink,
+    /// The sessions the widget's dropdown lists, read anew for each comment box.
+    pub sessions: Arc<dyn Fn() -> ReviewSessions + Send + Sync>,
+}
+
+/// A session an annotation can go to (mirror of `ReviewSession` in `annotation-delivery.utils.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSession {
+    pub id: Uuid,
+    pub title: String,
+    pub is_sub: bool,
+}
+
+/// The sessions an annotation of a Chrome can go to, the main session first, and the one the Chrome belongs to (mirror
+/// of `ReviewSessions` in `annotation-delivery.utils.ts`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewSessions {
+    pub sessions: Vec<ReviewSession>,
+    pub own: Uuid,
+}
+
+impl ReviewSessions {
+    /// The session the annotation with `delivery` is for and whether it goes to a new sub session of it: the main
+    /// session for a new one, else the session the widget named, or the Chrome's own for one that is not listed.
+    pub fn target(&self, delivery: &Delivery) -> (Uuid, bool) {
+        if delivery.is_new {
+            return (self.sessions.first().map_or(self.own, |main| main.id), true);
+        }
+        let named = delivery.session_id.filter(|id| self.sessions.iter().any(|session| session.id == *id));
+        (named.unwrap_or(self.own), false)
+    }
+}
+
+/// Where the widget wants an annotation and what happens to it there (mirror of `AnnotationDelivery` in
+/// `annotation-delivery.utils.ts`); the default is the composer of the Chrome's session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Delivery {
+    /// The session it goes to; without one, and without `is_new`, the session the Chrome belongs to.
+    pub session_id: Option<Uuid>,
+    /// It goes to a new sub session of the main session.
+    pub is_new: bool,
+    /// It is sent as a prompt at once instead of waiting above the composer.
+    pub sends: bool,
+}
 
 /// The Chrome of a session, behind a lock of its own, so that an open, a close and the end of the Chrome run one after
 /// the other for a session while other sessions' go on.
@@ -117,13 +178,14 @@ impl BrowserRegistry {
     /// Opens the Chrome of the session `id` in the repository `repo_path` unless it runs; with `raises`, its window comes
     /// to the front of the screen with a tab for each of `urls` whose origin no page shows yet. A new Chrome opens `urls`
     /// (`about:blank` without any), gets a copy of the repository's profile under `browser_dir`, listens for CDP on the
-    /// session's port and shows the review widget on every page, whose annotations go to `on_annotation`.
+    /// session's port and shows the review widget on the pages of the session's apps (`urls` and what this Mac serves), which
+    /// reaches Hunt through `hooks`.
     pub async fn open(
         &self,
         id: Uuid,
         repo_path: &Path,
         browser_dir: &Path,
-        on_annotation: AnnotationSink,
+        hooks: ReviewHooks,
         raises: bool,
         urls: &[String],
     ) -> Result<(), String> {
@@ -146,10 +208,14 @@ impl BrowserRegistry {
         }
         let port = self.reserve_port(id)?;
         let profile = Profile::of(browser_dir, repo_path, id);
+        // A Chrome Hunt is not attached to reports its annotations without a screenshot, and a second one on the profile
+        // would leave the user in the wrong window; what it or a Chrome that died left in the folder holds the
+        // session's sign-ins, so the folder goes back to the repository before the new copy.
+        end_chromes(&chromes_on(&profile.session).await).await;
         {
             let _profiles = self.profiles.lock().await;
             let copied = profile.clone();
-            tokio::task::spawn_blocking(move || copied.prepare())
+            tokio::task::spawn_blocking(move || copied.restore().and_then(|()| copied.prepare()))
                 .await
                 .map_err(|error| format!("failed to copy the browser profile: {error}"))??;
         }
@@ -183,12 +249,34 @@ impl BrowserRegistry {
         let generation = self.generation.fetch_add(1, Ordering::Relaxed);
         let (controls, control_receiver) = unbounded_channel();
         let watch = Watch { slot: slot.clone(), generation, profiles: self.profiles.clone() };
-        tokio::spawn(run_cdp(stream, control_receiver, on_annotation, watch));
+        tokio::spawn(run_cdp(stream, control_receiver, hooks, watch, urls.to_vec()));
         if raises {
             activate_process(child.id());
         }
         *running = Some(RunningBrowser { generation, child, profile, controls });
         Ok(())
+    }
+
+    /// Saves the sign-ins of the Chromes an earlier Hunt process could not end (a crash, a restart of `tauri dev`), at
+    /// the start of Hunt: for each of `sessions` (ID and repository) whose profile folder is still there, ends the
+    /// Chromes left on it and lets the folder replace the repository's profile, the folder used last at the end. A
+    /// folder whose Chrome another Hunt process runs stays.
+    pub async fn recover_leftovers(&self, browser_dir: &Path, sessions: &[(Uuid, PathBuf)]) {
+        let mut profiles: Vec<Profile> = sessions.iter().map(|(id, repo_path)| Profile::of(browser_dir, repo_path, *id)).filter(|profile| profile.session.is_dir()).collect();
+        profiles.sort_by_key(|profile| std::fs::metadata(profile.session.join("Local State")).and_then(|metadata| metadata.modified()).ok());
+        for profile in profiles {
+            let chromes = chromes_on(&profile.session).await;
+            if chromes.iter().any(|chrome| chrome.parent != 1) {
+                continue;
+            }
+            end_chromes(&chromes).await;
+            let _profiles = self.profiles.lock().await;
+            match tokio::task::spawn_blocking(move || profile.restore()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => eprintln!("{error}"),
+                Err(error) => eprintln!("failed to restore the browser profile: {error}"),
+            }
+        }
     }
 
     /// Closes the Chrome of the session `id`, if it runs, and lets its profile replace the repository's.
@@ -257,6 +345,7 @@ impl Profile {
         }
         if self.repository.is_dir() {
             copy_profile(&self.repository, &self.session).map_err(failed)?;
+            drop_broken_service_workers(&self.session).map_err(failed)?;
         } else {
             std::fs::create_dir_all(&self.session).map_err(failed)?;
         }
@@ -290,16 +379,88 @@ impl Profile {
     }
 }
 
+/// A Chrome main process on a session profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ChromeProcess {
+    pid: libc::pid_t,
+    /// 1 once the Hunt process that started it is gone.
+    parent: libc::pid_t,
+}
+
+/// The Chromes that run on the session profile `profile_dir` now. Hunt is attached to none of them: an earlier Hunt
+/// process started and could not end them (a crash, a restart of `tauri dev`), or another Hunt process runs them.
+async fn chromes_on(profile_dir: &Path) -> Vec<ChromeProcess> {
+    match Command::new("/bin/ps").args(["-axww", "-o", "pid=,ppid=,command="]).stdin(Stdio::null()).output().await {
+        Ok(output) => chromes_using(&String::from_utf8_lossy(&output.stdout), profile_dir),
+        Err(error) => {
+            eprintln!("failed to list the browsers on {}: {error}", profile_dir.display());
+            Vec::new()
+        }
+    }
+}
+
+/// The Chrome main processes in `processes` (lines of `ps -o pid=,ppid=,command=`) that use the profile `profile_dir`;
+/// their helper processes (`--type=…`) end with them.
+fn chromes_using(processes: &str, profile_dir: &Path) -> Vec<ChromeProcess> {
+    let profile_arg = format!(" --user-data-dir={}", profile_dir.display());
+    processes
+        .lines()
+        .filter_map(|line| {
+            let (pid, rest) = line.trim_start().split_once(' ')?;
+            let (parent, command) = rest.trim_start().split_once(' ')?;
+            let uses_profile = command.split_once(profile_arg.as_str()).is_some_and(|(_, rest)| rest.is_empty() || rest.starts_with(' '));
+            let is_chrome = command.trim_start().starts_with(CHROME) && uses_profile && !command.contains(" --type=");
+            is_chrome.then_some(ChromeProcess { pid: pid.parse().ok()?, parent: parent.parse().ok()? })
+        })
+        .collect()
+}
+
+/// Ends `chromes`: each is asked to quit, which writes its profile, and killed when it does not exit within `EXIT_TIMEOUT`.
+async fn end_chromes(chromes: &[ChromeProcess]) {
+    // SAFETY: plain syscalls without pointers; a PID that ended meanwhile only makes them fail.
+    let signal = |chrome: &ChromeProcess, signal: libc::c_int| unsafe { libc::kill(chrome.pid, signal) == 0 };
+    for chrome in chromes {
+        signal(chrome, libc::SIGTERM);
+    }
+    let started = tokio::time::Instant::now();
+    while chromes.iter().any(|chrome| signal(chrome, 0)) {
+        if started.elapsed() > EXIT_TIMEOUT {
+            for chrome in chromes {
+                signal(chrome, libc::SIGKILL);
+            }
+            break;
+        }
+        tokio::time::sleep(START_POLL).await;
+    }
+}
+
 /// The folder name of the profile of the repository `repo_path`: the start of the SHA-256 of its path.
 fn repo_hash(repo_path: &Path) -> String {
     let digest = Sha256::digest(repo_path.to_string_lossy().as_bytes());
     digest.iter().take(8).map(|byte| format!("{byte:02x}")).collect()
 }
 
+/// The folders of a profile's `Service Worker` folder that hold the scripts and the Cache API storage of its service
+/// workers. They are state, not caches: without them the workers its database registers never start, and neither do
+/// the extensions that run in them, such as a password manager.
+const SERVICE_WORKER_STORES: [&str; 2] = ["ScriptCache", "CacheStorage"];
+
 /// Whether a profile entry named `name` stays out of a copy: Chrome's locks of a running profile, its DevTools port file
 /// and, for a folder, its caches.
 fn is_left_out(name: &str, is_dir: bool) -> bool {
-    name.starts_with("Singleton") || name == "DevToolsActivePort" || (is_dir && name.contains("Cache"))
+    name.starts_with("Singleton") || name == "DevToolsActivePort" || (is_dir && name.contains("Cache") && !SERVICE_WORKER_STORES.contains(&name))
+}
+
+/// Removes the `Service Worker` folder of every profile in the user data folder `dir` that registers workers but lacks
+/// their scripts, as an earlier Hunt saved it; Chrome then registers the extensions' workers anew.
+fn drop_broken_service_workers(dir: &Path) -> std::io::Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let service_worker = entry?.path().join("Service Worker");
+        if service_worker.join("Database").is_dir() && !service_worker.join("ScriptCache").is_dir() {
+            std::fs::remove_dir_all(&service_worker)?;
+        }
+    }
+    Ok(())
 }
 
 /// Copies the profile folder `from` to `to`, leaving out what `is_left_out` names and every entry that is neither a
@@ -370,6 +531,19 @@ fn origin(url: &str) -> Option<&str> {
     let authority_start = url.find("://")? + 3;
     let end = url[authority_start..].find(['/', '?', '#']).map_or(url.len(), |offset| authority_start + offset);
     (end > authority_start).then(|| &url[..end])
+}
+
+/// Whether a page showing `url` is one of the session's apps, which gets the review widget: a page served from this
+/// Mac (`localhost`, a file, a `data:` URL) or from one of `app_origins`. Anything else, such as a sign-in page, an
+/// extension's window or a page of Chrome, stays untouched.
+fn is_app_page(url: &str, app_origins: &[String]) -> bool {
+    if url.starts_with("file://") || url.starts_with("data:") {
+        return true;
+    }
+    let Some(origin) = origin(url).filter(|origin| origin.starts_with("http://") || origin.starts_with("https://")) else { return false };
+    let authority = origin.split_once("://").map_or("", |(_, authority)| authority);
+    let host = authority.rsplit_once(':').filter(|(_, port)| port.chars().all(|digit| digit.is_ascii_digit())).map_or(authority, |(host, _)| host);
+    ["localhost", "127.0.0.1", "[::1]"].contains(&host) || app_origins.iter().any(|app| app == origin)
 }
 
 /// Whether a page showing `url` is an empty tab another URL may take over.
@@ -452,20 +626,21 @@ struct Watch {
 }
 
 /// Runs the CDP connection of a Chrome: attaches to its pages, hands the annotations of their widget with the screenshots
-/// of their elements to `on_annotation` and carries out `controls`. An annotation whose screenshot does not arrive within
+/// of their elements to `hooks`, answers the widget's questions for the sessions from it and carries out `controls`. An annotation whose screenshot does not arrive within
 /// `SCREENSHOT_TIMEOUT`, or is still on its way when the connection drops, goes without one. Once the connection drops
 /// (the Chrome closed or quit), the Chrome ends like a close, unless a close or a newer Chrome took its slot meanwhile.
 async fn run_cdp<Stream>(
     stream: tokio_tungstenite::WebSocketStream<Stream>,
     mut controls: UnboundedReceiver<Control>,
-    on_annotation: AnnotationSink,
+    hooks: ReviewHooks,
     watch: Watch,
+    urls: Vec<String>,
 ) where
     Stream: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 {
     let (mut sink, mut source) = stream.split();
-    let report = |reported: Reported| on_annotation(reported.annotation, reported.screenshot);
-    let mut cdp = Cdp::default();
+    let report = |reported: Reported| (hooks.on_annotation)(reported.annotation, reported.screenshot, reported.delivery);
+    let mut cdp = Cdp::showing(&urls);
     let mut outgoing = cdp.start();
     'connection: loop {
         for text in outgoing.drain(..) {
@@ -479,6 +654,10 @@ async fn run_cdp<Stream>(
                 Some(Ok(Message::Text(text))) => {
                     let handled = cdp.handle(text.as_str());
                     outgoing = handled.outgoing;
+                    if !handled.session_requests.is_empty() {
+                        let sessions = (hooks.sessions)();
+                        outgoing.extend(handled.session_requests.iter().map(|session_id| cdp.answer_sessions(session_id, &sessions)));
+                    }
                     for annotation in handled.annotations {
                         match annotation {
                             Ok(reported) => report(reported),
@@ -506,30 +685,45 @@ async fn run_cdp<Stream>(
     }
 }
 
-/// The CDP state of a Chrome's connection: the message IDs, the attached pages and the annotations whose screenshot is
-/// on its way. Turns what Chrome sends into what Hunt answers, without doing I/O.
+/// The CDP state of a Chrome's connection: the message IDs, the pages, the origins of the session's apps and the
+/// annotations whose screenshot is on its way. Turns what Chrome sends into what Hunt answers, without doing I/O.
 #[derive(Default)]
 struct Cdp {
     next_id: u64,
-    /// The attached pages, in the order they were attached.
+    /// The pages of the Chrome, in the order they appeared.
     pages: Vec<Page>,
+    /// The origins of the session's apps that are not on this Mac: the preview hosts of a remote session.
+    app_origins: Vec<String>,
     /// The annotations whose screenshot is on its way, by the ID of the command whose answer each waits for.
     pending: HashMap<u64, Pending>,
 }
 
-/// An attached page: its CDP session, its target and the URL it shows.
+/// A page of the Chrome: its target, the URL it shows and how far Hunt is attached to it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Page {
-    session_id: String,
     target_id: String,
     url: String,
+    attachment: Attachment,
 }
 
-/// An annotation the review widget reported, with the PNG of the picked element; `None` when it could not be captured.
+/// Whether Hunt is attached to a page. It is to the pages of the session's apps only (`is_app_page`): an attached
+/// debugger gets in the way of other pages, such as a sign-in with a passkey.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Attachment {
+    Detached,
+    /// `Target.attachToTarget` is on its way.
+    Attaching,
+    /// Attached with this CDP session.
+    Attached(String),
+}
+
+/// An annotation the review widget reported, with the PNG of the picked element, `None` when it could not be captured,
+/// and where the widget wants it.
 #[derive(Debug)]
 struct Reported {
     annotation: Annotation,
     screenshot: Option<Vec<u8>>,
+    delivery: Delivery,
 }
 
 /// An annotation whose screenshot is on its way: the CDP session of the page it came from, the step of the capture whose
@@ -537,6 +731,7 @@ struct Reported {
 #[derive(Debug)]
 struct Pending {
     annotation: Annotation,
+    delivery: Delivery,
     session_id: String,
     step: Capture,
     deadline: Instant,
@@ -553,7 +748,7 @@ enum Capture {
 
 impl Pending {
     fn without_screenshot(self) -> Reported {
-        Reported { annotation: self.annotation, screenshot: None }
+        Reported { annotation: self.annotation, screenshot: None, delivery: self.delivery }
     }
 }
 
@@ -564,6 +759,8 @@ struct Handled {
     outgoing: Vec<String>,
     /// The annotations of the review widget that are complete, or why one is dropped.
     annotations: Vec<Result<Reported, String>>,
+    /// The CDP sessions of the pages whose widget asked for the sessions an annotation can go to.
+    session_requests: Vec<String>,
 }
 
 impl Cdp {
@@ -578,6 +775,12 @@ impl Cdp {
     }
 
     /// A command to `method` with `params` to the page of `pending`, whose answer takes `pending` further.
+    /// The command that answers the widget on the page of `session_id` with `sessions`, through its callback.
+    fn answer_sessions(&mut self, session_id: &str, sessions: &ReviewSessions) -> String {
+        let expression = format!("globalThis.{SESSIONS_CALLBACK}?.({})", json!(sessions));
+        self.command("Runtime.evaluate", json!({ "expression": expression }), Some(session_id))
+    }
+
     fn await_reply(&mut self, method: &str, params: Value, pending: Pending) -> String {
         let command = self.command(method, params, Some(&pending.session_id));
         self.pending.insert(self.next_id, pending);
@@ -630,44 +833,74 @@ impl Cdp {
                     }
                     None => None,
                 };
-                handled.annotations.push(Ok(Reported { annotation: pending.annotation, screenshot }));
+                handled.annotations.push(Ok(Reported { annotation: pending.annotation, screenshot, delivery: pending.delivery }));
             }
         }
     }
 
-    /// The first commands: report the URL changes of every target, and attach to every page, holding a new one until it
-    /// got the binding and the widget.
-    fn start(&mut self) -> Vec<String> {
-        vec![
-            self.command("Target.setDiscoverTargets", json!({ "discover": true }), None),
-            self.command("Target.setAutoAttach", json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }), None),
-        ]
+    /// The state of a Chrome that shows the apps at `urls`.
+    fn showing(urls: &[String]) -> Self {
+        let mut cdp = Cdp::default();
+        cdp.add_apps(urls);
+        cdp
     }
 
-    /// The commands that carry out `control`. `Show` puts each URL whose origin no page shows into an empty tab, else
-    /// into a new one; with none missing, it brings the last page to the front, or opens a window without any.
+    /// Takes the origins of `urls` as origins of the session's apps.
+    fn add_apps(&mut self, urls: &[String]) {
+        for app in urls.iter().filter_map(|url| origin(url)) {
+            if !self.app_origins.iter().any(|known| known == app) {
+                self.app_origins.push(app.to_string());
+            }
+        }
+    }
+
+    /// The first command: report every target and its URL changes. Hunt attaches by itself to the pages of the
+    /// session's apps; an auto-attach would pause and instrument every page, extension window and worker.
+    fn start(&mut self) -> Vec<String> {
+        vec![self.command("Target.setDiscoverTargets", json!({ "discover": true }), None)]
+    }
+
+    /// The commands that bring the attachment of the page `target_id` in line with the URL it shows: attach to a page
+    /// of an app, detach from any other.
+    fn follow(&mut self, target_id: &str) -> Vec<String> {
+        let Some(index) = self.pages.iter().position(|page| page.target_id == target_id) else { return Vec::new() };
+        let is_app = is_app_page(&self.pages[index].url, &self.app_origins);
+        match (&self.pages[index].attachment, is_app) {
+            (Attachment::Detached, true) => {
+                self.pages[index].attachment = Attachment::Attaching;
+                vec![self.command("Target.attachToTarget", json!({ "targetId": target_id, "flatten": true }), None)]
+            }
+            (Attachment::Attached(session_id), false) => {
+                let session_id = session_id.clone();
+                vec![self.command("Target.detachFromTarget", json!({ "sessionId": session_id }), None)]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The commands that carry out `control`. `Show` takes the URLs as apps of the session and opens each whose origin
+    /// no page shows in a new tab, which replaces an empty one; with none missing, it brings the last page to the front,
+    /// or opens a window without any.
     fn control(&mut self, control: Control) -> Vec<String> {
         match control {
             Control::Show(urls) => {
+                self.add_apps(&urls);
                 let missing: Vec<String> =
                     urls.into_iter().filter(|url| !self.pages.iter().any(|page| origin(&page.url).is_some_and(|shown| Some(shown) == origin(url)))).collect();
                 if missing.is_empty() {
-                    let command = match self.pages.last().map(|page| page.session_id.clone()) {
-                        Some(page) => self.command("Page.bringToFront", json!({}), Some(&page)),
+                    let command = match self.pages.last().map(|page| page.target_id.clone()) {
+                        Some(target_id) => self.command("Target.activateTarget", json!({ "targetId": target_id }), None),
                         None => self.command("Target.createTarget", json!({ "url": "about:blank", "newWindow": true }), None),
                     };
                     return vec![command];
                 }
                 let mut blank_pages: std::vec::IntoIter<String> =
-                    self.pages.iter().filter(|page| is_blank(&page.url)).map(|page| page.session_id.clone()).collect::<Vec<_>>().into_iter();
+                    self.pages.iter().filter(|page| is_blank(&page.url)).map(|page| page.target_id.clone()).collect::<Vec<_>>().into_iter();
                 let mut outgoing = Vec::new();
                 for url in missing {
-                    match blank_pages.next() {
-                        Some(page) => {
-                            outgoing.push(self.command("Page.navigate", json!({ "url": url }), Some(&page)));
-                            outgoing.push(self.command("Page.bringToFront", json!({}), Some(&page)));
-                        }
-                        None => outgoing.push(self.command("Target.createTarget", json!({ "url": url }), None)),
+                    outgoing.push(self.command("Target.createTarget", json!({ "url": url }), None));
+                    if let Some(target_id) = blank_pages.next() {
+                        outgoing.push(self.command("Target.closeTarget", json!({ "targetId": target_id }), None));
                     }
                 }
                 outgoing
@@ -675,11 +908,11 @@ impl Cdp {
         }
     }
 
-    /// What follows from the message `text` of Chrome: a page that was attached gets the binding and the widget, also
-    /// when it already shows a document, and goes on (Chrome runs the scripts for new documents and installs the binding
-    /// only while the page's Page and Runtime domains are enabled); another target goes on and is detached; a binding call of the
-    /// widget is an annotation, whose element is captured before it is reported, unless its page goes; a failed command
-    /// is logged.
+    /// What follows from the message `text` of Chrome: Hunt attaches to a page that shows an app of the session and
+    /// detaches once it shows something else; an attached page gets the binding and the widget, for the document it
+    /// shows and the ones that follow (Chrome runs the scripts for new documents and installs the binding only while
+    /// the page's Page and Runtime domains are enabled); a binding call of the widget asks for the sessions or is an
+    /// annotation, whose element is captured before it is reported, unless its page goes; a failed command is logged.
     fn handle(&mut self, text: &str) -> Handled {
         let mut handled = Handled::default();
         let Ok(message) = serde_json::from_str::<Value>(text) else { return handled };
@@ -693,53 +926,60 @@ impl Cdp {
         }
         let params = &message["params"];
         match message["method"].as_str() {
+            Some("Target.targetCreated") | Some("Target.targetInfoChanged") => {
+                let info = &params["targetInfo"];
+                let (Some(target_id), Some("page")) = (info["targetId"].as_str(), info["type"].as_str()) else { return handled };
+                let url = info["url"].as_str().unwrap_or_default().to_string();
+                match self.pages.iter_mut().find(|page| page.target_id == target_id) {
+                    Some(page) => page.url = url,
+                    None => self.pages.push(Page { target_id: target_id.to_string(), url, attachment: Attachment::Detached }),
+                }
+                handled.outgoing = self.follow(target_id);
+            }
+            Some("Target.targetDestroyed") => {
+                if let Some(target_id) = params["targetId"].as_str() {
+                    self.pages.retain(|page| page.target_id != target_id);
+                }
+            }
             Some("Target.attachedToTarget") => {
-                let Some(session_id) = params["sessionId"].as_str() else { return handled };
-                let is_waiting = params["waitingForDebugger"].as_bool().unwrap_or(false);
-                if params["targetInfo"]["type"].as_str() == Some("page") {
-                    self.pages.push(Page {
-                        session_id: session_id.to_string(),
-                        target_id: params["targetInfo"]["targetId"].as_str().unwrap_or_default().to_string(),
-                        url: params["targetInfo"]["url"].as_str().unwrap_or_default().to_string(),
-                    });
+                let (Some(session_id), Some(target_id)) = (params["sessionId"].as_str(), params["targetInfo"]["targetId"].as_str()) else { return handled };
+                let Some(page) = self.pages.iter_mut().find(|page| page.target_id == target_id) else { return handled };
+                page.attachment = Attachment::Attached(session_id.to_string());
+                // The page may have left the app while the attach was on its way.
+                handled.outgoing = self.follow(target_id);
+                if handled.outgoing.is_empty() {
                     handled.outgoing.push(self.command("Page.enable", json!({}), Some(session_id)));
                     handled.outgoing.push(self.command("Runtime.enable", json!({}), Some(session_id)));
                     handled.outgoing.push(self.command("Runtime.addBinding", json!({ "name": BINDING }), Some(session_id)));
                     handled.outgoing.push(self.command("Page.addScriptToEvaluateOnNewDocument", json!({ "source": WIDGET }), Some(session_id)));
-                    if !is_waiting {
-                        handled.outgoing.push(self.command("Runtime.evaluate", json!({ "expression": WIDGET }), Some(session_id)));
-                    }
-                }
-                if is_waiting {
-                    handled.outgoing.push(self.command("Runtime.runIfWaitingForDebugger", json!({}), Some(session_id)));
-                }
-                if params["targetInfo"]["type"].as_str() != Some("page") {
-                    handled.outgoing.push(self.command("Target.detachFromTarget", json!({ "sessionId": session_id }), None));
+                    handled.outgoing.push(self.command("Runtime.evaluate", json!({ "expression": WIDGET }), Some(session_id)));
                 }
             }
             Some("Target.detachedFromTarget") => {
                 if let Some(session_id) = params["sessionId"].as_str() {
-                    self.pages.retain(|page| page.session_id != session_id);
-                    handled.annotations.extend(self.release(|pending| pending.session_id == session_id).into_iter().map(Ok));
-                }
-            }
-            Some("Target.targetInfoChanged") => {
-                let info = &params["targetInfo"];
-                if let (Some(target_id), Some(url)) = (info["targetId"].as_str(), info["url"].as_str()) {
-                    for page in self.pages.iter_mut().filter(|page| page.target_id == target_id) {
-                        page.url = url.to_string();
+                    let detached = self.pages.iter_mut().find(|page| page.attachment == Attachment::Attached(session_id.to_string()));
+                    if let Some(page) = detached {
+                        page.attachment = Attachment::Detached;
+                        let target_id = page.target_id.clone();
+                        // It may show an app again by now.
+                        handled.outgoing = self.follow(&target_id);
                     }
+                    handled.annotations.extend(self.release(|pending| pending.session_id == session_id).into_iter().map(Ok));
                 }
             }
             Some("Runtime.bindingCalled") if params["name"].as_str() == Some(BINDING) => {
                 let payload = params["payload"].as_str().unwrap_or_default();
+                if payload == SESSIONS_REQUEST {
+                    handled.session_requests.extend(message["sessionId"].as_str().map(str::to_string));
+                    return handled;
+                }
                 match (parse_annotation(payload, Uuid::new_v4(), chrono::Utc::now().timestamp_millis()), message["sessionId"].as_str()) {
-                    (Ok(annotation), Some(session_id)) => {
+                    (Ok((annotation, delivery)), Some(session_id)) => {
                         let deadline = Instant::now() + SCREENSHOT_TIMEOUT;
-                        let pending = Pending { annotation, session_id: session_id.to_string(), step: Capture::Metrics, deadline };
+                        let pending = Pending { annotation, delivery, session_id: session_id.to_string(), step: Capture::Metrics, deadline };
                         handled.outgoing.push(self.await_reply("Page.getLayoutMetrics", json!({}), pending));
                     }
-                    (Ok(annotation), None) => handled.annotations.push(Ok(Reported { annotation, screenshot: None })),
+                    (Ok((annotation, delivery)), None) => handled.annotations.push(Ok(Reported { annotation, screenshot: None, delivery })),
                     (Err(error), _) => handled.annotations.push(Err(error)),
                 }
             }
@@ -780,15 +1020,20 @@ mod limits {
 }
 
 /// The annotation the widget sent as `payload` (a `BrowserAnnotation` as JSON), with the ID `id` and the time
-/// `created_at` (Unix ms), checked like `parseBrowserAnnotation` in `libs/domain/src/review/browser-annotation.utils.ts` does.
-fn parse_annotation(payload: &str, id: Uuid, created_at: i64) -> Result<Annotation, String> {
+/// `created_at` (Unix ms), checked like `parseBrowserAnnotation` in `libs/domain/src/review/browser-annotation.utils.ts`
+/// does, and where the widget wants it (its `delivery`; the default without one).
+fn parse_annotation(payload: &str, id: Uuid, created_at: i64) -> Result<(Annotation, Delivery), String> {
     let mut value: Value = serde_json::from_str(payload).map_err(|error| format!("failed to read the annotation: {error}"))?;
     let fields = value.as_object_mut().ok_or("failed to read the annotation: it is no object")?;
+    let delivery = match fields.remove("delivery") {
+        Some(delivery) => serde_json::from_value(delivery).map_err(|error| format!("failed to read the delivery of the annotation: {error}"))?,
+        None => Delivery::default(),
+    };
     fields.insert("id".into(), json!(id.to_string()));
     fields.insert("createdAt".into(), json!(created_at));
     let annotation: Annotation = serde_json::from_value(value).map_err(|error| format!("failed to read the annotation: {error}"))?;
     check_annotation(&annotation).map_err(|problem| format!("failed to read the annotation: {problem}"))?;
-    Ok(annotation)
+    Ok((annotation, delivery))
 }
 
 /// The first problem of `annotation` that `parseBrowserAnnotation` would report.
@@ -919,6 +1164,26 @@ mod tests {
     }
 
     #[test]
+    fn a_profile_copy_keeps_the_service_workers_and_drops_those_saved_without_their_scripts() {
+        let root = tempfile::tempdir().unwrap();
+        let profile = Profile::of(root.path(), Path::new("/repo"), Uuid::new_v4());
+        let workers = |profile_name: &str| profile.repository.join(profile_name).join("Service Worker");
+        for folder in ["Database", "ScriptCache", "CacheStorage"] {
+            std::fs::create_dir_all(workers("Default").join(folder)).unwrap();
+        }
+        std::fs::create_dir_all(workers("Profile 1").join("Database")).unwrap();
+        std::fs::write(profile.repository.join("Local State"), "{}").unwrap();
+        profile.prepare().unwrap();
+        let copied = |profile_name: &str| profile.session.join(profile_name).join("Service Worker");
+        for folder in ["Database", "ScriptCache", "CacheStorage"] {
+            assert!(copied("Default").join(folder).is_dir(), "{folder}");
+        }
+        assert!(!copied("Profile 1").exists(), "workers without their scripts are left");
+        profile.restore().unwrap();
+        assert!(workers("Default").join("ScriptCache").is_dir(), "the saved profile lost the scripts");
+    }
+
+    #[test]
     fn a_session_profile_starts_from_the_repository_profile_and_replaces_it_at_the_end() {
         let root = tempfile::tempdir().unwrap();
         let profile = Profile::of(root.path(), Path::new("/repo"), Uuid::new_v4());
@@ -938,6 +1203,19 @@ mod tests {
         assert_eq!(std::fs::read_to_string(profile.repository.join("Cookies")).unwrap(), "second");
         let leftovers: Vec<_> = std::fs::read_dir(profile.repository.parent().unwrap()).unwrap().collect();
         assert_eq!(leftovers.len(), 1);
+    }
+
+    #[test]
+    fn the_chromes_on_a_profile_are_its_main_processes() {
+        let profile = Path::new("/data/Application Support/browser/sessions/aa22");
+        let processes = format!(
+            "  101     1 {CHROME} --user-data-dir=/data/Application Support/browser/sessions/aa22 --remote-debugging-port=1 about:blank\n\
+             102   101 {CHROME} Helper --type=renderer --user-data-dir=/data/Application Support/browser/sessions/aa22 --lang=en\n\
+             103     1 {CHROME} --user-data-dir=/data/Application Support/browser/sessions/aa223 --remote-debugging-port=2\n\
+             104    77 {CHROME} --user-data-dir=/data/Application Support/browser/sessions/aa22\n\
+             105     1 /bin/zsh -c echo {CHROME} --user-data-dir=/data/Application Support/browser/sessions/aa22 \n"
+        );
+        assert_eq!(chromes_using(&processes, profile), vec![ChromeProcess { pid: 101, parent: 1 }, ChromeProcess { pid: 104, parent: 77 }]);
     }
 
     #[test]
@@ -988,55 +1266,111 @@ mod tests {
     }
 
     #[test]
-    fn the_connection_starts_by_attaching_to_every_page() {
+    fn the_connection_starts_by_discovering_the_targets_without_attaching_to_all() {
         let mut cdp = Cdp::default();
         let start: Vec<Value> = cdp.start().iter().map(|text| parsed(text)).collect();
+        assert_eq!(start.len(), 1);
         assert_eq!(start[0]["method"], "Target.setDiscoverTargets");
         assert_eq!(start[0]["params"], json!({ "discover": true }));
-        let start = &start[1];
-        assert_eq!(start["id"], 2);
-        assert_eq!(start["method"], "Target.setAutoAttach");
-        assert_eq!(start["params"], json!({ "autoAttach": true, "waitForDebuggerOnStart": true, "flatten": true }));
-        assert!(start.get("sessionId").is_none());
+        assert!(start[0].get("sessionId").is_none());
+    }
+
+    /// What Hunt sends when Chrome reports `event` for the target `target` of `kind` showing `url`, as method names.
+    fn target_event(cdp: &mut Cdp, event: &str, target: &str, kind: &str, url: &str) -> Vec<Value> {
+        let message = json!({ "method": format!("Target.{event}"), "params": { "targetInfo": { "targetId": target, "type": kind, "url": url } } });
+        cdp.handle(&message.to_string()).outgoing.iter().map(|text| parsed(text)).collect()
+    }
+
+    fn attached(cdp: &mut Cdp, session: &str, target: &str) -> Vec<Value> {
+        let message = json!({ "method": "Target.attachedToTarget", "params": { "sessionId": session, "targetInfo": { "targetId": target, "type": "page" } } });
+        cdp.handle(&message.to_string()).outgoing.iter().map(|text| parsed(text)).collect()
+    }
+
+    fn methods(commands: &[Value]) -> Vec<&str> {
+        commands.iter().map(|command| command["method"].as_str().unwrap()).collect()
+    }
+
+    /// A page of an app that Hunt is attached to.
+    fn attach_page(cdp: &mut Cdp, session: &str, target: &str, url: &str) {
+        target_event(cdp, "targetCreated", target, "page", url);
+        attached(cdp, session, target);
     }
 
     #[test]
-    fn a_new_page_gets_the_binding_and_the_widget_before_it_goes_on() {
+    fn a_page_of_an_app_is_attached_and_gets_the_binding_and_the_widget() {
         let mut cdp = Cdp::default();
-        let attached = json!({
-            "method": "Target.attachedToTarget",
-            "params": { "sessionId": "S1", "targetInfo": { "targetId": "T1", "type": "page" }, "waitingForDebugger": true },
-        })
-        .to_string();
-        let outgoing: Vec<Value> = cdp.handle(&attached).outgoing.iter().map(|text| parsed(text)).collect();
-        let methods: Vec<&str> = outgoing.iter().map(|command| command["method"].as_str().unwrap()).collect();
-        let expected = ["Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Runtime.runIfWaitingForDebugger"];
-        assert_eq!(methods, expected);
+        let outgoing = target_event(&mut cdp, "targetCreated", "T1", "page", "http://localhost:4200/cart");
+        assert_eq!(methods(&outgoing), ["Target.attachToTarget"]);
+        assert_eq!(outgoing[0]["params"], json!({ "targetId": "T1", "flatten": true }));
+        assert_eq!(cdp.pages[0].attachment, Attachment::Attaching);
+        assert!(target_event(&mut cdp, "targetInfoChanged", "T1", "page", "http://localhost:4200/login").is_empty(), "attaches once");
+
+        let outgoing = attached(&mut cdp, "S1", "T1");
+        assert_eq!(methods(&outgoing), ["Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Runtime.evaluate"]);
         assert!(outgoing.iter().all(|command| command["sessionId"] == "S1"));
         assert_eq!(outgoing[2]["params"]["name"], BINDING);
         assert_eq!(outgoing[3]["params"]["source"], WIDGET);
-        assert_eq!(cdp.pages, [Page { session_id: "S1".into(), target_id: "T1".into(), url: String::new() }]);
+        assert_eq!(cdp.pages, [Page { target_id: "T1".into(), url: "http://localhost:4200/login".into(), attachment: Attachment::Attached("S1".into()) }]);
     }
 
     #[test]
-    fn a_page_that_was_open_already_gets_the_widget_at_once() {
+    fn any_other_page_or_target_stays_untouched() {
         let mut cdp = Cdp::default();
-        let attached = r#"{"method":"Target.attachedToTarget","params":{"sessionId":"S1","targetInfo":{"type":"page"},"waitingForDebugger":false}}"#;
-        let methods: Vec<String> = cdp.handle(attached).outgoing.iter().map(|text| parsed(text)["method"].as_str().unwrap().to_string()).collect();
-        assert_eq!(methods, ["Page.enable", "Runtime.enable", "Runtime.addBinding", "Page.addScriptToEvaluateOnNewDocument", "Runtime.evaluate"]);
+        for (kind, url) in [
+            ("page", "https://accounts.google.com/v3/signin"),
+            ("page", "chrome-extension://abc/popup/index.html"),
+            ("page", "chrome://settings/"),
+            ("page", "about:blank"),
+            ("service_worker", "http://localhost:4200/worker.js"),
+            ("iframe", "http://localhost:4200/frame"),
+        ] {
+            assert!(target_event(&mut cdp, "targetCreated", url, kind, url).is_empty(), "{kind} {url}");
+        }
+        assert_eq!(cdp.pages.len(), 4);
     }
 
     #[test]
-    fn another_target_goes_on_and_is_detached() {
+    fn a_page_is_detached_while_it_shows_something_else_such_as_a_sign_in() {
+        let preview = "https://aa22-4203.hunt.example".to_string();
+        let mut cdp = Cdp::showing(&[format!("{preview}/")]);
+        assert_eq!(methods(&target_event(&mut cdp, "targetCreated", "T1", "page", &preview)), ["Target.attachToTarget"]);
+        attached(&mut cdp, "S1", "T1");
+
+        let outgoing = target_event(&mut cdp, "targetInfoChanged", "T1", "page", "https://accounts.google.com/v3/signin");
+        assert_eq!(methods(&outgoing), ["Target.detachFromTarget"]);
+        assert_eq!(outgoing[0]["params"]["sessionId"], "S1");
+        assert!(cdp.handle(r#"{"method":"Target.detachedFromTarget","params":{"sessionId":"S1"}}"#).outgoing.is_empty());
+        assert_eq!(cdp.pages[0].attachment, Attachment::Detached);
+
+        let back = target_event(&mut cdp, "targetInfoChanged", "T1", "page", &format!("{preview}/de-de"));
+        assert_eq!(methods(&back), ["Target.attachToTarget"]);
+    }
+
+    #[test]
+    fn a_page_that_left_the_app_while_the_attach_was_on_its_way_is_detached_at_once() {
         let mut cdp = Cdp::default();
-        let attached = r#"{"method":"Target.attachedToTarget","params":{"sessionId":"W1","targetInfo":{"type":"service_worker"},"waitingForDebugger":true}}"#;
-        let outgoing: Vec<Value> = cdp.handle(attached).outgoing.iter().map(|text| parsed(text)).collect();
-        assert_eq!(outgoing[0]["method"], "Runtime.runIfWaitingForDebugger");
-        assert_eq!(outgoing[0]["sessionId"], "W1");
-        assert_eq!(outgoing[1]["method"], "Target.detachFromTarget");
-        assert_eq!(outgoing[1]["params"]["sessionId"], "W1");
-        assert!(outgoing[1].get("sessionId").is_none());
+        target_event(&mut cdp, "targetCreated", "T1", "page", "http://localhost:4200/");
+        target_event(&mut cdp, "targetInfoChanged", "T1", "page", "https://accounts.google.com/v3/signin");
+        assert_eq!(methods(&attached(&mut cdp, "S1", "T1")), ["Target.detachFromTarget"]);
+    }
+
+    #[test]
+    fn a_page_that_closed_is_forgotten() {
+        let mut cdp = Cdp::default();
+        attach_page(&mut cdp, "S1", "T1", "http://localhost:4200/");
+        cdp.handle(r#"{"method":"Target.targetDestroyed","params":{"targetId":"T1"}}"#);
         assert!(cdp.pages.is_empty());
+    }
+
+    #[test]
+    fn app_pages_are_local_ones_and_the_origins_hunt_opened() {
+        let apps = ["https://aa22-4203.hunt.example".to_string()];
+        for url in ["http://localhost:4200/x", "https://localhost/", "http://127.0.0.1:3000", "http://[::1]:8080/", "file:///tmp/a.html", "data:text/html,<p>", "https://aa22-4203.hunt.example/de"] {
+            assert!(is_app_page(url, &apps), "{url}");
+        }
+        for url in ["https://accounts.google.com/", "https://aa22-4204.hunt.example/", "http://localhost.evil.example/", "chrome-extension://abc/popup.html", "chrome://newtab/", "about:blank", ""] {
+            assert!(!is_app_page(url, &apps), "{url}");
+        }
     }
 
     #[test]
@@ -1048,59 +1382,43 @@ mod tests {
             parsed(&commands[0])
         };
         assert_eq!(front(&mut cdp)["method"], "Target.createTarget");
-        for session in ["S1", "S2"] {
-            let attached = json!({
-                "method": "Target.attachedToTarget",
-                "params": { "sessionId": session, "targetInfo": { "type": "page" }, "waitingForDebugger": true },
-            });
-            cdp.handle(&attached.to_string());
-        }
+        target_event(&mut cdp, "targetCreated", "T1", "page", "http://localhost:4200/");
+        target_event(&mut cdp, "targetCreated", "T2", "page", "https://accounts.google.com/");
         let last = front(&mut cdp);
-        assert_eq!(last["method"], "Page.bringToFront");
-        assert_eq!(last["sessionId"], "S2");
-        cdp.handle(r#"{"method":"Target.detachedFromTarget","params":{"sessionId":"S2"}}"#);
-        assert_eq!(front(&mut cdp)["sessionId"], "S1");
-    }
-
-    fn attach_page(cdp: &mut Cdp, session: &str, target: &str, url: &str) {
-        let attached = json!({
-            "method": "Target.attachedToTarget",
-            "params": { "sessionId": session, "targetInfo": { "targetId": target, "type": "page", "url": url }, "waitingForDebugger": false },
-        });
-        cdp.handle(&attached.to_string());
+        assert_eq!(last["method"], "Target.activateTarget");
+        assert_eq!(last["params"]["targetId"], "T2");
+        cdp.handle(r#"{"method":"Target.targetDestroyed","params":{"targetId":"T2"}}"#);
+        assert_eq!(front(&mut cdp)["params"]["targetId"], "T1");
     }
 
     #[test]
     fn show_opens_a_tab_for_each_app_no_page_shows_yet() {
         let mut cdp = Cdp::default();
-        attach_page(&mut cdp, "S1", "T1", "about:blank");
+        target_event(&mut cdp, "targetCreated", "T1", "page", "about:blank");
         attach_page(&mut cdp, "S2", "T2", "http://localhost:4200/login");
-        let urls = ["http://localhost:4200", "http://localhost:4300", "http://localhost:4400"].map(String::from).to_vec();
+        let urls = ["http://localhost:4200", "https://aa22-4300.hunt.example", "https://aa22-4400.hunt.example"].map(String::from).to_vec();
         let commands: Vec<Value> = cdp.control(Control::Show(urls)).iter().map(|text| parsed(text)).collect();
-        let summary: Vec<(&str, &str, &str)> = commands
-            .iter()
-            .map(|command| {
-                (command["method"].as_str().unwrap(), command["sessionId"].as_str().unwrap_or(""), command["params"]["url"].as_str().unwrap_or(""))
-            })
-            .collect();
+        let summary: Vec<(&str, &str)> =
+            commands.iter().map(|command| (command["method"].as_str().unwrap(), command["params"]["url"].as_str().or(command["params"]["targetId"].as_str()).unwrap())).collect();
         assert_eq!(
             summary,
             [
-                ("Page.navigate", "S1", "http://localhost:4300"),
-                ("Page.bringToFront", "S1", ""),
-                ("Target.createTarget", "", "http://localhost:4400"),
+                ("Target.createTarget", "https://aa22-4300.hunt.example"),
+                ("Target.closeTarget", "T1"),
+                ("Target.createTarget", "https://aa22-4400.hunt.example"),
             ]
         );
+        assert_eq!(methods(&target_event(&mut cdp, "targetCreated", "T3", "page", "https://aa22-4300.hunt.example/")), ["Target.attachToTarget"], "a shown URL is an app");
     }
 
     #[test]
     fn show_follows_the_url_a_page_navigated_to() {
         let mut cdp = Cdp::default();
-        attach_page(&mut cdp, "S1", "T1", "about:blank");
-        cdp.handle(r#"{"method":"Target.targetInfoChanged","params":{"targetInfo":{"targetId":"T1","type":"page","url":"http://localhost:4200/"}}}"#);
+        target_event(&mut cdp, "targetCreated", "T1", "page", "about:blank");
+        target_event(&mut cdp, "targetInfoChanged", "T1", "page", "http://localhost:4200/");
         let commands = cdp.control(Control::Show(vec!["http://localhost:4200".into()]));
         assert_eq!(commands.len(), 1);
-        assert_eq!(parsed(&commands[0])["method"], "Page.bringToFront");
+        assert_eq!(parsed(&commands[0])["method"], "Target.activateTarget");
     }
 
     /// The binding call of the widget with `PAYLOAD` on the page of `session_id`; without one, a call Chrome sends unflattened.
@@ -1250,7 +1568,8 @@ mod tests {
     #[test]
     fn parse_annotation_adds_the_id_and_time() {
         let id = Uuid::new_v4();
-        let annotation = parse_annotation(PAYLOAD, id, 1_760_000_000_000).unwrap();
+        let (annotation, delivery) = parse_annotation(PAYLOAD, id, 1_760_000_000_000).unwrap();
+        assert_eq!(delivery, Delivery::default());
         assert_eq!(annotation.id, id.to_string());
         assert_eq!(annotation.created_at, 1_760_000_000_000);
         assert_eq!(annotation.selector, "main > button.buy");
@@ -1263,10 +1582,57 @@ mod tests {
     }
 
     #[test]
+    fn parse_annotation_reads_where_the_widget_wants_the_annotation() {
+        let with_delivery = |delivery: Value| {
+            let mut payload: Value = serde_json::from_str(PAYLOAD).unwrap();
+            payload["delivery"] = delivery;
+            parse_annotation(&payload.to_string(), Uuid::new_v4(), 0).map(|(_, delivery)| delivery)
+        };
+        let session_id = Uuid::new_v4();
+        assert_eq!(
+            with_delivery(json!({ "sessionId": session_id, "isNew": false, "sends": true })).unwrap(),
+            Delivery { session_id: Some(session_id), is_new: false, sends: true }
+        );
+        assert_eq!(with_delivery(json!({ "isNew": true })).unwrap(), Delivery { session_id: None, is_new: true, sends: false });
+        assert!(with_delivery(json!({ "sessionId": "not a session" })).unwrap_err().contains("delivery"));
+        assert!(with_delivery(json!("sends")).is_err());
+    }
+
+    #[test]
+    fn an_annotation_goes_to_the_listed_session_the_widget_names_else_to_the_chromes_own() {
+        let [main, sub, stranger] = [Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4()];
+        let session = |id: Uuid, is_sub: bool| ReviewSession { id, title: "Cart".into(), is_sub };
+        let sessions = ReviewSessions { sessions: vec![session(main, false), session(sub, true)], own: sub };
+        let to = |session_id: Option<Uuid>, is_new: bool| sessions.target(&Delivery { session_id, is_new, sends: true });
+        assert_eq!(to(None, false), (sub, false));
+        assert_eq!(to(Some(main), false), (main, false));
+        assert_eq!(to(Some(stranger), false), (sub, false));
+        assert_eq!(to(Some(sub), true), (main, true));
+        assert_eq!(ReviewSessions { sessions: Vec::new(), own: sub }.target(&Delivery { is_new: true, ..Delivery::default() }), (sub, true));
+    }
+
+    #[test]
+    fn a_binding_call_for_the_sessions_is_answered_through_the_callback_of_its_page() {
+        let mut cdp = Cdp::default();
+        let params = json!({ "name": BINDING, "payload": SESSIONS_REQUEST });
+        let asked = cdp.handle(&json!({ "method": "Runtime.bindingCalled", "sessionId": "S1", "params": params }).to_string());
+        assert!(asked.outgoing.is_empty() && asked.annotations.is_empty());
+        assert_eq!(asked.session_requests, ["S1"]);
+
+        let own = Uuid::new_v4();
+        let sessions = ReviewSessions { sessions: vec![ReviewSession { id: own, title: "Cart \"v2\"".into(), is_sub: false }], own };
+        let answer = parsed(&cdp.answer_sessions("S1", &sessions));
+        assert_eq!(answer["method"], "Runtime.evaluate");
+        assert_eq!(answer["sessionId"], "S1");
+        let expected = format!(r#"globalThis.__huntReviewSessions?.({{"sessions":[{{"id":"{own}","title":"Cart \"v2\"","isSub":false}}],"own":"{own}"}})"#);
+        assert_eq!(answer["params"]["expression"], expected);
+    }
+
+    #[test]
     fn the_page_cannot_set_the_screenshot_path() {
         let mut payload: Value = serde_json::from_str(PAYLOAD).unwrap();
         payload["screenshotPath"] = json!("/Users/someone/.ssh/id_ed25519");
-        let annotation = parse_annotation(&payload.to_string(), Uuid::new_v4(), 0).unwrap();
+        let (annotation, _) = parse_annotation(&payload.to_string(), Uuid::new_v4(), 0).unwrap();
         assert_eq!(annotation.screenshot_path, None);
     }
 
@@ -1301,7 +1667,7 @@ mod tests {
         assert!(with("component", json!({ "name": "CartComponent" })).is_err());
         let mut without_component: Value = serde_json::from_str(PAYLOAD).unwrap();
         without_component.as_object_mut().unwrap().remove("component");
-        assert_eq!(parse_annotation(&without_component.to_string(), Uuid::new_v4(), 0).unwrap().component, None);
+        assert_eq!(parse_annotation(&without_component.to_string(), Uuid::new_v4(), 0).unwrap().0.component, None);
         assert!(parse_annotation("[]", Uuid::new_v4(), 0).is_err());
         assert!(parse_annotation("not json", Uuid::new_v4(), 0).is_err());
     }
@@ -1328,11 +1694,12 @@ mod tests {
         let registry = BrowserRegistry::default();
         let id = Uuid::new_v4();
         let (annotations, mut received) = unbounded_channel();
-        let sink: AnnotationSink = Arc::new(move |annotation, screenshot| {
+        let on_annotation: AnnotationSink = Arc::new(move |annotation, screenshot, _| {
             let _ = annotations.send((annotation, screenshot));
         });
-        registry.open(id, &repo_path, &browser_dir, sink.clone(), false, &[]).await.unwrap();
-        registry.open(id, &repo_path, &browser_dir, sink, true, &[]).await.unwrap();
+        let hooks = ReviewHooks { on_annotation, sessions: Arc::new(move || ReviewSessions { sessions: Vec::new(), own: id }) };
+        registry.open(id, &repo_path, &browser_dir, hooks.clone(), false, &[]).await.unwrap();
+        registry.open(id, &repo_path, &browser_dir, hooks, true, &[]).await.unwrap();
         let port = registry.reserve_port(id).unwrap();
 
         let endpoint = browser_endpoint(port).await.unwrap();

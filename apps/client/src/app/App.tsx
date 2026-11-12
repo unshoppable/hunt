@@ -53,13 +53,13 @@ import { FactoryPanel } from "../factory/FactoryPanel";
 import { isTerminalActive } from "../terminal/terminal-tabs.utils";
 import { HEADER_BAR } from "../ui/bars.constants";
 import { TAB_BUTTON, TAB_INACTIVE } from "../ui/buttons.constants";
-import { BranchIcon, CodeIcon, DiagramIcon, DiffIcon, FactoryIcon, GlobeIcon, MonitorIcon, PullRequestIcon, TaskListIcon, TerminalIcon } from "../ui/Icons";
+import { BranchIcon, CodeIcon, DiagramIcon, DiffIcon, FactoryIcon, GlobeIcon, Spinner, MonitorIcon, PullRequestIcon, TaskListIcon, TerminalIcon } from "../ui/Icons";
 import { shortcutCommand } from "../ui/shortcuts.utils";
 import { StatusToasts } from "../ui/StatusToasts";
 import { TabButton, type TabDot } from "../ui/TabButton";
 import { restoreWindowBounds } from "../ui/window-bounds.utils";
 import { useRememberWindowBounds } from "../ui/window-bounds.hook";
-import { useAccountsSync, useAgentPreferencesSync, useBackendEvents, usePaneStyles, useRemoteSettingsSync, useSettingsSync } from "./window-bootstrap.hook";
+import { useAccountsSync, useAgentPreferencesSync, useAnnotationDelivery, useBackendEvents, usePaneStyles, useRemoteSettingsSync, useSettingsSync } from "./window-bootstrap.hook";
 import { NoLocalWorktree } from "./NoLocalWorktree";
 
 /** How often the sidebar re-reads the gateway's listing, as often as the gateway's poller updates the agent states in it. */
@@ -124,6 +124,9 @@ export function App() {
   const sessionsPanel = usePanelRef();
   const chatPanel = usePanelRef();
   /** Collapsed panes shrink to a rail with the toggle that restores them; their content stays mounted but hidden. */
+  // The session whose Chrome "Browser" is opening, which takes seconds for a new Chrome; its button shows a spinner meanwhile.
+  const [openingBrowserId, setOpeningBrowserId] = useState<string | null>(null);
+  const isOpeningBrowser = openingBrowserId !== null && openingBrowserId === shownSessionId;
   const [isSessionsCollapsed, setIsSessionsCollapsed] = useState(false);
   const [isChatCollapsed, setIsChatCollapsed] = useState(false);
   /**
@@ -184,6 +187,7 @@ export function App() {
   useRemoteSettingsSync();
   useAccountsSync();
   useBackendEvents();
+  useAnnotationDelivery();
   useShowSessionRequests();
   useScriptRunRequests();
   useDiagramFileRequests();
@@ -319,12 +323,16 @@ export function App() {
               {shownSessionId ? (
                 <button
                   type="button"
-                  onClick={() => void openBrowser(shownSessionId)}
-                  disabled={isCreatingActive || !appPages.length}
+                  onClick={() => {
+                    setOpeningBrowserId(shownSessionId);
+                    void openBrowser(shownSessionId).finally(() => setOpeningBrowserId((id) => (id === shownSessionId ? null : id)));
+                  }}
+                  disabled={isCreatingActive || !appPages.length || isOpeningBrowser}
+                  aria-busy={isOpeningBrowser}
                   title={browserButtonTitle(appPages, Boolean(activeRemoteInstance))}
                   className={`${TAB_BUTTON} gap-1.5 ${TAB_INACTIVE} disabled:cursor-default disabled:bg-transparent disabled:text-neutral-400 disabled:opacity-40`}
                 >
-                  <GlobeIcon />
+                  {isOpeningBrowser ? <Spinner className="size-3.5" /> : <GlobeIcon />}
                   Browser
                 </button>
               ) : null}

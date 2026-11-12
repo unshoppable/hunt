@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { StoredBrowserAnnotation } from "../../../../libs/domain/src/review/browser-annotation.utils.ts";
 import type { Screenshot } from "./chat.types";
-import type { SessionView } from "../sessions/session.types";
+import type { AnnotationEvent, SessionView } from "../sessions/session.types";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/event", () => ({ emit: vi.fn() }));
@@ -13,6 +13,7 @@ import { useHuntStore } from "../sessions/hunt.store";
 import { SESSION, TARGET, notification, storedSession } from "../sessions/hunt.store.fixtures";
 import { createEmptyChat } from "./chat-reducer.utils";
 import { hasPendingQuestion } from "./chat.store-slice";
+import { promptWithAnnotations } from "./prompt/annotation-prompt.utils";
 
 describe("browser annotations", () => {
   beforeEach(() => {
@@ -35,13 +36,31 @@ describe("browser annotations", () => {
     };
   }
 
+  /** The event of an annotation that waits above the composer of `huntSessionId` for the next prompt. */
+  function added(huntSessionId: string, stored: StoredBrowserAnnotation): AnnotationEvent {
+    return { huntSessionId, annotation: stored, sends: false, createsSubSession: false };
+  }
+
+  it("sends an annotation the widget wants sent as a prompt of its own instead of adding it to the session's", async () => {
+    useHuntStore.setState({ chats: { [SESSION]: { ...createEmptyChat(), isBusy: true } } });
+    const { applyAnnotation, deliverAnnotation } = useHuntStore.getState();
+    const sent = { ...added(SESSION, annotation("a", "Larger")), sends: true };
+    applyAnnotation(sent);
+    await deliverAnnotation(added(SESSION, annotation("b", "Bold")));
+    await deliverAnnotation(sent);
+
+    const { annotations, chats } = useHuntStore.getState();
+    expect(annotations).toEqual({});
+    expect(chats[SESSION].queue.map((prompt) => prompt.text)).toEqual([promptWithAnnotations([sent.annotation], "")]);
+  });
+
   it("collects the delivered annotations per session in arrival order and ignores one delivered again", () => {
     const { applyAnnotation } = useHuntStore.getState();
-    applyAnnotation({ huntSessionId: SESSION, annotation: annotation("a", "Larger") });
-    applyAnnotation({ huntSessionId: SESSION, annotation: annotation("b", "Bold") });
-    applyAnnotation({ huntSessionId: "other", annotation: annotation("a", "Elsewhere") });
+    applyAnnotation(added(SESSION, annotation("a", "Larger")));
+    applyAnnotation(added(SESSION, annotation("b", "Bold")));
+    applyAnnotation(added("other", annotation("a", "Elsewhere")));
     const before = useHuntStore.getState().annotations;
-    applyAnnotation({ huntSessionId: SESSION, annotation: annotation("a", "Larger, again") });
+    applyAnnotation(added(SESSION, annotation("a", "Larger, again")));
 
     const { annotations } = useHuntStore.getState();
     expect(annotations).toBe(before);
@@ -51,9 +70,9 @@ describe("browser annotations", () => {
 
   it("removes one annotation, forgets a session without any and clears a session's annotations", () => {
     const { applyAnnotation, removeAnnotation, clearAnnotations } = useHuntStore.getState();
-    applyAnnotation({ huntSessionId: SESSION, annotation: annotation("a", "Larger") });
-    applyAnnotation({ huntSessionId: SESSION, annotation: annotation("b", "Bold") });
-    applyAnnotation({ huntSessionId: "other", annotation: annotation("c", "Elsewhere") });
+    applyAnnotation(added(SESSION, annotation("a", "Larger")));
+    applyAnnotation(added(SESSION, annotation("b", "Bold")));
+    applyAnnotation(added("other", annotation("c", "Elsewhere")));
 
     removeAnnotation(SESSION, "a");
     expect(useHuntStore.getState().annotations[SESSION].map((stored) => stored.id)).toEqual(["b"]);

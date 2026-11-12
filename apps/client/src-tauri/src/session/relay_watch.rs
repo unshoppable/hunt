@@ -65,19 +65,30 @@ struct RelayActivityEvent {
     relay_activity: RelayActivity,
 }
 
-/// An annotation of the review widget for the composer of the session `hunt_session_id`, from the status channel of its
-/// VM or from the Chrome of a local session (`crate::agent::browser`); mirror of `AnnotationEvent` in
-/// src/sessions/session.types.ts.
+/// An annotation of the review widget for the session `hunt_session_id`, from the status channel of its VM or from the
+/// Chrome of a local session (`crate::agent::browser`), whose widget also says what happens to it; mirror of
+/// `AnnotationEvent` in src/sessions/session.types.ts.
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnnotationEvent {
     pub hunt_session_id: Uuid,
     pub annotation: Annotation,
+    /// It is sent as a prompt at once instead of waiting above the composer for the next prompt.
+    pub sends: bool,
+    /// It goes to a new sub session of `hunt_session_id` instead of that session itself.
+    pub creates_sub_session: bool,
 }
 
-/// Tells the windows about `annotation`, made for the session `id`, as `review:annotation`.
-pub fn emit_annotation(app: &AppHandle, id: Uuid, annotation: Annotation) {
-    let _ = app.emit("review:annotation", AnnotationEvent { hunt_session_id: id, annotation });
+impl AnnotationEvent {
+    /// `annotation` for the composer of the session `id`, which sends it with the next prompt.
+    pub fn added(id: Uuid, annotation: Annotation) -> Self {
+        Self { hunt_session_id: id, annotation, sends: false, creates_sub_session: false }
+    }
+}
+
+/// Tells the windows about the annotation of `event` as `review:annotation`.
+pub fn emit_annotation(app: &AppHandle, event: AnnotationEvent) {
+    let _ = app.emit("review:annotation", event);
 }
 
 /// Watches the relays of `running`, the top-level remote sessions whose VM runs, each with its VM as the gateway lists
@@ -184,7 +195,7 @@ async fn connect(app: &AppHandle, id: Uuid, vm: &VmRef, closed: oneshot::Sender<
                 swf::pull_later(&handle, id);
             }
         }
-        Event::Annotation(annotation) => emit_annotation(&handle, id, annotation),
+        Event::Annotation(annotation) => emit_annotation(&handle, AnnotationEvent::added(id, annotation)),
         Event::Closed(reason) => {
             if let Some(closed) = closed.lock().unwrap().take() {
                 let _ = closed.send(reason);

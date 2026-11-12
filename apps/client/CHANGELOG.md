@@ -1,3 +1,9 @@
+## 0.163.1 (2026-11-12)
+
+### 🩹 Fixes
+
+- **client:** end the turn of a compaction the agent runs on its own ([d5c0946](https://github.com/unshoppable/hunt/commit/d5c0946))
+
 ## 0.163.0 (2026-11-10)
 
 ### 🚀 Features

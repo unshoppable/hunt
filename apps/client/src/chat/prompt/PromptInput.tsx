@@ -9,7 +9,7 @@ import type { PromptDraft, QueuedPrompt } from "../chat.store-slice";
 import { PillSelect } from "../PillSelect";
 import { appendPromptTexts, QueuedPrompts, useReturnedPrompts } from "./QueuedPrompts";
 import { ScreenshotTrigger, screenshotUrl } from "../ScreenshotPicker";
-import { assetUrl } from "../../ipc/commands";
+import { assetUrl, commands as ipcCommands } from "../../ipc/commands";
 import { CLEAR_BUTTON, SEND_BUTTON } from "../../ui/buttons.constants";
 import type { DropdownOption } from "../../ui/floating-menu.utils";
 import { CloseIcon, EraserIcon, GitHubIcon, SendIcon } from "../../ui/Icons";
@@ -22,6 +22,7 @@ import { matchCommands, slashQueryOf } from "./slash-commands.utils";
 import { codePasteText, EDITOR_CLIPBOARD_TYPE, editorCopyLanguage } from "../code-paste.utils";
 import { fileReference, insertImageReference, insertReference, removeImageReference, shiftImageReferences } from "../image-references.utils";
 import { useFileDrop } from "../file-drop.hook";
+import { pastedPaths } from "../path-paste.utils";
 import { annotationElementLabel, annotationScreenshots, annotationTooltip, promptWithAnnotations } from "./annotation-prompt.utils";
 import { AnnotationChip } from "./AnnotationChip";
 
@@ -303,10 +304,37 @@ export function PromptInput({
     setSuggestionIndex(0);
   }
 
-  /** Pastes several lines copied from one of Hunt's editors as a Markdown fence; the browser's undo takes it back whole. */
+  /**
+   * Attaches the image files whose paths were pasted, as a drop of them would; pasted text that is not only paths of
+   * existing image files goes in as text.
+   */
+  function pasteImagePaths(pasted: string, paths: string[]) {
+    void ipcCommands.imageFiles(paths).then(
+      (images) => (images.length === paths.length ? addAttachments(images) : insertPastedText(pasted)),
+      () => insertPastedText(pasted),
+    );
+  }
+
+  /** Inserts `pasted` at the caret as the paste itself would have; the browser's undo takes it back whole. */
+  function insertPastedText(pasted: string) {
+    textareaRef.current?.focus();
+    document.execCommand("insertText", false, pasted);
+  }
+
+  /**
+   * Pastes several lines copied from one of Hunt's editors as a Markdown fence; the browser's undo takes it back whole.
+   * Pasted paths of image files are attached instead (`pasteImagePaths`).
+   */
   function onPaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
     const language = editorCopyLanguage(event.clipboardData.getData(EDITOR_CLIPBOARD_TYPE));
-    if (language === null) return;
+    if (language === null) {
+      const pasted = event.clipboardData.getData("text/plain");
+      const paths = pastedPaths(pasted);
+      if (!paths.length) return;
+      event.preventDefault();
+      pasteImagePaths(pasted, paths);
+      return;
+    }
     const textarea = event.currentTarget;
     const inserted = codePasteText(
       event.clipboardData.getData("text/plain"),

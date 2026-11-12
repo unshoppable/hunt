@@ -1,3 +1,10 @@
+## 0.164.0 (2026-11-12)
+
+### 🚀 Features
+
+- **client:** send a review annotation to a chosen session from the widget ([c55b4ed](https://github.com/unshoppable/hunt/commit/c55b4ed))
+- **client:** attach an image whose path is pasted into the prompt ([1f0cd11](https://github.com/unshoppable/hunt/commit/1f0cd11))
+
 ## 0.163.1 (2026-11-12)
 
 ### 🩹 Fixes

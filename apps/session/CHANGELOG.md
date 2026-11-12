@@ -1,3 +1,9 @@
+## 0.36.5 (2026-11-12)
+
+### 🚀 Features
+
+- **client:** send a review annotation to a chosen session from the widget ([c55b4ed](https://github.com/unshoppable/hunt/commit/c55b4ed))
+
 ## 0.36.4 (2026-11-11)
 
 This was a version bump only for session to align it with other projects, there were no code changes.

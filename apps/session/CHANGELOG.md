@@ -1,3 +1,9 @@
+## 0.36.6 (2026-11-12)
+
+### 🩹 Fixes
+
+- **session:** install the dependencies from registry.npmjs.org, without the npm registry cache ([#63](https://github.com/unshoppable/hunt/issues/63))
+
 ## 0.36.5 (2026-11-12)
 
 ### 🚀 Features

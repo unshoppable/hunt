@@ -122,13 +122,13 @@ describe("parseShapeDiagram", () => {
         nodes: [
           { id: "empty", kind: "table", label: "empty", columns: [{ name: "id" }] },
           { id: "none", kind: "table", label: "none" },
-          { id: "users", kind: "table", label: "users", columns: [{ name: "id", type: "uuid", isPrimaryKey: "yes" }, { type: "text" }, { name: "name", type: "text", isForeignKey: 0 }] },
+          { id: "users", kind: "table", label: "users", columns: [{ name: "id", type: "uuid", isPrimaryKey: "yes", change: "changed" }, { type: "text" }, { name: "name", type: "text", isForeignKey: 0, change: "removed" }] },
         ],
         edges: [],
       },
       "erd",
     );
-    expect(parsed.diagram.nodes).toEqual([{ id: "users", kind: "table", label: "users", columns: [{ name: "id", type: "uuid", isPrimaryKey: true }, { name: "name", type: "text" }] }]);
+    expect(parsed.diagram.nodes).toEqual([{ id: "users", kind: "table", label: "users", columns: [{ name: "id", type: "uuid", isPrimaryKey: true, change: "changed" }, { name: "name", type: "text" }] }]);
     expect(parsed.problems.filter((problem) => problem.includes("dropped"))).toHaveLength(4);
   });
 

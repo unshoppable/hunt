@@ -46,10 +46,10 @@ describe("updateTable", () => {
 });
 
 describe("columns", () => {
-  it("appends a column with a free name", () => {
+  it("appends a column with a free name, marked as added", () => {
     const next = addColumn(erd, "customers");
     expect(next.nodes[1].columns).toHaveLength(3);
-    expect(next.nodes[1].columns![2]).toEqual({ name: "column", type: "text" });
+    expect(next.nodes[1].columns![2]).toEqual({ name: "column", type: "text", change: "added" });
     expect(newColumnName(next.nodes[1])).toBe("column_2");
   });
 

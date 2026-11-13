@@ -17,10 +17,13 @@ import {
 import type { ShapeChange, ShapeKind, TableColumn } from "./shape-diagram.types";
 import { CONTEXT_EDGE_DASH, EDGE_COLOR, EDGE_COLOR_HIGHLIGHTED, LABEL_HEIGHT, MAX_LABEL_WIDTH, orthogonalPath, pathMidpoint } from "../layout.utils";
 import { COLOR_STYLE } from "./shape-color.constants";
+import { PlusIcon, TrashIcon } from "../../ui/Icons";
 import { carryRoute, isMovableSegment, moveSegment, routeAroundObstacles, routeThroughBends, routedWire, stubRoute, type Obstacle, type RouteEnd, type RoutedConnection } from "./edge-route.utils";
 import {
+  TABLE_ADD_ROW_HEIGHT,
   TABLE_ROW_HEIGHT,
   columnPortId,
+  columnTypeLabel,
   crowMarker,
   portColumn,
   relationshipEnds,
@@ -65,6 +68,11 @@ const TABLE_TONE: Record<ShapeChange | "none", { card: string; header: string }>
   none: { card: "border-white/10", header: "bg-white/[0.045]" },
   added: { card: "border-emerald-400/50", header: "bg-emerald-400/10" },
   changed: { card: "border-amber-400/50", header: "bg-amber-400/10" },
+};
+/** A marked column of a table: a bar on its left edge and a faint tint in the change's color. */
+const COLUMN_CHANGE: Record<ShapeChange, { bar: string; tint: string }> = {
+  added: { bar: "shadow-[inset_2px_0_0_rgb(52_211_153/0.8)]", tint: "bg-emerald-400/[0.07]" },
+  changed: { bar: "shadow-[inset_2px_0_0_rgb(251_191_36/0.8)]", tint: "bg-amber-400/[0.07]" },
 };
 const BOUNDARY_STYLE = "border-dashed border-white/15 bg-white/[0.025]";
 /** Ring around an element and its corner tag per change; the minimap uses the matching hex colors. */
@@ -234,15 +242,6 @@ function KeyIcon({ className }: { className: string }) {
   );
 }
 
-/** An arrow for a foreign-key column, pointing at the table it references. */
-function ReferenceIcon({ className }: { className: string }) {
-  return (
-    <svg viewBox="0 0 16 16" className={className} fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M2.5 8h10M9 4.5 12.5 8 9 11.5" />
-    </svg>
-  );
-}
-
 /** A small grid, the icon of a table header. */
 function TableIcon({ className }: { className: string }) {
   return (
@@ -253,25 +252,108 @@ function TableIcon({ className }: { className: string }) {
   );
 }
 
+/** The edits a table card makes on its own columns; the panel provides them, by table id and column index. */
+export type TableColumnEdits = {
+  renameColumn: (tableId: string, index: number, name: string) => void;
+  addColumn: (tableId: string) => void;
+  removeColumn: (tableId: string, index: number) => void;
+};
+export const TableColumnEditsContext = createContext<TableColumnEdits | null>(null);
+
+/** The name field of a column being renamed on the card: Enter or blur commits, Escape keeps the name. */
+function ColumnNameInput({ name, onDone }: { name: string; onDone: (name: string | null) => void }) {
+  const isCancelled = useRef(false);
+  return (
+    <input
+      type="text"
+      defaultValue={name}
+      autoFocus
+      spellCheck={false}
+      aria-label="Column name"
+      className="nodrag nopan h-6 min-w-0 flex-1 rounded border border-blue-400/70 bg-(--surface-input) px-1 text-[13px] text-neutral-100 outline-none"
+      onFocus={(event) => event.currentTarget.select()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.preventDefault();
+          event.currentTarget.blur();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          isCancelled.current = true;
+          event.currentTarget.blur();
+        }
+      }}
+      onBlur={(event) => onDone(isCancelled.current ? null : event.currentTarget.value)}
+    />
+  );
+}
+
 /**
- * One column row of a table: a key icon for a primary or foreign key, the name and the type muted on the right. A
+ * One column row of a table: the name, a key icon behind it for a primary key, and the type muted on the right. A
  * lit row takes part in the hovered relationship or table; the drop target is the row a dragged relationship would
- * end at. `data-column` lets the panel find the row under the pointer when a relationship is dropped.
+ * end at; an added or changed column has a bar in the change's color on its left. `data-column` lets the panel find the row under the pointer when a relationship is dropped. With `edits`, a
+ * double click renames the column in place and the hovered row shows a button that removes it.
  */
-function TableRow({ column, isLit, isDropTarget, onPointerEnter }: { column: TableColumn; isLit: boolean; isDropTarget: boolean; onPointerEnter: () => void }) {
+function TableRow({
+  column,
+  isLit,
+  isDropTarget,
+  isHovered,
+  isEditing,
+  onPointerEnter,
+  onStartEdit,
+  onRename,
+  onRemove,
+}: {
+  column: TableColumn;
+  isLit: boolean;
+  isDropTarget: boolean;
+  isHovered: boolean;
+  isEditing: boolean;
+  onPointerEnter: () => void;
+  onStartEdit: (() => void) | null;
+  onRename: (name: string | null) => void;
+  onRemove: (() => void) | null;
+}) {
+  const change = column.change ? COLUMN_CHANGE[column.change] : null;
   return (
     <div
       data-column={column.name}
       onPointerEnter={onPointerEnter}
-      className={`flex items-center gap-2 px-3 transition-colors ${isDropTarget ? "bg-blue-400/25" : isLit ? "bg-sky-400/10" : ""}`}
+      onDoubleClick={(event) => {
+        if (!onStartEdit) return;
+        event.stopPropagation();
+        onStartEdit();
+      }}
+      className={`flex items-center gap-2 px-3 transition-colors ${change?.bar ?? ""} ${isDropTarget ? "bg-blue-400/25" : isLit ? "bg-sky-400/10" : (change?.tint ?? "")}`}
       style={{ height: TABLE_ROW_HEIGHT }}
-      title={`${column.name} ${column.type}`}
+      title={column.references ? `${column.name} ${column.type} → ${column.references}` : `${column.name} ${column.type}`}
     >
-      <span className="flex w-4 shrink-0 justify-center">
-        {column.isPrimaryKey ? <KeyIcon className="size-3.5 text-amber-300" /> : column.isForeignKey ? <ReferenceIcon className="size-3.5 text-sky-300/90" /> : null}
+      <span className="flex min-w-0 flex-1 items-center gap-2">
+        {isEditing ? (
+          <ColumnNameInput name={column.name} onDone={onRename} />
+        ) : (
+          <span className={`min-w-0 truncate text-[13px] ${isLit ? "text-sky-100" : column.isPrimaryKey ? "font-medium text-neutral-100" : "text-neutral-200"}`}>{column.name}</span>
+        )}
+        {column.isPrimaryKey ? <KeyIcon className="size-3.5 shrink-0 text-amber-300" /> : null}
       </span>
-      <span className={`min-w-0 flex-1 truncate text-[13px] ${isLit ? "text-sky-100" : column.isPrimaryKey ? "font-medium text-neutral-100" : "text-neutral-200"}`}>{column.name}</span>
-      <span className="shrink-0 font-mono text-[12px] text-neutral-500">{column.type}</span>
+      <span className={`shrink-0 font-mono text-[12px] ${column.references ? "text-sky-300/70 uppercase" : "text-neutral-500"}`}>{columnTypeLabel(column)}</span>
+      {onRemove ? (
+        <button
+          type="button"
+          title="Remove column"
+          aria-label={`Remove column ${column.name}`}
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove();
+          }}
+          onDoubleClick={(event) => event.stopPropagation()}
+          className={`nodrag flex size-5 shrink-0 items-center justify-center rounded text-neutral-500 hover:bg-white/10 hover:text-red-300 ${isHovered ? "" : "invisible"}`}
+        >
+          <TrashIcon className="size-3.5" />
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -290,6 +372,9 @@ export const TableNodeView = memo(function TableNodeView({ id, data }: NodeProps
   const columns = data.columns ?? [];
   const lit = new Set(data.litColumns ?? []);
   const [hoveredRow, setHoveredRow] = useState<string | null>(null);
+  // The index of the column whose name is being edited on the card; a column just added takes the next index.
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const edits = useContext(TableColumnEditsContext);
   const drop = useConnection((connection) => ({
     isTarget: connection.inProgress && connection.fromNode.id !== id,
     port: connection.inProgress && connection.toNode?.id === id ? connection.toHandle?.id : null,
@@ -331,10 +416,43 @@ export const TableNodeView = memo(function TableNodeView({ id, data }: NodeProps
           {data.description ? <span className="truncate text-[12px] text-neutral-400">{data.description}</span> : null}
         </div>
         <div className="divide-y divide-white/5">
-          {columns.map((column) => (
-            <TableRow key={column.name} column={column} isLit={lit.has(column.name)} isDropTarget={column.name === dropRow} onPointerEnter={() => setHoveredRow(column.name)} />
+          {columns.map((column, index) => (
+            <TableRow
+              key={column.name}
+              column={column}
+              isLit={lit.has(column.name)}
+              isDropTarget={column.name === dropRow}
+              isHovered={column.name === hoveredRow && !drop.isTarget}
+              isEditing={index === editingIndex}
+              onPointerEnter={() => setHoveredRow(column.name)}
+              onStartEdit={edits ? () => setEditingIndex(index) : null}
+              onRename={(name) => {
+                setEditingIndex(null);
+                if (edits && name !== null && name.trim() && name.trim() !== column.name) {
+                  edits.renameColumn(id, index, name);
+                }
+              }}
+              onRemove={edits ? () => edits.removeColumn(id, index) : null}
+            />
           ))}
         </div>
+        {edits ? (
+          <button
+            type="button"
+            title="Add column"
+            aria-label="Add column"
+            onClick={(event) => {
+              event.stopPropagation();
+              edits.addColumn(id);
+              setEditingIndex(columns.length);
+            }}
+            onDoubleClick={(event) => event.stopPropagation()}
+            className="nodrag flex w-full shrink-0 items-center justify-center border-t border-white/5 text-neutral-500 transition-colors hover:bg-white/5 hover:text-neutral-200"
+            style={{ height: TABLE_ADD_ROW_HEIGHT }}
+          >
+            <PlusIcon className="size-3.5" />
+          </button>
+        ) : null}
       </div>
     </div>
   );

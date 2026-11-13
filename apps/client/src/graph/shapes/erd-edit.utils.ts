@@ -65,9 +65,9 @@ export function updateTable(diagram: ShapeDiagram, id: string, patch: { label?: 
   });
 }
 
-/** Appends a `text` column with a free name to the table `id`. */
+/** Appends a `text` column with a free name to the table `id`, marked as added. */
 export function addColumn(diagram: ShapeDiagram, id: string): ShapeDiagram {
-  return mapTable(diagram, id, (table) => ({ ...table, columns: [...(table.columns ?? []), { name: newColumnName(table), type: "text" }] }));
+  return mapTable(diagram, id, (table) => ({ ...table, columns: [...(table.columns ?? []), { name: newColumnName(table), type: "text", change: "added" }] }));
 }
 
 /**
@@ -168,7 +168,7 @@ export function serializeShapeDiagram(diagram: ShapeDiagram): string {
       description: node.description,
       parent: node.parent,
       actor: node.actor,
-      columns: node.columns?.map((column) => ({ name: column.name, type: column.type, isPrimaryKey: column.isPrimaryKey, isForeignKey: column.isForeignKey })),
+      columns: node.columns?.map((column) => ({ name: column.name, type: column.type, isPrimaryKey: column.isPrimaryKey, isForeignKey: column.isForeignKey, change: column.change })),
       position: node.position ? { x: node.position.x, y: node.position.y } : undefined,
       color: node.color,
       change: node.change,

@@ -3,8 +3,11 @@ import type { ShapeDiagramType } from "../../common/diagram/diagram.types";
 /** Element kinds of the shape diagrams; which ones a diagram type allows is listed in `KINDS_BY_TYPE` (graph/diagram-types.constants.ts). */
 export type ShapeKind = "person" | "system" | "externalSystem" | "container" | "database" | "queue" | "start" | "end" | "state" | "action" | "decision" | "table";
 
-/** One row of an ERD table. */
-export type TableColumn = { name: string; type: string; isPrimaryKey?: boolean; isForeignKey?: boolean };
+/**
+ * One row of an ERD table; `change` marks a column the session added or altered inside a changed table. `references` is the label of the table a relationship from this column leads to; the layout
+ * derives it from the edges (`withReferencedTables`), the view shows it in place of the type, and it is never stored.
+ */
+export type TableColumn = { name: string; type: string; isPrimaryKey?: boolean; isForeignKey?: boolean; change?: ShapeChange; references?: string };
 
 /** What the session did to an element: Hunt highlights added and changed elements, everything else is the unchanged context. */
 export type ShapeChange = "added" | "changed";

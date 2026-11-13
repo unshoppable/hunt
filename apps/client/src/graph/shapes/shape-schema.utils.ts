@@ -44,7 +44,7 @@ export function shapeDiagramTypeOf(value: unknown): ShapeDiagramType | null {
   return Object.keys(KINDS_BY_TYPE).includes(value.type) ? (value.type as ShapeDiagramType) : null;
 }
 
-/** The column when `name` and `type` are strings, the flags coerced to booleans; undefined otherwise. */
+/** The column when `name` and `type` are strings, the flags coerced to booleans and an unknown `change` cleared; undefined otherwise. */
 function parseColumn(value: unknown): TableColumn | undefined {
   if (!isRecord(value) || !optionalString(value.name) || typeof value.type !== "string") return undefined;
   const column: TableColumn = { name: value.name as string, type: value.type };
@@ -53,6 +53,10 @@ function parseColumn(value: unknown): TableColumn | undefined {
   }
   if (value.isForeignKey) {
     column.isForeignKey = true;
+  }
+  const change = parseChange(value.change);
+  if (change) {
+    column.change = change;
   }
   return column;
 }

@@ -24,7 +24,7 @@ const TERMINAL_SIZE = { width: 28, height: 28 };
 const DECISION_SIZE = { width: 170, height: 90 };
 /**
  * A table lists its columns as rows under a header that holds the name and, when there is one, the description on
- * a second line. The width follows the widest row (name in 13px sans, type in 12px mono) or the header (name in 13px
+ * a second line, and a last row to add a column. The width follows the widest row (name in 13px sans, type in 12px mono) or the header (name in 13px
  * semibold capitals).
  */
 export const TABLE_HEADER_HEIGHT = 40;
@@ -33,11 +33,14 @@ export const TABLE_ROW_HEIGHT = 28;
 const TABLE_LABEL_CHAR_WIDTH = 9;
 const TABLE_NAME_CHAR_WIDTH = 7;
 const TABLE_TYPE_CHAR_WIDTH = 7.2;
-/** The key icon column, the gaps around name and type and the horizontal padding of a row. */
-const TABLE_ROW_OVERHEAD = 68;
-const TABLE_BOTTOM_PADDING = 6;
+/** The remove button, the gaps around name and type and the horizontal padding of a row. */
+const TABLE_ROW_OVERHEAD = 71;
+/** The key icon behind the name of a primary key and its gap. */
+const TABLE_KEY_ICON_WIDTH = 20;
+/** The row under the columns with the button that adds one. */
+export const TABLE_ADD_ROW_HEIGHT = 24;
 const MIN_TABLE_WIDTH = 220;
-const MAX_TABLE_WIDTH = 360;
+const MAX_TABLE_WIDTH = 384;
 /** ERD tables sit further apart than boxes: the relationships leave at their rows and need room to bend. */
 const ERD_SPACING: LayoutSpacing = { nodeNode: 48, betweenLayers: 120 };
 /**
@@ -118,16 +121,44 @@ export function shapeNodeSize(node: ShapeNode): { width: number; height: number 
       return DECISION_SIZE;
     case "table": {
       const columns = node.columns ?? [];
-      const widestRow = Math.max(0, ...columns.map((column) => column.name.length * TABLE_NAME_CHAR_WIDTH + column.type.length * TABLE_TYPE_CHAR_WIDTH));
+      const widestRow = Math.max(0, ...columns.map((column) => column.name.length * TABLE_NAME_CHAR_WIDTH + (column.isPrimaryKey ? TABLE_KEY_ICON_WIDTH : 0) + columnTypeLabel(column).length * TABLE_TYPE_CHAR_WIDTH));
       const content = Math.max(widestRow, node.label.length * TABLE_LABEL_CHAR_WIDTH + (node.change ? TABLE_TAG_WIDTH : 0));
       const width = Math.min(MAX_TABLE_WIDTH, Math.max(MIN_TABLE_WIDTH, Math.round(content + TABLE_ROW_OVERHEAD)));
-      return { width, height: tableHeaderHeight(node) + columns.length * TABLE_ROW_HEIGHT + TABLE_BOTTOM_PADDING };
+      return { width, height: tableHeaderHeight(node) + columns.length * TABLE_ROW_HEIGHT + TABLE_ADD_ROW_HEIGHT };
     }
     default: {
       const width = Math.min(MAX_BOX_WIDTH, Math.max(MIN_BOX_WIDTH, node.label.length * BOX_CHAR_WIDTH + BOX_PADDING));
       return { width, height: node.description || node.actor ? BOX_HEIGHT_WITH_DETAIL : BOX_HEIGHT };
     }
   }
+}
+
+/** What a table row shows on its right: the table a relationship from the column leads to, else the column's type. */
+export function columnTypeLabel(column: TableColumn): string {
+  return column.references ?? column.type;
+}
+
+/**
+ * The diagram with every column a relationship leaves from (`sourceColumn`, the foreign key) naming the table it leads
+ * to as `references`; the first relationship wins when a column has several.
+ */
+export function withReferencedTables(diagram: ShapeDiagram): ShapeDiagram {
+  if (diagram.type !== "erd") return diagram;
+  const labels = new Map(diagram.nodes.map((node) => [node.id, node.label]));
+  const references = new Map<string, string>();
+  for (const edge of diagram.edges) {
+    const label = labels.get(edge.target);
+    const key = `${edge.source}\n${edge.sourceColumn}`;
+    if (edge.sourceColumn && label && !references.has(key)) {
+      references.set(key, label);
+    }
+  }
+  return {
+    ...diagram,
+    nodes: diagram.nodes.map((node) =>
+      node.columns ? { ...node, columns: node.columns.map((column) => ({ ...column, references: references.get(`${node.id}\n${column.name}`) })) } : node,
+    ),
+  };
 }
 
 /** The side of a table a relationship's handle sits on. */
@@ -398,9 +429,11 @@ function connectionEnds(diagram: ShapeDiagram, edge: ShapeEdge, boxes: Map<strin
  * left-to-right reading, and once more where the placement has a table left of the one referencing it, or above
  * it, with the sides that placement calls for (`ERD_LAYOUT_PASSES`). In a manual layout ELK's routes no longer fit
  * the moved elements: Hunt routes the connections around the elements and clear of each other itself
- * (`routeConnections`), on the sides the placement calls for. Waits and aborts like `layoutGraph`.
+ * (`routeConnections`), on the sides the placement calls for. Every foreign-key column names the table it references
+ * (`withReferencedTables`). Waits and aborts like `layoutGraph`.
  */
-export async function layoutShapeDiagram(diagram: ShapeDiagram, signal?: AbortSignal): Promise<{ nodes: ShapeDiagramFlowNode[]; edges: ShapeFlowEdge[] }> {
+export async function layoutShapeDiagram(source: ShapeDiagram, signal?: AbortSignal): Promise<{ nodes: ShapeDiagramFlowNode[]; edges: ShapeFlowEdge[] }> {
+  const diagram = withReferencedTables(source);
   const isErd = diagram.type === "erd";
   const isManual = hasManualLayout(diagram);
   const facingSides = new Map(diagram.edges.map((edge): [string, RelationshipSides] => [shapeEdgeId(diagram, edge), { source: "right", target: "left" }]));

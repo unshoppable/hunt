@@ -19,14 +19,14 @@ import { useLoad } from "../../ui/load.hook";
 import { errorText } from "../../ui/error-text.utils";
 import { DiagramStatusBadge, DiagramTypeDropdown, GenerateSplitButton, SaveDiagramButton } from "../DiagramToolbar";
 import { DIAGRAM_TYPES, KINDS_BY_TYPE } from "../diagram-types.constants";
-import { addRelationship, addTable, emptyErd, serializeShapeDiagram } from "./erd-edit.utils";
+import { addColumn, addRelationship, addTable, emptyErd, serializeShapeDiagram, updateColumn } from "./erd-edit.utils";
 import { addEdge, addGroup, addNode, clearPositions, deletionOf, emptyDiagram, setBends, setPositions } from "./shape-edit.utils";
 import { placeWithoutOverlaps } from "./element-overlap.utils";
 import { decorateShapeFlow, hasManualChanges, layoutShapeDiagram, portColumn, shapeNodeSize, withoutDeleted, type ShapeDiagramFlowNode, type ShapeFlowEdge, type ShapeFocus } from "./shape-diagram.utils";
-import { CHANGE_COLOR, CrowFootDefs, EdgeBendsContext, SHAPE_EDGE_TYPES, SHAPE_NODE_TYPES } from "./ShapeNodes";
+import { CHANGE_COLOR, CrowFootDefs, EdgeBendsContext, SHAPE_EDGE_TYPES, SHAPE_NODE_TYPES, TableColumnEditsContext, type TableColumnEdits } from "./ShapeNodes";
 import { parseShapeDiagram } from "./shape-schema.utils";
 import { kindName, ShapeElementEditor } from "./ShapeElementEditor";
-import { TableEditor } from "./TableEditor";
+import { removeColumnAfterAsking, TableEditor } from "./TableEditor";
 import { TableFilterPopover } from "./TableFilterPopover";
 import { withoutTables } from "./table-filter.utils";
 import { ShapeToolbar, type ShapeTool } from "./ShapeToolbar";
@@ -220,6 +220,22 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
     [sessionId, diagramType, filePath],
   );
 
+  /** The column edits of the table cards, on the diagram as it stands. */
+  const columnEdits = useMemo(
+    (): TableColumnEdits | null =>
+      diagram && isErd
+        ? {
+            renameColumn: (tableId, index, name) => applyEdit(updateColumn(diagram, tableId, index, { name })),
+            addColumn: (tableId) => applyEdit(addColumn(diagram, tableId)),
+            removeColumn: (tableId, index) =>
+              void removeColumnAfterAsking(diagram, tableId, index).then((next) => {
+                if (next) applyEdit(next);
+              }),
+          }
+        : null,
+    [diagram, isErd, applyEdit],
+  );
+
   const select = (next: ShapeSelection, isNew = false) => {
     setSelection(next);
     setCreatedId(isNew ? next.id : null);
@@ -248,6 +264,8 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
       if (event.defaultPrevented || !isShortcut(event, "graph.deleteSelection")) return;
       const target = event.target;
       if (target !== document.body && !(target instanceof Node && canvasRef.current?.contains(target))) return;
+      // A column name being edited on a table card takes Backspace itself.
+      if (target instanceof HTMLInputElement) return;
       event.preventDefault();
       void deleteElement(selected);
     }
@@ -468,6 +486,7 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
           ) : null}
           <ReactFlowProvider key={`${view.version}:${zoomScale}`}>
             <EdgeBendsContext.Provider value={moveConnection}>
+            <TableColumnEditsContext.Provider value={columnEdits}>
             {diagram !== undefined ? (
               <ReactFlow
                 nodes={nodes}
@@ -538,6 +557,7 @@ export function ShapeDiagramPanel({ sessionId, source }: { sessionId: string; so
             {diagram !== undefined && !shownDiagram?.nodes.length ? (
               <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-6 text-center text-sm text-neutral-500">{emptyText}</div>
             ) : null}
+            </TableColumnEditsContext.Provider>
             </EdgeBendsContext.Provider>
           </ReactFlowProvider>
           {diagram !== undefined && !error ? (

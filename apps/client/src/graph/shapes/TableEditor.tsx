@@ -12,6 +12,18 @@ import { updateNode } from "./shape-edit.utils";
  * hands the changed diagram to `onChange`, which the panel shows at once and writes to the diagram file. Removing a
  * column asks first when relationships go with it; deleting the table is the panel's `onDelete`.
  */
+/**
+ * The diagram without the column at `index` of the table `id` and its relationships, after asking when relationships
+ * go with it; null when the user declines or the column does not exist.
+ */
+export async function removeColumnAfterAsking(diagram: ShapeDiagram, id: string, index: number): Promise<ShapeDiagram | null> {
+  const column = diagram.nodes.find((node) => node.id === id)?.columns?.[index];
+  if (!column) return null;
+  const affected = relationshipsOf(diagram, id).filter((edge) => (edge.source === id && edge.sourceColumn === column.name) || (edge.target === id && edge.targetColumn === column.name));
+  if (affected.length && !(await confirmDestructive(`Remove the column "${column.name}"? ${countOf(affected.length, "relationship")} on it will be removed too.`, "Remove"))) return null;
+  return removeColumn(diagram, id, index);
+}
+
 export function TableEditor({
   diagram,
   table,
@@ -33,10 +45,8 @@ export function TableEditor({
   const tableName = (id: string) => diagram.nodes.find((node) => node.id === id)?.label ?? id;
 
   const removeColumnAt = async (index: number) => {
-    const column = columns[index];
-    const affected = relationships.filter((edge) => (edge.source === table.id && edge.sourceColumn === column.name) || (edge.target === table.id && edge.targetColumn === column.name));
-    if (affected.length && !(await confirmDestructive(`Remove the column "${column.name}"? ${countOf(affected.length, "relationship")} on it will be removed too.`, "Remove"))) return;
-    onChange(removeColumn(diagram, table.id, index));
+    const next = await removeColumnAfterAsking(diagram, table.id, index);
+    if (next) onChange(next);
   };
 
   return (

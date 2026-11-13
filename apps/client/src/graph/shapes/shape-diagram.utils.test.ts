@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ShapeDiagram } from "./shape-diagram.types";
-import { columnPortId, decorateShapeFlow, erdMarkers, isChangeDiagram, isContextConnection, layoutShapeDiagram, portColumn, relationshipEnds, relationshipSides, shapeNodeSize, TABLE_HEADER_HEIGHT, TABLE_HEADER_HEIGHT_WITH_DESCRIPTION, TABLE_ROW_HEIGHT, tableRowCenterY, toLayoutInput, withoutDeleted } from "./shape-diagram.utils";
+import { columnPortId, decorateShapeFlow, erdMarkers, isChangeDiagram, isContextConnection, layoutShapeDiagram, portColumn, relationshipEnds, relationshipSides, shapeNodeSize, columnTypeLabel, TABLE_ADD_ROW_HEIGHT, TABLE_HEADER_HEIGHT, TABLE_HEADER_HEIGHT_WITH_DESCRIPTION, TABLE_ROW_HEIGHT, tableRowCenterY, toLayoutInput, withoutDeleted, withReferencedTables } from "./shape-diagram.utils";
 
 // Node has no Web Worker; ELK's in-thread stand-in runs the layouts instead.
 const elkWorker = (await import("elkjs/lib/elk-worker.js")) as unknown as { Worker: typeof Worker };
@@ -39,6 +39,18 @@ const erd: ShapeDiagram = {
   edges: [{ source: "orders", target: "customers", sourceColumn: "customer_id", targetColumn: "id", cardinality: { source: "many", target: "one" }, label: "belongs to" }],
 };
 
+describe("withReferencedTables", () => {
+  it("names the referenced table on the foreign-key column and leaves the other columns their type", () => {
+    const [orders, customers] = withReferencedTables(erd).nodes;
+    expect(orders.columns!.map(columnTypeLabel)).toEqual(["uuid", "customers"]);
+    expect(customers.columns!.map(columnTypeLabel)).toEqual(["uuid", "text", "timestamptz"]);
+  });
+
+  it("leaves a diagram that is not an erd unchanged", () => {
+    expect(withReferencedTables(container)).toBe(container);
+  });
+});
+
 describe("shapeNodeSize", () => {
   it("sizes boxes from their label and tables from their columns, deterministically", () => {
     expect(shapeNodeSize({ id: "a", kind: "system", label: "Shop" })).toEqual({ width: 180, height: 64 });
@@ -52,15 +64,15 @@ describe("shapeNodeSize", () => {
     expect(shapeNodeSize({ id: "a", kind: "start", label: "Start" })).toEqual({ width: 28, height: 28 });
     expect(shapeNodeSize({ id: "a", kind: "decision", label: "Ok?" })).toEqual({ width: 170, height: 90 });
     const table = erd.nodes[1];
-    expect(shapeNodeSize(table)).toEqual({ width: 220, height: TABLE_HEADER_HEIGHT + 3 * TABLE_ROW_HEIGHT + 6 });
+    expect(shapeNodeSize(table)).toEqual({ width: Math.round("created_at".length * 7 + "timestamptz".length * 7.2 + 71), height: TABLE_HEADER_HEIGHT + 3 * TABLE_ROW_HEIGHT + TABLE_ADD_ROW_HEIGHT });
     const wide = { ...table, columns: [{ name: "guideline_content_source_id", type: "timestamptz(6)" }] };
-    expect(shapeNodeSize(wide).width).toBe(Math.round("guideline_content_source_id".length * 7 + "timestamptz(6)".length * 7.2 + 68));
+    expect(shapeNodeSize(wide).width).toBe(Math.round("guideline_content_source_id".length * 7 + "timestamptz(6)".length * 7.2 + 71));
     expect(shapeNodeSize(table)).toEqual(shapeNodeSize({ ...table }));
     expect(shapeNodeSize({ id: "a", kind: "table", label: "t", columns: [{ name: "id", type: "int" }] }).width).toBe(220);
-    expect(shapeNodeSize({ id: "a", kind: "table", label: "a".repeat(80), columns: [{ name: "id", type: "int" }] }).width).toBe(360);
-    expect(shapeNodeSize({ ...table, label: "customer_addresses", change: "changed" }).width).toBe(Math.round("customer_addresses".length * 9 + 72 + 68));
+    expect(shapeNodeSize({ id: "a", kind: "table", label: "a".repeat(80), columns: [{ name: "id", type: "int" }] }).width).toBe(384);
+    expect(shapeNodeSize({ ...table, label: "customer_addresses", change: "changed" }).width).toBe(Math.round("customer_addresses".length * 9 + 72 + 71));
     const described = { ...table, description: "People who buy" };
-    expect(shapeNodeSize(described).height).toBe(TABLE_HEADER_HEIGHT_WITH_DESCRIPTION + 3 * TABLE_ROW_HEIGHT + 6);
+    expect(shapeNodeSize(described).height).toBe(TABLE_HEADER_HEIGHT_WITH_DESCRIPTION + 3 * TABLE_ROW_HEIGHT + TABLE_ADD_ROW_HEIGHT);
     expect(tableRowCenterY(table, 2)).toBe(TABLE_HEADER_HEIGHT + 2 * TABLE_ROW_HEIGHT + TABLE_ROW_HEIGHT / 2);
     expect(tableRowCenterY(described, 0)).toBe(TABLE_HEADER_HEIGHT_WITH_DESCRIPTION + TABLE_ROW_HEIGHT / 2);
   });

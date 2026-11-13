@@ -17,7 +17,8 @@ instructions:
   relationship means.
 - Change marks: mark every table and edge the session's changes introduce with `"change": "added"` and every one
   they alter (a column added, renamed, retyped or dropped; a key changed) with `"change": "changed"`; everything
-  else carries no `change`.
+  else carries no `change`. Inside a changed table, mark each column the changes add with `"change": "added"` and
+  each one they rename, retype or give another key with `"change": "changed"`.
 - Ids: give every table a stable kebab-case `id` derived from its name.
 - Language: write every label, description and title in {{language}}; column names and types stay as declared.
   {{englishTerms}}

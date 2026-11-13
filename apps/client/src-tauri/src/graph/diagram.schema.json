@@ -117,7 +117,11 @@
         "name": { "type": "string", "minLength": 1, "maxLength": 60, "description": "Column name as declared; edges reference it in `sourceColumn` and `targetColumn`." },
         "type": { "type": "string", "maxLength": 40, "description": "Column type as declared (`uuid`, `text`, `timestamptz`, an enum name)." },
         "isPrimaryKey": { "type": "boolean" },
-        "isForeignKey": { "type": "boolean" }
+        "isForeignKey": { "type": "boolean" },
+        "change": {
+          "$ref": "#/$defs/change",
+          "description": "`added` for a column the session's changes introduce, `changed` for one they rename, retype or give another key; the table then carries `changed` too."
+        }
       }
     },
     "group": {

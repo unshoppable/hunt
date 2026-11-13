@@ -1,3 +1,15 @@
+## 0.166.0 (2026-11-13)
+
+### 🚀 Features
+
+- **client:** mark the columns a session adds or changes in the ERD and show the table a foreign key references ([893d39f](https://github.com/unshoppable/hunt/commit/893d39f))
+- **client:** compare a session with a branch and collapse the commit pane of the Git tab ([31f56c9](https://github.com/unshoppable/hunt/commit/31f56c9))
+- **client:** notify on macOS when a session out of view ends a turn or asks for a permission ([af56aca](https://github.com/unshoppable/hunt/commit/af56aca))
+
+### 🔥 Performance
+
+- **client:** stop rendering the whole chat panel on every keystroke in the prompt ([11cbd1d](https://github.com/unshoppable/hunt/commit/11cbd1d))
+
 ## 0.165.0 (2026-11-13)
 
 ### 🚀 Features

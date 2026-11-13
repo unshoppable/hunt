@@ -1,3 +1,9 @@
+## 0.165.0 (2026-11-13)
+
+### 🚀 Features
+
+- **client:** diff a session against a chosen commit, show the pull request of every session and open a session with ⌘T ([a7095b3](https://github.com/unshoppable/hunt/commit/a7095b3))
+
 ## 0.164.1 (2026-11-13)
 
 This was a version bump only for client to align it with other projects, there were no code changes.

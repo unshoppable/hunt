@@ -1,3 +1,9 @@
+## 0.50.0 (2026-11-13)
+
+### 🚀 Features
+
+- **gateway:** attribute swf commits and pull requests to the issue's assignee ([172d30a](https://github.com/unshoppable/hunt/commit/172d30a))
+
 ## 0.49.6 (2026-11-13)
 
 This was a version bump only for gateway to align it with other projects, there were no code changes.

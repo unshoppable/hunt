@@ -173,18 +173,16 @@ export class Relay {
       if (config.acpSessionId) {
         this.adoptSessionId(config.acpSessionId);
         this.publishStatus();
-        const loaded = await this.call("session/load", { sessionId: config.acpSessionId, ...setup }, `failed to load the session ${config.acpSessionId}`);
-        this.adoptSessionState(loaded);
+        try {
+          this.adoptSessionState(await this.call("session/load", { sessionId: config.acpSessionId, ...setup }, `failed to load the session ${config.acpSessionId}`));
+        } catch (error) {
+          // The agent writes a conversation to disk with its first prompt only: a session that never got one cannot be loaded.
+          if (!isResourceNotFound(error)) throw error;
+          this.deps.log(`${messageOf(error)}; creating a new session`, "warn");
+          await this.createSession(setup);
+        }
       } else {
-        this.heldUpdates = [];
-        const created = await this.call("session/new", setup, "failed to create a session");
-        const sessionId = isRecord(created) ? created.sessionId : undefined;
-        if (typeof sessionId !== "string" || !sessionId) throw new Error("failed to create a session: the result has no sessionId");
-        this.adoptSessionId(sessionId);
-        this.adoptSessionState(created);
-        this.releaseHeldUpdates();
-        this.persist({ acpSessionId: sessionId });
-        this.publishStatus();
+        await this.createSession(setup);
       }
 
       await this.restoreSettings(config);
@@ -195,6 +193,19 @@ export class Relay {
     } catch (error) {
       this.fail(messageOf(error));
     }
+  }
+
+  /** Creates a conversation, stores its ID and keeps the updates the agent sends meanwhile. */
+  private async createSession(setup: Record<string, unknown>): Promise<void> {
+    this.heldUpdates = [];
+    const created = await this.call("session/new", setup, "failed to create a session");
+    const sessionId = isRecord(created) ? created.sessionId : undefined;
+    if (typeof sessionId !== "string" || !sessionId) throw new Error("failed to create a session: the result has no sessionId");
+    this.adoptSessionId(sessionId);
+    this.adoptSessionState(created);
+    this.releaseHeldUpdates();
+    this.persist({ acpSessionId: sessionId });
+    this.publishStatus();
   }
 
   /** A new client connection, served next to the clients connected already. */
@@ -277,7 +288,7 @@ export class Relay {
   /** Sends a request of the relay's own to the adapter; rejects with `failure` and the agent's error message. */
   private call(method: string, params: unknown, failure: string): Promise<unknown> {
     return new Promise((resolve, reject) => {
-      const settle = (outcome: Outcome) => (outcome.error ? reject(new Error(`${failure}: ${outcome.error.message}`)) : resolve(outcome.result));
+      const settle = (outcome: Outcome) => (outcome.error ? reject(new Error(`${failure}: ${outcome.error.message}`, { cause: outcome.error })) : resolve(outcome.result));
       this.sendToAgent(method, params, { kind: "internal", settle });
     });
   }
@@ -838,3 +849,7 @@ export function withoutUnsupportedCapabilities(result: Record<string, unknown>):
   return { ...result, agentCapabilities: { ...agentCapabilities, sessionCapabilities } };
 }
 
+/** Whether `error` is a failed call the agent answered with ACP's "Resource not found". */
+function isResourceNotFound(error: unknown): boolean {
+  return error instanceof Error && isRecord(error.cause) && error.cause.code === ERROR_CODES.resourceNotFound;
+}

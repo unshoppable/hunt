@@ -265,16 +265,27 @@ describe("start", () => {
     );
   });
 
+  it("creates a session and writes its ID back when the agent has no conversation of the configured ID", async () => {
+    const harness = createHarness();
+    harness.script["session/load"] = () => errorOutcome(-32002, "Resource not found");
+
+    await harness.relay.start();
+
+    expect(harness.relay.status()).toMatchObject({ state: "ready", error: null, acpSessionId: "acp-new" });
+    expect(harness.persisted).toContainEqual({ acpSessionId: "acp-new" });
+    expect(harness.logs).toContain("failed to load the session acp-1: Resource not found; creating a new session");
+  });
+
   it("fails with the agent's error, answers loads and prompts with -32603 and keeps serving initialize", async () => {
     const harness = createHarness();
-    harness.script["session/load"] = () => errorOutcome(-32002, "Resource not found: acp-1");
+    harness.script["session/load"] = () => errorOutcome(-32603, "boom");
     const client = fakeClient();
     harness.relay.connectClient(client);
     harness.relay.handleClientMessage(client, loadRequest("waiting"));
 
     await harness.relay.start();
 
-    const failure = "failed to load the session acp-1: Resource not found: acp-1";
+    const failure = "failed to load the session acp-1: boom";
     expect(harness.relay.status()).toMatchObject({ state: "failed", error: failure });
     harness.relay.handleClientMessage(client, requestMessage(2, "initialize", {}));
     harness.relay.handleClientMessage(client, promptRequest(3, "hi"));

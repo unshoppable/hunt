@@ -46,6 +46,8 @@ export const ERROR_CODES = {
   methodNotFound: -32601,
   invalidParams: -32602,
   internalError: -32603,
+  /** ACP: the resource a request names, such as a session, does not exist. */
+  resourceNotFound: -32002,
   requestCancelled: -32800,
 } as const;
 

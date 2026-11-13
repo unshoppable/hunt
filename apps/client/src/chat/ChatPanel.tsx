@@ -87,7 +87,6 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
   const sendPromptNow = useHuntStore((state) => state.sendPromptNow);
   const takeQueue = useHuntStore((state) => state.takeQueue);
   const unqueuePrompt = useHuntStore((state) => state.unqueuePrompt);
-  const promptDraft = useHuntStore((state) => state.promptDrafts[sessionId]);
   const setPromptDraft = useHuntStore((state) => state.setPromptDraft);
   const annotations = useHuntStore((state) => state.annotations[sessionId]);
   const removeAnnotation = useHuntStore((state) => state.removeAnnotation);
@@ -401,10 +400,12 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
           </div>
         </div>
       )}
-      {/* Keyed by the session so that a switch shows the other session's own draft instead of carrying this one over. */}
+      {/* Keyed by the session so that a switch shows the other session's own draft instead of carrying this one over. The
+          draft is read, not subscribed to: the input reads it only when it mounts, and a subscription would render the
+          whole panel, transcript included, on every keystroke. */}
       <PromptInput
         key={sessionId}
-        initialDraft={promptDraft}
+        initialDraft={useHuntStore.getState().promptDrafts[sessionId]}
         onDraftChange={(draft) => setPromptDraft(sessionId, draft)}
         isBusy={isBusy || Boolean(chat?.move) || isStarting}
         isStarting={isStarting}

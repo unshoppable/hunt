@@ -1,3 +1,7 @@
+## 0.164.1 (2026-11-13)
+
+This was a version bump only for client to align it with other projects, there were no code changes.
+
 ## 0.164.0 (2026-11-12)
 
 ### 🚀 Features

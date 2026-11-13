@@ -1,3 +1,9 @@
+## 0.36.7 (2026-11-13)
+
+### 🩹 Fixes
+
+- **session:** create a new conversation when the stored one cannot be loaded ([d6ce500](https://github.com/unshoppable/hunt/commit/d6ce500))
+
 ## 0.36.6 (2026-11-12)
 
 ### 🩹 Fixes

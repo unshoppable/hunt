@@ -97,7 +97,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const setChangeListTab = useSessionViewStore((state) => state.setChangeListTab);
   const setTab = useCallback((next: ChangeListTab) => setChangeListTab(familyId, next), [setChangeListTab, familyId]);
   const tab = shownChangeListTab(storedTab, !!pullRequest);
-  /** The commit the Git tab's "Diff to Latest Commit" compares the session against; the changelist then lists every change since it. */
+  /** The commit the Git tab's "Diff to Latest Commit" or a branch's "Compare" compares the session against; the changelist then lists every difference to it. */
   const chosenBase = chosenDiffBase(session);
   const comparison = changeListComparison(tab, chosenBase);
   const scope = useSettingsStore((state) => state.changelistScopes[sessionId] ?? "own");

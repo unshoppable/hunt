@@ -4,7 +4,7 @@ import type { GitMenuEntry } from "./GitMenu";
 /** The session's own local branch and the branch on `origin` a push of it lands on. */
 export type PushRoute = { branch: string; target: string };
 
-export type BranchActionKind = "checkout" | "rebase" | "merge" | "update" | "pull" | "forcePull" | "fetch" | "push" | "pushBranch" | "forcePushBranch" | "retarget" | "rename" | "delete" | "deleteRemote";
+export type BranchActionKind = "checkout" | "rebase" | "merge" | "compare" | "update" | "pull" | "forcePull" | "fetch" | "push" | "pushBranch" | "forcePushBranch" | "retarget" | "rename" | "delete" | "deleteRemote";
 
 /** One entry of a branch's context menu. */
 export type BranchAction = GitMenuEntry<BranchActionKind>;
@@ -20,6 +20,8 @@ export type BranchContext = {
   isPollerSession: boolean;
   /** Why no branch can be checked out here (a session's worktree is bound to its branch); `null` when one can. */
   checkoutBlocked: string | null;
+  /** Why the changelist cannot be compared against a branch (no session, or one that reviews a pull request); `null` when it can. */
+  compareBlocked: string | null;
 };
 
 /** What the busy state of the branch tree says while an action runs. */
@@ -27,6 +29,7 @@ export const BUSY_LABELS: Record<BranchActionKind, string> = {
   checkout: "Checking out…",
   rebase: "Rebasing…",
   merge: "Merging…",
+  compare: "Comparing…",
   update: "Updating…",
   pull: "Pulling…",
   forcePull: "Pulling…",
@@ -47,12 +50,12 @@ export function originBranchName(remoteBranch: string): string | null {
 
 /**
  * The context menu of the branch `ref`: check it out (a remote branch of origin as the local branch of its name), rebase
- * the checked-out branch onto it or merge it in, update or fetch it, push, rename and delete it. Hunt pushes the session's branch onto the branch it tracks on origin, so its Push and Update
+ * the checked-out branch onto it or merge it in, compare the session's changelist with it (on the checked-out branch: with a branch to pick), update or fetch it, push, rename and delete it. Hunt pushes the session's branch onto the branch it tracks on origin, so its Push and Update
  * name that branch and it alone can change the target; another local branch is pushed under its own name (force
  * pushed when origin has commits it lacks), pulled from its upstream by a fast-forward or force pulled, which resets
  * it to the upstream. A tag has no menu.
  */
-export function branchActions(ref: GitRef, { head, pushes, isRemoteSession, isPollerSession, checkoutBlocked }: BranchContext): BranchAction[] {
+export function branchActions(ref: GitRef, { head, pushes, isRemoteSession, isPollerSession, checkoutBlocked, compareBlocked }: BranchContext): BranchAction[] {
   if (ref.kind === "tag") return [];
   const isHead = ref.name === head;
   const isSessionBranch = ref.name === pushes?.branch;
@@ -70,6 +73,7 @@ export function branchActions(ref: GitRef, { head, pushes, isRemoteSession, isPo
     entry("checkout", "Checkout", checkoutBlocked ?? notOrigin ?? (branch === head ? "The branch is checked out" : null)),
     entry("rebase", `Rebase '${head}' onto '${ref.name}'`, notOntoItself, { startsGroup: true }),
     entry("merge", `Merge '${ref.name}' into '${head}'`, notOntoItself),
+    entry("compare", isHead ? "Compare with Branch…" : `Compare '${head}' with '${ref.name}'`, compareBlocked),
   ];
   if (ref.kind === "remote") {
     actions.push(entry("fetch", `Fetch '${ref.name}'`, notOrigin, { startsGroup: true }));

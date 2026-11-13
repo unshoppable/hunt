@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { commands } from "../ipc/commands";
 import type { GitScope } from "./git.types";
 import { reportSuccess } from "../ui/status-toasts.store";
@@ -10,6 +10,114 @@ import { useDialogSize } from "../ui/dialog-size.hook";
 
 /** Smallest size the push target dialog shrinks to: the list keeps a few rows. */
 const PUSH_TARGET_MIN_SIZE = { width: 360, height: 300 };
+
+/** The choice of one branch among `candidates` that a filter narrows: what `BranchChoiceList` shows and changes. */
+type BranchChoice = {
+  filter: string;
+  setFilter: (filter: string) => void;
+  /** The candidates whose name contains the filter, ignoring case. */
+  matches: string[];
+  /** The selected match; a filter that hides the chosen branch selects the first match, `null` without one. */
+  selected: string | null;
+  select: (candidate: string) => void;
+  /** Moves the selection `step` rows through the matches. */
+  moveSelection: (step: number) => void;
+};
+
+/** The state of a `BranchChoiceList` over `candidates` (`null` while they load), starting on `initial`. */
+function useBranchChoice(candidates: readonly string[] | null, initial: string): BranchChoice {
+  const [filter, setFilter] = useState("");
+  const [choice, setChoice] = useState(initial);
+  const matches = useMemo(() => {
+    const needle = filter.trim().toLowerCase();
+    return (candidates ?? []).filter((candidate) => candidate.toLowerCase().includes(needle));
+  }, [candidates, filter]);
+  const selected = matches.includes(choice) ? choice : (matches[0] ?? null);
+  const moveSelection = (step: number) => {
+    if (matches.length === 0) return;
+    const index = selected ? matches.indexOf(selected) : -1;
+    setChoice(matches[Math.max(0, Math.min(matches.length - 1, index + step))]);
+  };
+  return { filter, setFilter, matches, selected, select: setChoice, moveSelection };
+}
+
+/**
+ * The filter field and the list of a branch `choice`, under `label`: typing filters, a click or the arrow keys select
+ * a row, a double click or Enter calls `onSubmit` (with the row double-clicked). `children` are rows after the
+ * matches, for what the list has to say instead of them.
+ */
+function BranchChoiceList({ label, choice, onSubmit, children }: { label: string; choice: BranchChoice; onSubmit: (candidate?: string) => void; children?: ReactNode }) {
+  return (
+    <>
+      <label className="mb-1 block text-[13px] text-neutral-400">{label}</label>
+      <input
+        value={choice.filter}
+        onChange={(event) => choice.setFilter(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            onSubmit();
+          } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+            event.preventDefault();
+            choice.moveSelection(event.key === "ArrowDown" ? 1 : -1);
+          }
+        }}
+        autoFocus
+        spellCheck={false}
+        placeholder="Filter"
+        className={`${INPUT} font-mono`}
+      />
+      <ul role="listbox" className="mt-1 min-h-0 flex-1 overflow-auto rounded border border-(--line) p-1 font-mono text-[13px]">
+        {choice.matches.map((candidate) => (
+          <li
+            key={candidate}
+            role="option"
+            aria-selected={candidate === choice.selected}
+            onClick={() => choice.select(candidate)}
+            onDoubleClick={() => onSubmit(candidate)}
+            className={`cursor-default truncate rounded px-2 py-0.5 ${candidate === choice.selected ? "bg-(--row-selected) text-blue-100" : "text-neutral-200 hover:bg-(--row-hover)"}`}
+          >
+            {candidate}
+          </li>
+        ))}
+        {children}
+      </ul>
+    </>
+  );
+}
+
+/**
+ * Lets the user pick the branch the session on `branch` is compared with, among `candidates` (local and remote
+ * branches, starting on `initial`): a double click, Enter or "Compare" calls `onCompare` with it and closes the
+ * dialog. It shares the remembered size of the push target dialog, which lists branches the same way.
+ */
+export function CompareBranchDialog({ branch, candidates, initial, onClose, onCompare }: { branch: string; candidates: string[]; initial: string; onClose: () => void; onCompare: (target: string) => void }) {
+  const picker = useBranchChoice(candidates, initial);
+  const dialog = useDialogSize("pushTarget", { min: PUSH_TARGET_MIN_SIZE, fillsHeight: true });
+  const submit = (target = picker.selected) => {
+    if (!target) return;
+    onCompare(target);
+    onClose();
+  };
+  return (
+    <Modal label="Compare with branch" onClose={onClose} isCloseable className="bg-(--surface-chat) p-4" style={dialog.style} resize={dialog.resize}>
+      <h2 className="mb-1 text-base font-semibold">Compare with branch</h2>
+      <p className="mb-3 text-[13px] text-neutral-400">
+        The changelist of <span className="font-mono text-neutral-300">{branch}</span> then lists every difference to the branch as it stands now, as after a soft reset to it.
+      </p>
+      <BranchChoiceList label="Branch" choice={picker} onSubmit={submit}>
+        {picker.matches.length === 0 ? <li className="px-2 py-0.5 text-neutral-500">No branch matches.</li> : null}
+      </BranchChoiceList>
+      <div className="mt-auto flex justify-end gap-2 pt-3">
+        <button type="button" onClick={onClose} className={GHOST_BUTTON_MD}>
+          Cancel
+        </button>
+        <button type="button" onClick={() => submit()} disabled={!picker.selected} className={PRIMARY_BUTTON_MD}>
+          Compare
+        </button>
+      </div>
+    </Modal>
+  );
+}
 
 /**
  * Lets the user pick, among the branches of `origin` (`candidates`, without the `origin/` prefix; `null` while they
@@ -36,19 +144,13 @@ export function PushTargetDialog({
   onClose: () => void;
   onChanged: (target: string) => void;
 }) {
-  const [filter, setFilter] = useState("");
-  const [choice, setChoice] = useState(current);
+  const picker = useBranchChoice(candidates, current);
+  const { selected } = picker;
   /** The name of the branch to create while "New branch…" is open; `null` while the list is shown. */
   const [newName, setNewName] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
   const dialog = useDialogSize("pushTarget", { min: PUSH_TARGET_MIN_SIZE, fillsHeight: true });
-  const matches = useMemo(() => {
-    const needle = filter.trim().toLowerCase();
-    return (candidates ?? []).filter((candidate) => candidate.toLowerCase().includes(needle));
-  }, [candidates, filter]);
-  // A filter that hides the selected row moves the selection to the first match.
-  const selected = matches.includes(choice) ? choice : (matches[0] ?? null);
   const isCreating = newName !== null;
   const target = isCreating ? newName.trim() : selected;
   const canSubmit = !!target && target !== current && !isBusy;
@@ -66,13 +168,6 @@ export function PushTargetDialog({
       setError(String(reason));
       setIsBusy(false);
     }
-  }
-
-  /** Arrow keys on the filter field move the selection through the visible rows. */
-  function moveSelection(step: number) {
-    if (matches.length === 0) return;
-    const index = selected ? matches.indexOf(selected) : -1;
-    setChoice(matches[Math.max(0, Math.min(matches.length - 1, index + step))]);
   }
 
   return (
@@ -104,44 +199,15 @@ export function PushTargetDialog({
         </>
       ) : (
         <>
-          <label className="mb-1 block text-[13px] text-neutral-400">Branch on origin</label>
-          <input
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                void submit();
-              } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
-                event.preventDefault();
-                moveSelection(event.key === "ArrowDown" ? 1 : -1);
-              }
-            }}
-            autoFocus
-            spellCheck={false}
-            placeholder="Filter"
-            className={`${INPUT} font-mono`}
-          />
-          <ul role="listbox" className="mt-1 min-h-0 flex-1 overflow-auto rounded border border-(--line) p-1 font-mono text-[13px]">
-            {matches.map((candidate) => (
-              <li
-                key={candidate}
-                role="option"
-                aria-selected={candidate === selected}
-                onClick={() => setChoice(candidate)}
-                onDoubleClick={() => void submit(candidate)}
-                className={`cursor-default truncate rounded px-2 py-0.5 ${candidate === selected ? "bg-(--row-selected) text-blue-100" : "text-neutral-200 hover:bg-(--row-hover)"}`}
-              >
-                {candidate}
-              </li>
-            ))}
+          <BranchChoiceList label="Branch on origin" choice={picker} onSubmit={(candidate) => void submit(candidate)}>
             {candidatesError ? (
               <li className="px-2 py-0.5 break-words whitespace-normal text-red-400">Loading the branches of origin failed: {candidatesError}</li>
             ) : !candidates ? (
               <li className="px-2 py-0.5 text-neutral-500">Loading the branches of origin…</li>
-            ) : matches.length === 0 ? (
+            ) : picker.matches.length === 0 ? (
               <li className="px-2 py-0.5 text-neutral-500">No fetched branch of origin matches.</li>
             ) : null}
-          </ul>
+          </BranchChoiceList>
         </>
       )}
       {error ? <p className="mt-3 text-[13px] text-red-400">{error}</p> : null}

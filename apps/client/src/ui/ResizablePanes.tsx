@@ -278,13 +278,26 @@ export function runPaneToggle(toggle: () => void) {
 }
 
 /**
- * Round button that collapses a pane to its rail or restores it; panes collapse to the left, so the chevron points
- * left while the pane is open. The panes of its group glide to their new widths. `shortcutId` names the keymap command
- * that toggles the pane too, for the tooltip.
+ * Round button that collapses a pane to its rail or restores it; the chevron points to the side the pane collapses to
+ * (`collapsesTo`, the left by default) while the pane is open. The panes of its group glide to their new widths.
+ * `shortcutId` names the keymap command that toggles the pane too, for the tooltip; a pane without one omits it.
  */
-export function PaneToggle({ isOpen, name, shortcutId, onToggle }: { isOpen: boolean; name: string; shortcutId: CommandId; onToggle: () => void }) {
+export function PaneToggle({
+  isOpen,
+  name,
+  shortcutId = null,
+  collapsesTo = "left",
+  onToggle,
+}: {
+  isOpen: boolean;
+  name: string;
+  shortcutId?: CommandId | null;
+  collapsesTo?: "left" | "right";
+  onToggle: () => void;
+}) {
   const label = `${isOpen ? "Hide" : "Show"} ${name}`;
   const shortcut = useShortcutLabel(shortcutId);
+  const pointsLeft = isOpen === (collapsesTo === "left");
   return (
     <button
       type="button"
@@ -297,7 +310,7 @@ export function PaneToggle({ isOpen, name, shortcutId, onToggle }: { isOpen: boo
         "hover:bg-white/12 hover:text-white active:scale-92 focus-visible:ring-2 focus-visible:ring-blue-400/60"
       }
     >
-      <ChevronIcon expanded={false} className={`size-4 ${isOpen ? "rotate-180" : ""}`} />
+      <ChevronIcon expanded={false} className={`size-4 ${pointsLeft ? "rotate-180" : ""}`} />
     </button>
   );
 }

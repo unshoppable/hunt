@@ -239,9 +239,9 @@ pub async fn git_reset(app: AppHandle, scope: GitScope, branch: String, commit: 
     }
 }
 
-/// Makes the commit `commit` of the session's worktree the diff base of the session and its sub sessions: their
-/// changelist, diffs and change markers then show every change since that commit, committed or not, as after a soft
-/// reset to it, while the branch keeps its commits. `None` compares against `HEAD` again. A pull request review keeps
+/// Makes the commit `commit` of the session's worktree (a commit, or a branch, which resolves to the commit it points
+/// at now) the diff base of the session and its sub sessions: their changelist, diffs and change markers then show
+/// every difference to that commit, committed or not, as after a soft reset to it, while the branch keeps its commits. `None` compares against `HEAD` again. A pull request review keeps
 /// the merge base of its pull request.
 #[tauri::command]
 pub async fn set_diff_base(app: AppHandle, id: Uuid, commit: Option<String>) -> Result<(), String> {

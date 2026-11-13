@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState, type MouseEvent } from "react";
+import { useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import type { Commit, CommitDetails, CommitFile } from "./git.types";
 import { buildChangeTree, folderPaths, type FolderNode, type TreeNode } from "../common/tree/change-tree.utils";
 import { useFileIconUrl, useFolderIconUrl } from "../ui/file-icons/file-icons.hook";
@@ -29,6 +29,7 @@ export function CommitFiles({
   localBranches,
   selectedPath,
   onSelect,
+  collapseToggle,
 }: {
   /** The session whose Git tab this is; `null` for a repository without a session, which has no Architecture tab. */
   sessionId: string | null;
@@ -39,6 +40,8 @@ export function CommitFiles({
   localBranches: ReadonlySet<string>;
   selectedPath: string | null;
   onSelect: (file: CommitFile) => void;
+  /** The toggle that collapses the commit's pane, at the end of the header. */
+  collapseToggle: ReactNode;
 }) {
   const fileIconUrl = useFileIconUrl();
   const folderIconUrl = useFolderIconUrl();
@@ -101,6 +104,7 @@ export function CommitFiles({
       <div className="flex items-center gap-2 border-b border-(--line) px-3 py-2.5 text-[13px] text-neutral-400">
         <span className="flex-1 truncate">{commit ? (isLoaded ? `${files.length} ${files.length === 1 ? "file" : "files"}` : "Loading…") : "No commit selected"}</span>
         {commit ? <span className="font-mono text-neutral-500">{commit.id.slice(0, 8)}</span> : null}
+        {collapseToggle}
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
         <ul {...nav.listProps} className="py-1 outline-none font-(family-name:--git-font-family) text-(length:--git-font-size) leading-(--git-line-height)">

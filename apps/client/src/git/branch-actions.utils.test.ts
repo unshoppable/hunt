@@ -4,8 +4,8 @@ import { branchActions, localBranchesWithoutOrigin, originBranchName } from "./b
 
 const ref = (name: string, kind: GitRef["kind"], upstream: string | null = null): GitRef => ({ name, kind, target: "0".repeat(40), upstream, ahead: 0, behind: 0, worktreePath: null, author: "", authorEmail: "" });
 const BOUND = "The session's worktree is bound to its branch";
-const session = { head: "feat/general/x", pushes: { branch: "feat/general/x", target: "master" }, isRemoteSession: false, isPollerSession: false, checkoutBlocked: BOUND };
-const repository = { head: "master", pushes: null, isRemoteSession: false, isPollerSession: false, checkoutBlocked: null };
+const session = { head: "feat/general/x", pushes: { branch: "feat/general/x", target: "master" }, isRemoteSession: false, isPollerSession: false, checkoutBlocked: BOUND, compareBlocked: null };
+const repository = { head: "master", pushes: null, isRemoteSession: false, isPollerSession: false, checkoutBlocked: null, compareBlocked: "Only a session has a changelist to compare" };
 
 const labels = (actions: ReturnType<typeof branchActions>) => actions.map((action) => `${action.label}${action.disabledReason ? ` (${action.disabledReason})` : ""}`);
 
@@ -15,6 +15,7 @@ describe("branchActions", () => {
       `Checkout (${BOUND})`,
       "Rebase 'feat/general/x' onto 'feat/general/x' (The branch is checked out)",
       "Merge 'feat/general/x' into 'feat/general/x' (The branch is checked out)",
+      "Compare with Branch…",
       "Update from 'origin/master'",
       "Push to 'origin/master'",
       "Change push target…",
@@ -37,6 +38,7 @@ describe("branchActions", () => {
       `Checkout (${BOUND})`,
       "Rebase 'feat/general/x' onto 'master'",
       "Merge 'master' into 'feat/general/x'",
+      "Compare 'feat/general/x' with 'master'",
       "Pull from 'origin/master'",
       "Force pull from 'origin/master'",
       "Push to 'origin/master'",
@@ -44,7 +46,7 @@ describe("branchActions", () => {
       "Rename…",
       "Delete",
     ]);
-    expect(actions.map((action) => action.kind)).toEqual(["checkout", "rebase", "merge", "pull", "forcePull", "pushBranch", "forcePushBranch", "rename", "delete"]);
+    expect(actions.map((action) => action.kind)).toEqual(["checkout", "rebase", "merge", "compare", "pull", "forcePull", "pushBranch", "forcePushBranch", "rename", "delete"]);
     expect(actions.filter((action) => action.startsGroup).map((action) => action.kind)).toEqual(["rebase", "pull", "rename"]);
     expect(actions.filter((action) => action.isDanger).map((action) => action.kind)).toEqual(["forcePull", "forcePushBranch", "delete"]);
   });
@@ -60,6 +62,7 @@ describe("branchActions", () => {
       `Checkout (${BOUND})`,
       "Rebase 'feat/general/x' onto 'origin/master'",
       "Merge 'origin/master' into 'feat/general/x'",
+      "Compare 'feat/general/x' with 'origin/master'",
       "Fetch 'origin/master'",
       "Delete on origin",
     ]);
@@ -67,6 +70,7 @@ describe("branchActions", () => {
       `Checkout (${BOUND})`,
       "Rebase 'feat/general/x' onto 'fork/master'",
       "Merge 'fork/master' into 'feat/general/x'",
+      "Compare 'feat/general/x' with 'fork/master'",
       "Fetch 'fork/master' (Only branches of origin)",
       "Delete on origin (Only branches of origin)",
     ]);
@@ -90,6 +94,13 @@ describe("branchActions", () => {
     expect(checkout(ref("master", "local"))?.disabledReason).toBe("The branch is checked out");
     expect(checkout(ref("origin/master", "remote"))?.disabledReason).toBe("The branch is checked out");
     expect(checkout(ref("fork/develop", "remote"))?.disabledReason).toBe("Only branches of origin");
+  });
+
+  it("compares the changelist of a session with a branch, and of nothing else", () => {
+    const compare = (gitRef: GitRef, context: Parameters<typeof branchActions>[1]) => branchActions(gitRef, context).find((action) => action.kind === "compare");
+    expect(compare(ref("master", "local"), session)?.disabledReason).toBeNull();
+    expect(compare(ref("develop", "local"), repository)?.disabledReason).toBe("Only a session has a changelist to compare");
+    expect(compare(ref("master", "local"), { ...session, compareBlocked: "The session reviews a pull request" })?.disabledReason).toBe("The session reviews a pull request");
   });
 
   it("gives a tag no menu", () => {

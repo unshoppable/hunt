@@ -7,7 +7,7 @@ import { useSessionViewStore, type GitLogFilter, type InspectorViewFields } from
 import { reportFailure, reportSuccess } from "../ui/status-toasts.store";
 import { remoteOf } from "../sessions/remote/remote-session.utils";
 import { useSettingsStore } from "../settings/settings.store";
-import { PaneSeparator, Panel, PersistentGroup } from "../ui/ResizablePanes";
+import { PaneSeparator, PaneToggle, Panel, PersistentGroup, PUSH_INSTEAD_OF_COLLAPSE, RAIL_SIZE, usePanelRef } from "../ui/ResizablePanes";
 import { CodeDiffEditor } from "../diff/CodeDiffEditor";
 import { monacoLanguage } from "../editor/language-id.utils";
 import { SplitDiffView } from "../diff/SplitDiffView";
@@ -18,7 +18,7 @@ import { useLoad } from "../ui/load.hook";
 import { errorText } from "../ui/error-text.utils";
 import { BUSY_LABELS, branchActions, localBranchesWithoutOrigin, originBranchName, type BranchAction } from "./branch-actions.utils";
 import { refsByAuthors } from "./ref-authors.utils";
-import { PushTargetDialog, RenameBranchDialog } from "./BranchDialogs";
+import { CompareBranchDialog, PushTargetDialog, RenameBranchDialog } from "./BranchDialogs";
 import { CommitFiles } from "./CommitFiles";
 import { CommitLog } from "./CommitLog";
 import { GitMenu, type GitMenuEntry } from "./GitMenu";
@@ -27,6 +27,9 @@ import { ResetDialog } from "./ResetDialog";
 
 /** Commits one page of the log loads; scrolling near the end loads the next. A selected commit beyond the first page gives way to the newest one. */
 export const LOG_PAGE_SIZE = 500;
+
+/** Narrowest width of the open commit pane (files, details and diff); narrower, it collapses to its rail. */
+const COMMIT_MIN_WIDTH = 240;
 
 /** The filter the log starts with: the history of `branch` (every ref when empty), no text. */
 export function defaultLogFilter(branch: string): GitLogFilter {
@@ -110,7 +113,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
     const holder = sessions.find((candidate) => candidate.workspace === "checkout" && candidate.repoPath === repoPath && !candidate.parentId);
     return holder ? `The session "${holder.title}" works in this checkout` : null;
   }, [session, sessions, repoPath]);
-  /** Why "Diff to Latest Commit" cannot run: it sets the diff base of a session, which a pull request review keeps on its merge base. */
+  /** Why "Diff to Latest Commit" and a branch's "Compare" cannot run: they set the diff base of a session, which a pull request review keeps on its merge base. */
   const diffBlocked = !session ? "Only a session has a changelist to compare" : session.pullRequest ? "The session reviews a pull request and compares against its merge base" : null;
   const setRightTab = useSessionViewStore((state) => state.setTab);
   const setChangeListTab = useSessionViewStore((state) => state.setChangeListTab);
@@ -123,8 +126,15 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   const [resetTarget, setResetTarget] = useState<Commit | null>(null);
   const [renaming, setRenaming] = useState<string | null>(null);
   const [isRetargeting, setIsRetargeting] = useState(false);
+  /** Whether the dialog that picks the branch to compare the session with is open. */
+  const [isPickingCompareTarget, setIsPickingCompareTarget] = useState(false);
   /** What the running branch action is, shown in the branch tree's header; `null` while none runs. */
   const [busyLabel, setBusyLabel] = useState<string | null>(null);
+  const commitPanel = usePanelRef();
+  /** A collapsed commit pane shrinks to a rail with the toggle that restores it, so the log takes its width. */
+  const [isCommitCollapsed, setIsCommitCollapsed] = useState(false);
+  const toggleCommit = () => (isCommitCollapsed ? commitPanel.current?.expand() : commitPanel.current?.collapse());
+  const commitToggle = <PaneToggle isOpen={!isCommitCollapsed} name="commit files" collapsesTo="right" onToggle={toggleCommit} />;
   const authors = useSettingsStore((state) => state.gitAuthorFilter);
   const setAuthors = useSettingsStore((state) => state.setGitAuthorFilter);
   const diffFontSize = useSettingsStore((state) => state.panes.diff.fontSize);
@@ -242,8 +252,8 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   const selectedCommit = useMemo(() => commits.find((commit) => commit.id === selectedId) ?? null, [commits, selectedId]);
   const unpushed = useMemo(() => new Set(refs?.unpushed ?? []), [refs]);
   const localBranches = useMemo(() => new Set((refs?.refs ?? []).filter((ref) => ref.kind === "local").map((ref) => ref.name)), [refs]);
-  const menuActions = useMemo(() => (menu ? branchActions(menu.ref, { head: refs?.head ?? "HEAD", pushes, isRemoteSession: !!remote, isPollerSession: remote?.origin === "swf", checkoutBlocked }) : []),
-    [menu, refs, pushes, remote, checkoutBlocked],
+  const menuActions = useMemo(() => (menu ? branchActions(menu.ref, { head: refs?.head ?? "HEAD", pushes, isRemoteSession: !!remote, isPollerSession: remote?.origin === "swf", checkoutBlocked, compareBlocked: diffBlocked }) : []),
+    [menu, refs, pushes, remote, checkoutBlocked, diffBlocked],
   );
   /**
    * Local branches origin lacks that no session of the repository has checked out, which the branch tree's button
@@ -268,13 +278,14 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   };
 
   /**
-   * Compares the session and its sub sessions against `commit` and shows the result: the changelist of the Diff tab
-   * then lists every change since that commit, committed or not, as after a soft reset to it; the branch keeps its commits.
+   * Compares the session and its sub sessions against `reference` (a commit, or a branch as it stands now) and shows
+   * the result: the changelist of the Diff tab then lists every difference to that commit, committed or not, as after
+   * a soft reset to it; the branch keeps its commits.
    */
-  const diffToLatest = async (commit: Commit) => {
+  const compareAgainst = async (reference: string) => {
     if (!session) return;
     try {
-      await commands.setDiffBase(session.id, commit.id);
+      await commands.setDiffBase(session.id, reference);
       setChangeListTab(session.parentId ?? session.id, "changelist");
       setRightTab(session.id, "diff");
       refresh();
@@ -291,6 +302,15 @@ export function GitPanel({ scope }: { scope: GitScope }) {
     }
     if (action.kind === "retarget") {
       setIsRetargeting(true);
+      return;
+    }
+    if (action.kind === "compare") {
+      // The checked-out branch is what gets compared: it asks for the other side.
+      if (ref.name === refs?.head) {
+        setIsPickingCompareTarget(true);
+      } else {
+        await compareAgainst(ref.name);
+      }
       return;
     }
     setBusyLabel(BUSY_LABELS[action.kind]);
@@ -354,7 +374,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
   };
 
   return (
-    <PersistentGroup id="hunt-git" fillPane="log" className="h-full min-h-0">
+    <PersistentGroup id="hunt-git" fillPane="log" toggleOnlyPanes={{ commit: COMMIT_MIN_WIDTH }} className="h-full min-h-0">
       <Panel id="refs" defaultSize="18%" minSize={160} maxSize={520} className="flex">
         <RefTree
           refs={refs}
@@ -390,10 +410,34 @@ export function GitPanel({ scope }: { scope: GitScope }) {
         />
       </Panel>
       <PaneSeparator />
-      <Panel id="commit" defaultSize="34%" minSize={240} className="flex">
-        <PersistentGroup id="hunt-git-commit" fillPane="diff" orientation="vertical" className="h-full min-h-0 flex-1">
+      <Panel
+        id="commit"
+        panelRef={commitPanel}
+        onResize={() => setIsCommitCollapsed(Boolean(commitPanel.current?.isCollapsed()))}
+        defaultSize="34%"
+        minSize={COMMIT_MIN_WIDTH}
+        collapsible
+        collapsedSize={RAIL_SIZE}
+        collapsedThreshold={PUSH_INSTEAD_OF_COLLAPSE}
+        className="flex"
+      >
+        {isCommitCollapsed ? <div className="flex w-12 shrink-0 animate-pane-in justify-center bg-(--git-bg) py-1.5">{commitToggle}</div> : null}
+        <PersistentGroup
+          id="hunt-git-commit"
+          fillPane="diff"
+          orientation="vertical"
+          className={isCommitCollapsed ? "hidden" : "h-full min-h-0 flex-1 animate-pane-in"}
+        >
           <Panel id="files" defaultSize="45%" minSize={120} className="flex">
-            <CommitFiles sessionId={sessionId} commit={selectedCommit} details={details} localBranches={localBranches} selectedPath={selectedFile?.path ?? null} onSelect={(file) => changeSelection({ gitFile: file.path })} />
+            <CommitFiles
+              sessionId={sessionId}
+              commit={selectedCommit}
+              details={details}
+              localBranches={localBranches}
+              selectedPath={selectedFile?.path ?? null}
+              onSelect={(file) => changeSelection({ gitFile: file.path })}
+              collapseToggle={commitToggle}
+            />
           </Panel>
           <PaneSeparator orientation="vertical" />
           <Panel id="diff" minSize={120} className="flex">
@@ -479,7 +523,7 @@ export function GitPanel({ scope }: { scope: GitScope }) {
             if (entry.kind === "reset") {
               setResetTarget(commitMenu.commit);
             } else {
-              void diffToLatest(commitMenu.commit);
+              void compareAgainst(commitMenu.commit.id);
             }
           }}
         />
@@ -488,6 +532,15 @@ export function GitPanel({ scope }: { scope: GitScope }) {
         <ResetDialog scope={scope} branch={resetBranch.name} isCheckedOut={resetBranch.isCheckedOut} commit={resetTarget} onClose={() => setResetTarget(null)} onReset={refresh} />
       ) : null}
       {renaming ? <RenameBranchDialog scope={scope} branch={renaming} onClose={() => setRenaming(null)} onRenamed={(newName) => onRenamed(renaming, newName)} /> : null}
+      {isPickingCompareTarget && refs ? (
+        <CompareBranchDialog
+          branch={refs.head}
+          candidates={refs.refs.filter((ref) => ref.kind !== "tag" && ref.name !== refs.head).map((ref) => ref.name)}
+          initial={pushes ? `origin/${pushes.target}` : ""}
+          onClose={() => setIsPickingCompareTarget(false)}
+          onCompare={(target) => void compareAgainst(target)}
+        />
+      ) : null}
       {isRetargeting && pushes && sessionId ? (
         <PushTargetDialog sessionId={sessionId} branch={pushes.branch} current={pushes.target} candidates={originBranches} onClose={() => setIsRetargeting(false)} onChanged={refresh} />
       ) : null}
@@ -556,6 +609,7 @@ async function performAction(scope: GitScope, ref: GitRef, action: BranchAction)
     }
     case "rename":
     case "retarget":
+    case "compare":
       return null;
   }
 }

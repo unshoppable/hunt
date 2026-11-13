@@ -417,7 +417,9 @@ arrow. `apps/client/src/git/commit-graph.utils.ts` lays the
 lanes out from the parent lists, `CommitLog.tsx` renders only the visible rows, and the log reloads after every turn
 of the agent and every local write. The log opens on the session's branch, which the tree marks with the branch its
 push lands on (`→ master`). A right click on a branch opens its menu (`src/git/branch-actions.utils.ts`): rebase the
-checked-out branch onto it or merge it in (a conflict aborts and names the files), update it (the session's branch is
+checked-out branch onto it or merge it in (a conflict aborts and names the files), compare the session with it
+("Compare '<branch>' with '<other>'", or "Compare with Branch…" on the checked-out branch, which asks for the other one, sets the session's diff base to the commit the branch points at now, so the
+changelist lists every difference to it, as after a soft reset to it), update it (the session's branch is
 rebased onto the branch its push lands on, as the push does first; another local branch is fast-forwarded from its
 upstream), push, rename and delete it (a branch with commits no other branch has only after a confirmation), and for
 a remote branch fetch it or delete it on `origin`. A right click on a commit offers "Reset Current Branch to Here…", WebStorm's dialog

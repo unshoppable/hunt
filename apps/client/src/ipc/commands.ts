@@ -70,7 +70,7 @@ export const commands = {
   gitRenameBranch: (scope: GitScope, branch: string, newName: string) => invoke<void>("git_rename_branch", { scope, branch, newName }),
   /** Makes `target` on `origin` the branch a push of the session lands on, here and on the session's VM; a poller session refuses. */
   /** `create` makes a branch origin lacks there first, at the commit of the branch pushed to so far. */
-  /** Compares the session and its sub sessions against the commit `commit` instead of `HEAD`; `null` compares against `HEAD` again. */
+  /** Compares the session and its sub sessions against `commit` (a commit, or a branch at the commit it points at now) instead of `HEAD`; `null` compares against `HEAD` again. */
   setDiffBase: (sessionId: string, commit: string | null) => invoke<void>("set_diff_base", { id: sessionId, commit }),
   setPushTarget: (sessionId: string, target: string, create = false) => invoke<void>("set_push_target", { id: sessionId, target, create }),
   /** Deletes a local branch; without `force`, git refuses one whose commits its upstream (or HEAD) lacks with "not fully merged". */

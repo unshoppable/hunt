@@ -191,6 +191,22 @@ describe.skipIf(!hasDocker())("the tokens of a session's relay in a Debian conta
     }
   });
 
+  it("gives the relay the author of meta.json and the Git identity as committer, which is the author too without one", () => {
+    const identity = () => sh("grep '^GIT_' /etc/hunt/secrets.env").stdout;
+    huntCtlJson(["start", ID], "sk-ant-new\ngithub_pat_1\n");
+    expect(identity()).toBe(
+      'GIT_AUTHOR_NAME="Agent"\nGIT_AUTHOR_EMAIL="agent@example.com"\nGIT_COMMITTER_NAME="Agent"\nGIT_COMMITTER_EMAIL="agent@example.com"\n',
+    );
+
+    const withAuthor = `jq '.authorName = "Jane Doe" | .authorEmail = "7+jane@users.noreply.github.com"' "/srv/hunt/sessions/${ID}/meta.json" >/tmp/meta && mv /tmp/meta "/srv/hunt/sessions/${ID}/meta.json"`;
+    expect(sh(withAuthor).status).toBe(0);
+    setState("hunt-relay.service", "inactive");
+    huntCtlJson(["start", ID], "sk-ant-new\ngithub_pat_1\n");
+    expect(identity()).toBe(
+      'GIT_AUTHOR_NAME="Jane Doe"\nGIT_AUTHOR_EMAIL="7+jane@users.noreply.github.com"\nGIT_COMMITTER_NAME="Agent"\nGIT_COMMITTER_EMAIL="agent@example.com"\n',
+    );
+  });
+
   it("replaces the GitHub token with github-token without touching the relay, and does not count that as activity", () => {
     huntCtlJson(["start", ID], "sk-ant-new\ngithub_pat_1\n");
     systemctlCalls();

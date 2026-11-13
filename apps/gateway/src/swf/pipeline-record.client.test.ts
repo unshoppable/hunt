@@ -54,6 +54,8 @@ function fakeGitHub(thread: IssueComment[] = []): GitHub & { calls: string[] } {
     reviews: unexpected,
     reviewComments: unexpected,
     requestReviewers: unexpected,
+    addAssignees: unexpected,
+    gitIdentity: unexpected,
     updateBranch: unexpected,
     merge: unexpected,
     ensureLabel: unexpected,

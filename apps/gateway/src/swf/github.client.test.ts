@@ -274,6 +274,30 @@ describe("createGitHub", () => {
     expect(requests.map((request) => request.body)).toEqual([{ reviewers: ["carol", "dave"] }, { reviewers: ["outsider"] }, { reviewers: ["carol"] }]);
   });
 
+  it("assigns people to a pull request, skipping an empty list, and reports a refusal", async () => {
+    const answers = [Response.json({ number: 31 }, { status: 201 }), Response.json({ message: "down" }, { status: 502 })];
+    const { fetchImpl, requests } = fakeFetch({ "POST /repos/acme/app/issues/31/assignees": () => answers.shift() as Response });
+    const github = createGitHub(async () => "ghp_token", fetchImpl);
+
+    await github.addAssignees(ACME_APP, 31, ["carol", "dave"]);
+    await github.addAssignees(ACME_APP, 31, []);
+    await expect(github.addAssignees(ACME_APP, 31, ["carol"])).rejects.toThrow("failed to assign carol to acme/app#31: HTTP 502");
+    expect(requests.map((request) => request.body)).toEqual([{ assignees: ["carol", "dave"] }, { assignees: ["carol"] }]);
+  });
+
+  it("gives a user's Git identity with the noreply address, the login standing in for a missing name", async () => {
+    const { fetchImpl } = fakeFetch({
+      "GET /users/carol": () => Response.json({ id: 7, login: "carol", name: "Carol Example" }),
+      "GET /users/dave": () => Response.json({ id: 8, login: "dave", name: null }),
+      "GET /users/gone": () => new Response("", { status: 404 }),
+    });
+    const github = createGitHub(async () => "ghp_token", fetchImpl);
+
+    expect(await github.gitIdentity(ACME_APP, "carol")).toEqual({ name: "Carol Example", email: "7+carol@users.noreply.github.com" });
+    expect(await github.gitIdentity(ACME_APP, "dave")).toEqual({ name: "dave", email: "8+dave@users.noreply.github.com" });
+    await expect(github.gitIdentity(ACME_APP, "gone")).rejects.toThrow("failed to read the user gone: HTTP 404");
+  });
+
   it("updates the branch, accepting a branch that cannot be updated, and merges with the method given", async () => {
     const updates = [Response.json({ message: "Updating pull request branch." }, { status: 202 }), Response.json({ message: "merge conflict" }, { status: 422 })];
     const merges = [Response.json({ merged: true }), Response.json({ message: "Pull Request is not mergeable" }, { status: 405 })];

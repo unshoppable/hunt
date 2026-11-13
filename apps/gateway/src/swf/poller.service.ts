@@ -37,7 +37,8 @@
  * waits; a person's change request goes back to implement. `merge` updates the branch when it is behind, merges it the
  * way the settings' `mergeMethod` says once GitHub reports it as mergeable, and sends a pull request GitHub reports as
  * blocked once its checks are done back to `pr-gate`; then the issue gets `swf:done` and moves to the settings'
- * `projectStatus.done` in its projects. The first poll at a poller step moves the issue to `projectStatus.inReview`. An
+ * `projectStatus.done` in its projects. The first poll at a poller step assigns the pull request to the issue's assignees (an issue without any
+ * fails) and moves the issue to `projectStatus.inReview`. An
  * issue still labelled with a retired step (`swf:human-review`, `swf:checks`) reads as `pr-gate` (`WorkflowLabels`)
  * until its next step replaces the label.
  * These steps need GitHub only, so they go on while the idle
@@ -65,7 +66,8 @@
  *
  * On GitHub the poller and its sessions act as a GitHub App (`swf/github-app.client.ts`). The app's installation tokens
  * are valid for one hour and limited to one repository each: a session's clone, its commits (with the app's bot
- * identity) and its relay get the current one, and every poll hands a renewed token to each running session VM
+ * identity as committer and the issue's first assignee as author; an issue no person is assigned to fails before a VM
+ * is created) and its relay get the current one, and every poll hands a renewed token to each running session VM
  * (`hunt-ctl github-token`), so git, Git LFS and `gh` there keep working without a relay restart. One log line per
  * decision, Compute Engine call and command on a session VM goes to the log; tokens and the key never appear in logs or
  * comments (`swf/redaction.utils.ts`). `drain` waits for the setups in progress, `abort` marks their issues as failed.
@@ -85,7 +87,7 @@ import { AGENT_METADATA, BRANCH_METADATA, ORIGIN_LABEL, SessionVm } from "../ses
 import { DEFAULT_TEMPLATE, SILENT, type Origin, type Reporter, type SessionVmService } from "../session-vm/session-vm.service.ts";
 import type { AppCredentials, GitHubApp } from "./github-app.client.ts";
 import type { GitHub, Issue, IssueComment } from "./github.client.ts";
-import { mentionsOf, newAnswers, resultsOfRuns, type RunResult } from "./issue-thread.utils.ts";
+import { assigneesOf, mentionsOf, newAnswers, resultsOfRuns, type RunResult } from "./issue-thread.utils.ts";
 import { PipelineRecordClient } from "./pipeline-record.client.ts";
 import { Pipeline, stepSettings } from "../../../../libs/domain/src/swf/pipeline.domain.ts";
 import { checkPrivateFilesArchive, privateFilesSecret } from "./private-files.utils.ts";
@@ -98,6 +100,8 @@ import {
   reviewRequestComment,
   mergedComment,
   missingPullRequestComment,
+  noAssigneeComment,
+  noAssigneeError,
   noPullRequestComment,
   replacedVmComment,
   stepSettingsError,
@@ -448,8 +452,9 @@ export class Poller {
 
   /**
    * A poller step, from the state of the pull request: `pr-gate` follows the people's reviews, the head commit's checks
-   * and GitHub's review decision, `merge` GitHub's merge state. The first poll at a poller step moves the issue to the
-   * settings' `projectStatus.inReview`, since the runner, not the poller, moved the pipeline into pr-gate.
+   * and GitHub's review decision, `merge` GitHub's merge state. The first poll at a poller step assigns the pull request
+   * to the issue's assignees, failing an issue without any, and moves the issue to the settings'
+   * `projectStatus.inReview`, since the runner, not the poller, moved the pipeline into pr-gate.
    */
   private async drivePollerStep(context: SessionContext): Promise<void> {
     const { key, github, repo, recordId, issue, labels, pipeline, watched, bot } = context;
@@ -472,6 +477,14 @@ export class Poller {
       return;
     }
     if (!pipeline.inReview) {
+      // The pull request is the assignees' work, though the app opened it.
+      const assignees = assigneesOf(issue);
+      if (assignees.length === 0) {
+        await this.failIssue(key, github, repo, issue.number, labels, step, noAssigneeComment(pullRequest.number, labels.failed));
+        return;
+      }
+      await github.addAssignees(repo, pullRequest.number, assignees);
+      this.deps.log(`${key}: assigned #${pullRequest.number} to ${assignees.map((login) => `@${login}`).join(", ")}`);
       await this.moveToStatus(github, key, repo, issue.number, pipeline.settings.projectStatus.inReview);
       pipeline.noteInReview();
       await this.records.save(repo, recordId, pipeline);
@@ -743,7 +756,11 @@ export class Poller {
    * setup, which `startSession` completes once the pipeline is known.
    */
   private async prepareVm(setup: Setup, domain: string, branch: BranchName | null, issue: Issue): Promise<PreparedVm> {
-    const { key, repo, sessionId } = setup;
+    const { key, repo, sessionId, labels } = setup;
+    // The session works for the issue's first assignee, who authors its commits; the app commits and pushes them.
+    const [assignee] = assigneesOf(issue);
+    if (!assignee) throw new Error(noAssigneeError(labels.requested));
+    const author = await this.deps.github.gitIdentity(repo, assignee);
     const reporter: Reporter = {
       progress: (step) => {
         if (step === "creatingVm") {
@@ -759,7 +776,10 @@ export class Poller {
 
     // The clone, the commits and the relay act as the app: the token of the moment, since one is valid for an hour only.
     const identity = await this.deps.githubApp.identity();
-    const cloneArgs = ["clone", sessionId.id, "--repo", repo.slug, ...(branch ? ["--branch", branch.name] : []), "--git-name", identity.name, "--git-email", identity.email];
+    const cloneArgs = [
+      ...["clone", sessionId.id, "--repo", repo.slug, ...(branch ? ["--branch", branch.name] : [])],
+      ...["--git-name", identity.name, "--git-email", identity.email, "--git-author-name", author.name, "--git-author-email", author.email],
+    ];
     const cloned = await vm.huntCtl(cloneArgs, `${await this.deps.githubApp.tokenFor(repo)}\n`);
     if (typeof cloned.path !== "string" || !cloned.path) throw new Error("hunt-ctl clone returned no path");
     await this.putPrivateFiles(vm, key, sessionId, repo);

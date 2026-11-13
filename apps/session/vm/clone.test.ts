@@ -95,9 +95,12 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
     return result.stdout.trim();
   }
 
-  /** `hunt-ctl clone` as root with the token on stdin; without a `branch` the clone stays on the default branch. */
-  function clone(id: string, repo: string, branch: string | null, token = TOKEN, name = GIT_NAME, email = GIT_EMAIL) {
-    const args = ["clone", id, "--repo", repo, ...(branch === null ? [] : ["--branch", branch]), "--git-name", name, "--git-email", email];
+  /**
+   * `hunt-ctl clone` as root with the token on stdin; without a `branch` the clone stays on the default branch, `author`
+   * adds the author options.
+   */
+  function clone(id: string, repo: string, branch: string | null, token = TOKEN, name = GIT_NAME, email = GIT_EMAIL, author: string[] = []) {
+    const args = ["clone", id, "--repo", repo, ...(branch === null ? [] : ["--branch", branch]), "--git-name", name, "--git-email", email, ...author];
     return docker(["exec", "-i", container, "/srv/hunt/current/vm/hunt-ctl", ...args], `${token}\n`);
   }
 
@@ -146,6 +149,8 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
       branch: "fix/general/12-fix-login",
       gitName: GIT_NAME,
       gitEmail: GIT_EMAIL,
+      authorName: GIT_NAME,
+      authorEmail: GIT_EMAIL,
       origin: "swf",
     });
 
@@ -154,6 +159,20 @@ describe.skipIf(!hasDocker())("hunt-ctl clone in a Debian container", () => {
     const withoutToken = docker(["exec", "-u", "agent", container, "git", "ls-remote", "https://github.com/acme/app.git"]);
     expect(withoutToken.status).toBe(128);
     expect(withoutToken.stderr).toContain("Authentication failed");
+  }, DOCKER_TIMEOUT_MS);
+
+  it("records a separate author, the person the session works for, and refuses half of one", () => {
+    const id = "0c0c6f2e-0000-4000-8000-000000000007";
+    const author = ["--git-author-name", "Jane Doe", "--git-author-email", "7+jane@users.noreply.github.com"];
+    const result = clone(id, "acme/app", "fix/general/12-fix-login", TOKEN, GIT_NAME, GIT_EMAIL, author);
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    const meta = JSON.parse(sh(`cat /srv/hunt/sessions/${id}/meta.json`).stdout);
+    expect(meta).toMatchObject({ gitName: GIT_NAME, gitEmail: GIT_EMAIL, authorName: "Jane Doe", authorEmail: "7+jane@users.noreply.github.com" });
+
+    const half = clone(id, "acme/app", "fix/general/12-fix-login", TOKEN, GIT_NAME, GIT_EMAIL, ["--git-author-name", "Jane Doe"]);
+    expect(half.status).toBe(3);
+    expect(half.stderr).toContain("hunt-ctl: invalid git author email");
   }, DOCKER_TIMEOUT_MS);
 
   it("checks out a branch the origin has already, tracking it", () => {

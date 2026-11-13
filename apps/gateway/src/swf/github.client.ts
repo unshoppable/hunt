@@ -32,6 +32,12 @@ export interface Issue {
   assignees: string[];
 }
 
+/** A Git author or committer. */
+export interface GitIdentity {
+  name: string;
+  email: string;
+}
+
 export interface IssueComment {
   id: number;
   author: string;
@@ -73,6 +79,13 @@ export interface GitHub {
   reviewComments(repo: Repository, number: number, review: number): Promise<string[]>;
   /** Asks `logins` to review the pull request; a login that cannot be requested is skipped. */
   requestReviewers(repo: Repository, number: number, logins: string[]): Promise<void>;
+  /** Adds `logins` to the assignees of the issue or pull request; GitHub skips a login that cannot be assigned. */
+  addAssignees(repo: Repository, number: number, logins: string[]): Promise<void>;
+  /**
+   * The Git identity GitHub attributes to the user `login`: their profile name (the login without one) and their noreply
+   * address `<id>+<login>@users.noreply.github.com`.
+   */
+  gitIdentity(repo: Repository, login: string): Promise<GitIdentity>;
   /** Merges the base branch into the pull request's branch. */
   updateBranch(repo: Repository, number: number): Promise<void>;
   /** Merges the pull request with `method`. */
@@ -319,6 +332,19 @@ export function createGitHub(tokenFor: (repo: Repository) => Promise<string>, fe
       if (response.status === 404) return false;
       if (!response.ok) throw await failure(response, `remove the label ${label} from ${repo.slug}#${issue}`);
       return true;
+    },
+    async addAssignees(repo, number, logins) {
+      if (logins.length === 0) return;
+      const response = await call(repo, "POST", `/repos/${repo.path}/issues/${number}/assignees`, { assignees: logins });
+      if (!response.ok) throw await failure(response, `assign ${logins.join(", ")} to ${repo.slug}#${number}`);
+    },
+    async gitIdentity(repo, login) {
+      const response = await call(repo, "GET", `/users/${encodeURIComponent(login)}`);
+      if (!response.ok) throw await failure(response, `read the user ${login}`);
+      const user = (await response.json()) as { id?: unknown; login?: unknown; name?: unknown };
+      if (typeof user.id !== "number" || typeof user.login !== "string") throw new Error(`failed to read the user ${login}: the response has no id or login`);
+      const name = typeof user.name === "string" && user.name.trim() ? user.name.trim() : user.login;
+      return { name, email: `${user.id}+${user.login}@users.noreply.github.com` };
     },
     async addLabels(repo, issue, labels) {
       const response = await call(repo, "POST", `/repos/${repo.path}/issues/${issue}/labels`, { labels });

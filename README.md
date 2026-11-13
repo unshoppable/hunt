@@ -1291,8 +1291,11 @@ title and issue in the VM's metadata (the branch follows once the plan step crea
 waits for the startup script and installs the staged session release, over `gcloud compute ssh
 --internal-ip` (OS Login as admin, one shared SSH connection per VM); `hunt-ctl install-tools` follows.
 `hunt-ctl clone` clones the repository from GitHub as `agent` on its default branch (`--branch` checks an existing
-branch out instead, as for a VM that replaces one of an issue in progress, below) with the App's bot as Git identity
-(`<slug>[bot]`, `<id>+<slug>[bot]@users.noreply.github.com`, passed as `--git-name` and `--git-email`). Hunt names no
+branch out instead, as for a VM that replaces one of an issue in progress, below) with the App's bot as committer
+(`<slug>[bot]`, `<id>+<slug>[bot]@users.noreply.github.com`, passed as `--git-name` and `--git-email`) and the issue's
+first assignee as author (profile name, `<id>+<login>@users.noreply.github.com`, passed as `--git-author-name` and
+`--git-author-email`), so GitHub shows the commits as the assignee's, committed by the App. An issue no person is
+assigned to fails before a VM is created. Hunt names no
 branch: the plan step creates it by the repository's branch rules. The repository's
 private files follow through `put-files` when the Secret Manager secret `HUNT_SWF_FILES_<owner>_<repo>` (every
 character a secret name cannot hold becomes `_`: `HUNT_SWF_FILES_unshoppable_app-framework`) holds a version: a gzipped
@@ -1447,7 +1450,9 @@ scoped to that repository, and renews it twenty minutes before it expires. Its o
 `hunt-ctl start` take the repository's current token, and every poll gives each running session VM whose token the
 poller has renewed the new one (`hunt-ctl github-token`, which replaces `/etc/hunt/github-token` without touching the
 relay), whatever the issue's state; a VM that was stopped gets it on the first poll after its start. So the comments,
-commits (author `<slug>[bot]`), pushes and pull requests of a poller session show the App, and a leaked token is worth
+commits (committer `<slug>[bot]`, author the issue's assignee), pushes and pull requests of a poller session show the
+App; the first poll at pr-gate assigns the pull request to the issue's assignees (an issue without any by then fails),
+so it is theirs in GitHub's lists even though the App opened it. A leaked token is worth
 an hour on one repository. None of the key, tokens or files reaches a log line, a comment or a command line;
 `journalctl -u hunt-swf` on the gateway shows one line per decision, Compute Engine call and command on a session VM. Since
 the poller's Claude account is not the one of this Mac, `hunt-ctl plan-usage <id>` reads the plan limits of the account a

@@ -49,6 +49,25 @@ export function missingPullRequestComment(pullRequest: number): string {
   return `Pull request #${pullRequest} does not exist (any more), so this issue is marked as failed.`;
 }
 
+/**
+ * Why the session could not start for an issue without an assignee, which `failureComment` quotes: the assignee is the
+ * author of the session's commits; `requested` is the label that starts a session.
+ */
+export function noAssigneeError(requested: string): string {
+  return (
+    "the issue has no assignee. Hunt's commits name the issue's assignee as their author and its pull request is assigned to them; " +
+    `assign the issue to a person and label it \`${requested}\` again`
+  );
+}
+
+/** The comment that marks an issue as failed because it lost its assignees before its pull request could be assigned to them; `failed` is the failed label. */
+export function noAssigneeComment(pullRequest: number, failed: string): string {
+  return (
+    `The issue has no assignee, so Hunt cannot assign pull request #${pullRequest} to anyone and marks the issue as failed. ` +
+    `Assign the issue to a person and take \`${failed}\` off to go on.`
+  );
+}
+
 /** The comment on the issue when the pull request was closed without a merge. */
 export function closedComment(pullRequest: number): string {
   return `Pull request #${pullRequest} was closed without being merged, so this issue is marked as failed.`;

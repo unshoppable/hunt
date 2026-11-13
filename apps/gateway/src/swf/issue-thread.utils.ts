@@ -53,6 +53,18 @@ export function newAnswers(comments: IssueComment[], botLogin: string, since: st
 
 /** The people who are to review or answer: the issue's assignees, or its author without any; bots never. */
 export function mentionsOf(issue: Issue): string[] {
-  const people = (issue.assignees.length > 0 ? issue.assignees : [issue.author]).filter((login) => !login.endsWith("[bot]") && login !== "ghost");
-  return [...new Set(people)];
+  const assignees = assigneesOf(issue);
+  return assignees.length > 0 ? assignees : [issue.author].filter(isPerson);
+}
+
+/**
+ * The people the issue is assigned to, bots never: the first is the author of the session's commits, all of them become
+ * the assignees of its pull request.
+ */
+export function assigneesOf(issue: Issue): string[] {
+  return [...new Set(issue.assignees.filter(isPerson))];
+}
+
+function isPerson(login: string): boolean {
+  return !login.endsWith("[bot]") && login !== "ghost";
 }

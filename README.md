@@ -277,7 +277,10 @@ runs around it while a turn runs; it turns amber with a `?` badge when the agent
 (`hasPendingQuestion` in `src/chat/chat.store-slice.ts`: the chat is idle and its last item is an agent message that asks one,
 so the state ends by itself once the user's answer follows and holds for a remote session's replayed conversation
 too); it turns green when a turn finished while another session was active and the user has not opened the session
-since. The agent marks a question explicitly by ending its reply with `<!-- hunt:question -->` (`hasQuestionMarker`
+since. While the user does not look at a session (it is not the active one, or the main window has no focus), the
+main window also sends a macOS notification when its agent ends a turn (with a reply, a question or a failure) or asks
+for a permission (`useSessionNotifications` in `src/sessions/session-notifications.hook.ts`, the steps in
+`statusNotification` of `session-notification.utils.ts`). The agent marks a question explicitly by ending its reply with `<!-- hunt:question -->` (`hasQuestionMarker`
 in `libs/domain/src/shared/question.utils.ts`, which the relay uses as well); `libs/domain/prompts/question.system-prompt.md` tells it so and is part of every
 session's system prompt, local and remote. The marker stands in for `AskUserQuestion`, which the ACP adapter disables
 unless the client advertises `elicitation.form`, which Hunt does not. A last paragraph ending with a question mark

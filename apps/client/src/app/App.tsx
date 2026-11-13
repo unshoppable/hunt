@@ -5,6 +5,7 @@ import { SessionSidebar } from "../sessions/SessionSidebar";
 import { NewSessionView } from "../sessions/NewSessionView";
 import { useStartRepoPath } from "../sessions/start-repo-path.hook";
 import { useShowSessionRequests } from "../sessions/show-session.hook";
+import { useSessionNotifications } from "../sessions/session-notifications.hook";
 import { ChatPanel } from "../chat/ChatPanel";
 import { CHANGE_LIST_MIN_WIDTH, DiffPanel } from "../diff/DiffPanel";
 import { GitPanel } from "../git/GitPanel";
@@ -189,6 +190,7 @@ export function App() {
   useBackendEvents();
   useAnnotationDelivery();
   useShowSessionRequests();
+  useSessionNotifications();
   useScriptRunRequests();
   useDiagramFileRequests();
   useControlCommands();

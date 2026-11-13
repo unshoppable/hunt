@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionView } from "./session.types";
-import { cycleSessionId, describeSubChatSource, filterSessionRows, groupSessions, issueFromPrompt, latestTopLevelSession, sessionMarks, sessionReference, sidebarTitle, titleFromPrompt } from "./session-labels.utils";
+import { sessionPullRequestReference, cycleSessionId, describeSubChatSource, filterSessionRows, groupSessions, issueFromPrompt, latestTopLevelSession, sessionMarks, sessionReference, sidebarTitle, titleFromPrompt } from "./session-labels.utils";
 
 function session(id: string, title: string, branch: string, parentId: string | null = null, path?: string): SessionView {
   return {
@@ -61,6 +61,14 @@ describe("sessionReference", () => {
     expect(sessionReference(review, { state: "OPEN", isDraft: true })).toMatchObject({ tone: "grey" });
     expect(sessionReference(review, { state: "MERGED", isDraft: false })).toMatchObject({ tone: "purple" });
     expect(sessionReference(review, { state: "CLOSED", isDraft: false })).toMatchObject({ tone: "red" });
+  });
+});
+
+describe("sessionPullRequestReference", () => {
+  it("names the pull request of a session in the tone of its state", () => {
+    const pullRequest = { number: 1541, url: "https://github.com/o/r/pull/1541", state: "OPEN", isDraft: false };
+    expect(sessionPullRequestReference(pullRequest)).toEqual({ kind: "pullRequest", label: "#1541", title: "Pull request https://github.com/o/r/pull/1541 (open)", tone: "green" });
+    expect(sessionPullRequestReference({ ...pullRequest, state: "MERGED" })).toMatchObject({ tone: "purple" });
   });
 });
 

@@ -7,7 +7,7 @@ import { configuredVmSettings, useSettingsStore } from "../settings/settings.sto
 import { accountOptions, LOCAL_LOGIN, useAccountsStore } from "../accounts/accounts.store";
 import { openSettingsWindow } from "../settings/settings-window.utils";
 import { useFileIconUrl, useFolderIconUrl } from "../ui/file-icons/file-icons.hook";
-import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionReference, sessionSubtitle, sidebarTitle, type ReferenceTone } from "./session-labels.utils";
+import { sessionPullRequestReference, cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionReference, sessionSubtitle, sidebarTitle, type ReferenceTone } from "./session-labels.utils";
 import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { StaleRemoteDialog } from "./remote/StaleRemoteDialog";
@@ -57,16 +57,17 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
   const marks = useMemo(() => sessionMarks(sessions), [sessions]);
   const pullRequestStates = useHuntStore((state) => state.pullRequestStates);
   const refreshPullRequestStates = useHuntStore((state) => state.refreshPullRequestStates);
-  // The badges of reviewed pull requests follow their state on GitHub: fetched when the set of reviewing sessions
-  // changes and whenever the window comes back to the front.
-  const reviewingIds = sessions.filter((session) => session.pullRequest && !session.parentId).map((session) => session.id).join(",");
+  const sessionPullRequests = useHuntStore((state) => state.sessionPullRequests);
+  // The pull request badges follow GitHub: fetched when the set of top-level sessions, one of their push targets or
+  // pipeline steps changes and whenever the window comes back to the front.
+  const pullRequestSources = sessions.filter((session) => !session.parentId).map((session) => `${session.id}:${session.pushTarget ?? ""}:${session.remote?.agent ?? ""}`).join(",");
   useEffect(() => {
-    if (!reviewingIds) return;
+    if (!pullRequestSources) return;
     const refresh = () => void refreshPullRequestStates();
     refresh();
     window.addEventListener("focus", refresh);
     return () => window.removeEventListener("focus", refresh);
-  }, [reviewingIds, refreshPullRequestStates]);
+  }, [pullRequestSources, refreshPullRequestStates]);
   const listRef = useRef<HTMLUListElement>(null);
   // A new session joins the end of the list, so the row of a newly active session is scrolled into view.
   useEffect(() => {
@@ -79,6 +80,7 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
   /** Version of the newer Hunt the release feed offers; shown as a dot on the gear. */
   const [availableVersion, setAvailableVersion] = useState<string | null>(null);
   const settingsShortcut = useShortcutLabel("app.openSettings");
+  const newSessionShortcut = useShortcutLabel("session.new");
   /** The session whose context menu is open, at the click position. */
   const [menu, setMenu] = useState<{ sessionId: string; x: number; y: number } | null>(null);
   /** The session the push target dialog is open for. */
@@ -128,6 +130,20 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
       if (!isShortcut(event, "app.openSettings")) return;
       event.preventDefault();
       void openSettingsWindow();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  // ⌘T (keymap default) opens the start view: for a sub session of the same worktree while a sub session (or the start
+  // view for one) is shown, for a new session otherwise.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || !isShortcut(event, "session.new")) return;
+      event.preventDefault();
+      const { activeSessionId, sessions, draft, startDraft } = useHuntStore.getState();
+      const parentId = draft ? draft.parentId : sessions.find((session) => session.id === activeSessionId)?.parentId;
+      startDraft(parentId ?? undefined);
     }
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
@@ -204,6 +220,7 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
             type="button"
             onClick={() => startDraft()}
             className={PRIMARY_BUTTON_XS}
+            title={withShortcut("New session", newSessionShortcut)}
           >
             <PlusIcon className="size-3" />
             New
@@ -235,6 +252,8 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
           // A session the backend still creates has no worktree or agent yet: nothing can be started in or done to it.
           const isCreating = creatingIds.includes(session.id);
           const reference = sessionReference(session, pullRequestStates[session.id] ?? null);
+          const sessionPullRequest = sessionPullRequests[session.id];
+          const pullRequestOfSession = !isSubChat && sessionPullRequest ? sessionPullRequestReference(sessionPullRequest) : null;
           const step = session.mode === "swf" && session.remote ? sessionStepLabel(session.remote.agent, pipelineAgentOf(pipelines[session.id])) : null;
           // The repository heads its group of sessions: a heading before the first row of every repository.
           const startsGroup = !isSubChat && (index === 0 || rows[index - 1].repository !== repository);
@@ -318,6 +337,12 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
                     ) : null}
                     {!isSubChat ? (session.pullRequest ? <GitHubIcon className="size-4 shrink-0" /> : <BranchIcon className="size-4 shrink-0" />) : null}
                     <span className="truncate">{isCreating && !isSubChat ? (session.workspace === "checkout" ? "Starting…" : "Creating worktree…") : sessionSubtitle(session)}</span>
+                    {pullRequestOfSession ? (
+                      <span className={`ml-auto flex shrink-0 items-center gap-1 pl-2 ${REFERENCE_TONE[pullRequestOfSession.tone]}`} title={pullRequestOfSession.title}>
+                        <PullRequestIcon className="size-4" />
+                        {pullRequestOfSession.label}
+                      </span>
+                    ) : null}
                   </span>
                   {!isSubChat ? (
                     <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.9375em] text-neutral-400">

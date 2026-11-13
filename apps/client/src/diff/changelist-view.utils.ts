@@ -12,11 +12,20 @@ export function shownChangeListTab(storedTab: ChangeListTab | undefined, isRevie
 }
 
 /**
- * What the changelist's `tab` compares against: the review tab the pull request's merge base; the changelist and shelf
- * tabs show only the uncommitted changes, so committed files never appear there.
+ * The commit the user chose in the Git tab to compare `session` against ("Diff to Latest Commit"), or `null`: the diff
+ * base of a pull request review is the merge base of its pull request, which only its review tab compares against.
  */
-export function changeListComparison(tab: ChangeListTab): Comparison {
-  return tab === "review" ? "diffBase" : "head";
+export function chosenDiffBase(session: Pick<SessionView, "diffBase" | "pullRequest"> | undefined): string | null {
+  return session && !session.pullRequest ? session.diffBase : null;
+}
+
+/**
+ * What the changelist's `tab` compares against: the review tab the pull request's merge base, the changelist tab the
+ * commit `chosenBase` the user chose (see `chosenDiffBase`). Without one the changelist shows only the uncommitted
+ * changes, as the shelf tab always does, so committed files never appear there.
+ */
+export function changeListComparison(tab: ChangeListTab, chosenBase: string | null): Comparison {
+  return tab === "review" || (tab === "changelist" && chosenBase) ? "diffBase" : "head";
 }
 
 /**

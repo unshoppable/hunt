@@ -305,6 +305,28 @@ pub struct PullRequestState {
     pub is_draft: bool,
 }
 
+/// The pull request a session's work goes into, with its state (mirror of `SessionPullRequest` in
+/// src/sessions/pull-requests.types.ts).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionPullRequest {
+    pub number: u64,
+    pub url: String,
+    /// `OPEN`, `CLOSED` or `MERGED`.
+    pub state: String,
+    pub is_draft: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhLinkedPullRequest {
+    number: u64,
+    url: String,
+    state: String,
+    is_draft: bool,
+    is_cross_repository: bool,
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GhPullRequestDetails {
@@ -446,6 +468,16 @@ const LIST_QUERY: &str = r#"query($owner: String!, $name: String!) {
   }
 }"#;
 const DETAIL_JSON_FIELDS: &str = "number,title,body,author,url,state,isDraft,createdAt,headRefName,baseRefName,comments,reviews";
+/// Asks for the pull requests that close an issue once merged, closed ones included; `gh` fills `owner` and `name`
+/// from the repository.
+const ISSUE_PULL_REQUESTS_QUERY: &str = r#"query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) {
+      closedByPullRequestsReferences(first: 20, includeClosedPrs: true) { nodes { number url state isDraft isCrossRepository } }
+    }
+  }
+}"#;
+
 /// Asks for the review threads of a pull request with their comments; `gh` fills `owner` and `name` from the
 /// repository's remote.
 const THREADS_QUERY: &str = r#"query($owner: String!, $name: String!, $number: Int!) {
@@ -843,6 +875,47 @@ pub async fn pull_request_state(repo: &Path, number: u64) -> Result<PullRequestS
     let number = number.to_string();
     let stdout = run_gh(repo, &["pr", "view", &number, "--json", "state,isDraft"], "view pull request state").await?;
     serde_json::from_slice(&stdout).map_err(|error| format!("failed to parse pull request state: {error}"))
+}
+
+/// The pull request that merges the branch `branch` of the repository itself, in any state; `None` when there is none.
+pub async fn branch_pull_request(repo: &Path, branch: &str) -> Result<Option<SessionPullRequest>, String> {
+    let args = ["pr", "list", "--head", branch, "--state", "all", "--limit", "20", "--json", "number,url,state,isDraft,isCrossRepository"];
+    let stdout = run_gh(repo, &args, "find the pull request of the branch").await?;
+    let listed = serde_json::from_slice(&stdout).map_err(|error| format!("failed to parse the pull requests of the branch: {error}"))?;
+    Ok(pick_pull_request(listed))
+}
+
+/// The pull request that closes the issue `number` once merged, in any state; `None` when the issue has none.
+pub async fn issue_pull_request(repo: &Path, number: u64) -> Result<Option<SessionPullRequest>, String> {
+    let query = format!("query={ISSUE_PULL_REQUESTS_QUERY}");
+    let number = format!("number={number}");
+    let args = ["api", "graphql", "-F", "owner={owner}", "-F", "name={repo}", "-F", &number, "-f", &query];
+    let stdout = run_gh(repo, &args, "find the pull request of the issue").await?;
+    parse_issue_pull_requests(&stdout).map(pick_pull_request)
+}
+
+/// The pull requests in the response to `ISSUE_PULL_REQUESTS_QUERY`; none for an issue that does not exist.
+fn parse_issue_pull_requests(json: &[u8]) -> Result<Vec<GhLinkedPullRequest>, String> {
+    let response: serde_json::Value =
+        serde_json::from_slice(json).map_err(|error| format!("failed to parse the pull requests of the issue: {error}"))?;
+    let nodes = &response["data"]["repository"]["issue"]["closedByPullRequestsReferences"]["nodes"];
+    if nodes.is_null() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_value(nodes.clone()).map_err(|error| format!("failed to parse the pull requests of the issue: {error}"))
+}
+
+/// The pull request to show out of `listed`: the newest open one, else the newest. A pull request from a fork is left
+/// out, since `gh pr list --head` matches a fork's branch of the same name as well.
+fn pick_pull_request(listed: Vec<GhLinkedPullRequest>) -> Option<SessionPullRequest> {
+    let mut own: Vec<GhLinkedPullRequest> = listed.into_iter().filter(|pull_request| !pull_request.is_cross_repository).collect();
+    own.sort_by_key(|pull_request| (pull_request.state != "OPEN", std::cmp::Reverse(pull_request.number)));
+    own.into_iter().next().map(|pull_request| SessionPullRequest {
+        number: pull_request.number,
+        url: pull_request.url,
+        state: pull_request.state,
+        is_draft: pull_request.is_draft,
+    })
 }
 
 /// The pull request in the JSON `gh pr view --json` prints.
@@ -1311,6 +1384,31 @@ mod tests {
         assert_eq!(details.body, "");
         assert!(details.comments.is_empty());
         assert!(details.reviews.is_empty());
+    }
+
+    #[test]
+    fn pick_pull_request_prefers_the_newest_open_one_and_skips_forks() {
+        let listed = |json: &str| serde_json::from_str::<Vec<GhLinkedPullRequest>>(json).unwrap();
+        let mixed = listed(
+            r#"[{"number":9,"url":"u9","state":"OPEN","isDraft":false,"isCrossRepository":true},
+              {"number":7,"url":"u7","state":"CLOSED","isDraft":false,"isCrossRepository":false},
+              {"number":5,"url":"u5","state":"OPEN","isDraft":true,"isCrossRepository":false}]"#,
+        );
+        assert_eq!(pick_pull_request(mixed), Some(SessionPullRequest { number: 5, url: "u5".into(), state: "OPEN".into(), is_draft: true }));
+        let closed = listed(
+            r#"[{"number":3,"url":"u3","state":"CLOSED","isDraft":false,"isCrossRepository":false},
+              {"number":7,"url":"u7","state":"MERGED","isDraft":false,"isCrossRepository":false}]"#,
+        );
+        assert_eq!(pick_pull_request(closed).map(|pull_request| pull_request.number), Some(7));
+        assert_eq!(pick_pull_request(Vec::new()), None);
+    }
+
+    #[test]
+    fn parse_issue_pull_requests_reads_the_closing_pull_requests_and_accepts_a_missing_issue() {
+        let json = br#"{"data":{"repository":{"issue":{"closedByPullRequestsReferences":{"nodes":[
+          {"number":1542,"url":"u","state":"OPEN","isDraft":false,"isCrossRepository":false}]}}}}}"#;
+        assert_eq!(parse_issue_pull_requests(json).unwrap().len(), 1);
+        assert!(parse_issue_pull_requests(br#"{"data":{"repository":{"issue":null}}}"#).unwrap().is_empty());
     }
 
     #[test]

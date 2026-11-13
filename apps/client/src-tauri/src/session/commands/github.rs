@@ -50,6 +50,22 @@ pub async fn pull_request_state(app: AppHandle, session_id: Uuid) -> Result<gith
     github::pull_request_state(&record.repo_path, pull_request.number).await
 }
 
+/// The pull request the work of a session goes into, in any state, for the sidebar's badge: the one that closes its
+/// `issue`, else the one that merges `branch`, looked up in the repository at `repo_path`.
+#[tauri::command]
+pub async fn session_pull_request(repo_path: String, branch: Option<String>, issue: Option<u64>) -> Result<Option<github::SessionPullRequest>, String> {
+    let repo = Path::new(&repo_path);
+    if let Some(issue) = issue {
+        if let Some(pull_request) = github::issue_pull_request(repo, issue).await? {
+            return Ok(Some(pull_request));
+        }
+    }
+    match branch {
+        Some(branch) => github::branch_pull_request(repo, &branch).await,
+        None => Ok(None),
+    }
+}
+
 /// Review threads of the pull request the session reviews, with their replies, as the diff shows them.
 #[tauri::command]
 pub async fn list_review_threads(app: AppHandle, session_id: Uuid) -> Result<Vec<ReviewThread>, String> {

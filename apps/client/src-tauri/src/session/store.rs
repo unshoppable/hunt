@@ -427,6 +427,21 @@ impl Store {
         Ok(Some(updated))
     }
 
+    /// Sets the diff base of the top-level session `family` and of its sub sessions, which share its worktree and
+    /// changelist; returns how many records it set.
+    fn set_diff_base(&self, family: Uuid, diff_base: Option<&str>) -> Result<usize, String> {
+        let mut sessions = self.load()?;
+        let mut changed = 0;
+        for session in sessions.iter_mut().filter(|session| session.id == family || session.parent_id == Some(family)) {
+            session.diff_base = diff_base.map(str::to_string);
+            changed += 1;
+        }
+        if changed > 0 {
+            self.save(&sessions)?;
+        }
+        Ok(changed)
+    }
+
     fn remove(&self, id: Uuid) -> Result<(), String> {
         let sessions: Vec<SessionRecord> = self.load()?.into_iter().filter(|session| session.id != id).collect();
         self.save(&sessions)
@@ -476,6 +491,12 @@ pub fn insert_session(app: &AppHandle, record: SessionRecord) -> Result<bool, St
 /// Applies `update` to the stored record of `id` and returns the result; `None` when the session no longer exists.
 pub fn update_session(app: &AppHandle, id: Uuid, update: impl FnOnce(&mut SessionRecord)) -> Result<Option<SessionRecord>, String> {
     Store::open(app)?.update(id, update)
+}
+
+/// Sets the commit the top-level session `family` and its sub sessions compare their worktree against; `None` means
+/// `HEAD` again.
+pub fn set_diff_base(app: &AppHandle, family: Uuid, diff_base: Option<&str>) -> Result<(), String> {
+    Store::open(app)?.set_diff_base(family, diff_base).map(|_| ())
 }
 
 /// Notes that the user took up or declined the guardrail `summary` the agent of `id` suggested; a summary already
@@ -572,6 +593,24 @@ mod tests {
         let store = store_in(&dir);
         assert!(store.load().unwrap().is_empty());
         assert!(store.find(Uuid::new_v4()).is_err());
+    }
+
+    #[test]
+    fn the_diff_base_is_set_for_a_session_and_its_sub_sessions_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = store_in(&dir);
+        let parent = record("parent");
+        let sub = SessionRecord::sub_session(Uuid::new_v4(), "sub".into(), &parent, None);
+        let other = record("other");
+        store.save(&[parent.clone(), sub.clone(), other.clone()]).unwrap();
+
+        assert_eq!(store.set_diff_base(parent.id, Some("abc123")).unwrap(), 2);
+        assert_eq!(store.find(parent.id).unwrap().diff_base(), "abc123");
+        assert_eq!(store.find(sub.id).unwrap().diff_base(), "abc123");
+        assert_eq!(store.find(other.id).unwrap().diff_base, None);
+
+        assert_eq!(store.set_diff_base(parent.id, None).unwrap(), 2);
+        assert_eq!(store.find(sub.id).unwrap().diff_base, None);
     }
 
     #[test]

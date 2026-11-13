@@ -1,7 +1,7 @@
 import { commands } from "../ipc/commands";
 import type { ChatItem, ClosedEvent } from "../chat/chat.types";
 import type { SelectionContext } from "../editor/selection-context.types";
-import type { PullRequestState } from "./pull-requests.types";
+import type { SessionPullRequest, PullRequestState } from "./pull-requests.types";
 import type { PullRequestRef, SessionEnding, SessionView, SummaryEvent, Workspace } from "./session.types";
 import type { ChatTurns, PromptDraft, SessionChat } from "../chat/chat.store-slice";
 import type { HuntGet, HuntSet, HuntState } from "./hunt.store";
@@ -79,12 +79,14 @@ export type SessionSlice = {
   untitledIds: string[];
   /** State of the pull request each reviewing session works on, by session id, as last fetched from GitHub. */
   pullRequestStates: Record<string, PullRequestState>;
+  /** The pull request the work of each session that reviews none goes into (see `SessionPullRequest`), by session id; `null` when there is none. */
+  sessionPullRequests: Record<string, SessionPullRequest | null>;
 
   /** Reloads the stored sessions; a session still being created stays listed until the backend lists it itself. */
   refreshSessions: () => Promise<void>;
   /**
-   * Fetches the state of every reviewed pull request from GitHub for the sidebar's badges; a failed fetch keeps the
-   * state last seen.
+   * Fetches from GitHub, for the sidebar's badges, the state of every reviewed pull request and the pull request
+   * every other top-level session's work goes into; a failed fetch keeps what was last seen.
    */
   refreshPullRequestStates: () => Promise<void>;
   /** Records the state of the pull request `sessionId` reviews, as a view of its details just reported it. */
@@ -324,6 +326,7 @@ export function createSessionSlice(set: HuntSet, get: HuntGet, turns: ChatTurns)
     startRepoPath: null,
     untitledIds: [],
     pullRequestStates: {},
+    sessionPullRequests: {},
 
     refreshSessions: async () => {
       const listed = await commands.listSessions();
@@ -335,11 +338,25 @@ export function createSessionSlice(set: HuntSet, get: HuntGet, turns: ChatTurns)
     },
 
     refreshPullRequestStates: async () => {
-      const reviewing = get().sessions.filter((session) => session.pullRequest && !session.parentId);
-      const states = await Promise.all(
-        reviewing.map((session) => commands.pullRequestState(session.id).then((state) => [session.id, state] as const, () => null)),
-      );
-      set((state) => ({ pullRequestStates: { ...state.pullRequestStates, ...Object.fromEntries(states.filter((entry) => entry !== null)) } }));
+      const topLevel = get().sessions.filter((session) => !session.parentId);
+      const [states, sessionPullRequests] = await Promise.all([
+        Promise.all(
+          topLevel
+            .filter((session) => session.pullRequest)
+            .map((session) => commands.pullRequestState(session.id).then((state) => [session.id, state] as const, () => null)),
+        ),
+        Promise.all(
+          topLevel.map((session) => {
+            const issue = session.remote?.issue ?? null;
+            if (session.pullRequest || !session.repoPath || (!session.pushTarget && !issue)) return null;
+            return commands.sessionPullRequest(session.repoPath, session.pushTarget, issue).then((pullRequest) => [session.id, pullRequest] as const, () => null);
+          }),
+        ),
+      ]);
+      set((state) => ({
+        pullRequestStates: { ...state.pullRequestStates, ...Object.fromEntries(states.filter((entry) => entry !== null)) },
+        sessionPullRequests: { ...state.sessionPullRequests, ...Object.fromEntries(sessionPullRequests.filter((entry) => entry !== null)) },
+      }));
     },
 
     notePullRequestState: (sessionId, state) => {

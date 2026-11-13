@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { storedSession } from "../sessions/hunt.store.fixtures";
-import { changeListComparison, scopedChangedFiles, sharesWorktree, shownChangeListTab, withoutHiddenFiles } from "./changelist-view.utils";
+import type { PullRequestRef } from "../sessions/session.types";
+import { changeListComparison, chosenDiffBase, scopedChangedFiles, sharesWorktree, shownChangeListTab, withoutHiddenFiles } from "./changelist-view.utils";
 
 const file = (path: string, touchedBy: string[]) => ({ path, status: "M", touchedBy });
 
@@ -19,9 +20,26 @@ describe("shownChangeListTab", () => {
 
 describe("changeListComparison", () => {
   it("compares the review tab against the diff base and the other tabs against HEAD", () => {
-    expect(changeListComparison("review")).toBe("diffBase");
-    expect(changeListComparison("changelist")).toBe("head");
-    expect(changeListComparison("shelf")).toBe("head");
+    expect(changeListComparison("review", null)).toBe("diffBase");
+    expect(changeListComparison("changelist", null)).toBe("head");
+    expect(changeListComparison("shelf", null)).toBe("head");
+  });
+
+  it("compares the changelist tab against a commit the user chose", () => {
+    expect(changeListComparison("changelist", "abc123")).toBe("diffBase");
+    expect(changeListComparison("shelf", "abc123")).toBe("head");
+  });
+});
+
+describe("chosenDiffBase", () => {
+  it("is the diff base of a session that reviews no pull request", () => {
+    expect(chosenDiffBase({ diffBase: "abc123", pullRequest: null })).toBe("abc123");
+    expect(chosenDiffBase({ diffBase: null, pullRequest: null })).toBeNull();
+    expect(chosenDiffBase(undefined)).toBeNull();
+  });
+
+  it("is null for a pull request review, whose diff base is the merge base", () => {
+    expect(chosenDiffBase({ diffBase: "abc123", pullRequest: { number: 7 } as PullRequestRef })).toBeNull();
   });
 });
 

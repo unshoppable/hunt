@@ -5,6 +5,12 @@ export type PullRequestState = {
   isDraft: boolean;
 };
 
+/** The pull request a session's work goes into: the one that closes its issue, else the one that merges its push target (mirror of `SessionPullRequest` in src-tauri/src/github/github.rs). */
+export type SessionPullRequest = PullRequestState & {
+  number: number;
+  url: string;
+};
+
 /** An open pull request of the repository's GitHub remote, with the metadata GitHub's pull request list shows. */
 export type PullRequest = {
   number: number;

@@ -1,5 +1,5 @@
 import type { SelectionContext } from "../editor/selection-context.types";
-import type { PullRequestState } from "./pull-requests.types";
+import type { SessionPullRequest, PullRequestState } from "./pull-requests.types";
 import type { SessionView } from "./session.types";
 import { IssueReference } from "../../../../libs/domain/src/session/issue-reference.value-object.ts";
 import { baseName } from "../common/path/path.utils";
@@ -27,6 +27,12 @@ export function sessionReference(session: SessionView, pullRequestState: PullReq
   const issue = issueLabel(session);
   if (issue) return { kind: "issue", label: issue, title: remoteOriginTitle(session) ?? "", tone: "amber" };
   return null;
+}
+
+/** The pull request a session's work goes into, as a badge in the tone of its state. */
+export function sessionPullRequestReference(pullRequest: SessionPullRequest): SessionReference {
+  const state = describePullRequestState(pullRequest);
+  return { kind: "pullRequest", label: `#${pullRequest.number}`, title: `Pull request ${pullRequest.url} (${state.label})`, tone: state.tone };
 }
 
 /** The word and tone of a pull request's state, as GitHub shows it. */

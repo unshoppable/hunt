@@ -8,7 +8,7 @@ import { PaneSeparator, Panel, PersistentGroup } from "../ui/ResizablePanes";
 import { useSessionViewStore, type ChangeListTab, type DiffMode } from "../sessions/inspector.store";
 import { useSettingsStore, type ChangelistScope } from "../settings/settings.store";
 import { countByScope, otherTouchers, ownerLabel, scopeOwnerIds } from "./attribution.utils";
-import { changeListComparison, scopedChangedFiles, sharesWorktree, shownChangeListTab, withoutHiddenFiles } from "./changelist-view.utils";
+import { changeListComparison, chosenDiffBase, scopedChangedFiles, sharesWorktree, shownChangeListTab, withoutHiddenFiles } from "./changelist-view.utils";
 import { ownView } from "./own-changes.utils";
 import type { OverwriteMark } from "./overwrite-markers.monaco";
 import { sessionMarks } from "../sessions/session-labels.utils";
@@ -97,15 +97,17 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
   const setChangeListTab = useSessionViewStore((state) => state.setChangeListTab);
   const setTab = useCallback((next: ChangeListTab) => setChangeListTab(familyId, next), [setChangeListTab, familyId]);
   const tab = shownChangeListTab(storedTab, !!pullRequest);
-  const comparison = changeListComparison(tab);
+  /** The commit the Git tab's "Diff to Latest Commit" compares the session against; the changelist then lists every change since it. */
+  const chosenBase = chosenDiffBase(session);
+  const comparison = changeListComparison(tab, chosenBase);
   const scope = useSettingsStore((state) => state.changelistScopes[sessionId] ?? "own");
   const setChangelistScope = useSettingsStore((state) => state.setChangelistScope);
   const setScope = useCallback((next: ChangelistScope) => setChangelistScope(sessionId, next), [setChangelistScope, sessionId]);
   const ownerIds = useMemo(() => scopeOwnerIds(scope, sessionId, parentId), [scope, sessionId, parentId]);
   /** The own changes include those of the parent session. */
   const includesParent = ownerIds.length > 1;
-  /** The review tab lists every change of the pull request, whichever session made it. */
-  const isScoped = isSharedWorktree && tab !== "review";
+  /** Against a diff base the list holds every change since that commit, whichever session made it; committed files have no owner anymore. */
+  const isScoped = isSharedWorktree && comparison === "head";
   const scopedFiles = useMemo(
     () => scopedChangedFiles(files, { sessionId, parentId, workspace, scope: isScoped ? scope : null }),
     [files, scope, isScoped, sessionId, parentId, workspace],
@@ -232,7 +234,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         setError(errorText(reason));
       },
     },
-    [sessionId, comparison, editVersion, localVersion],
+    [sessionId, comparison, chosenBase, editVersion, localVersion],
     { delayMs: hasLoadedRef.current ? 300 : 0 },
   );
 
@@ -278,7 +280,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
       },
       onError: (reason) => setError(errorText(reason)),
     },
-    [sessionId, selectedPath, comparison, editVersion, localVersion],
+    [sessionId, selectedPath, comparison, chosenBase, editVersion, localVersion],
     { isEnabled: !!selectedPath && isListLoaded },
   );
 
@@ -426,6 +428,7 @@ export function DiffPanel({ sessionId }: { sessionId: string }) {
         isLoading={isListLoading}
         hiddenByGlobsCount={scopedFiles.length - visibleFiles.length}
         reviewRatings={reviewRatings}
+        chosenBase={chosenBase}
         scope={isScoped ? { value: scope, counts: scopeCounts, hasParent: !!parentId, onChange: setScope } : null}
         ownerIds={ownerIds}
         selectedPath={selectedPath}

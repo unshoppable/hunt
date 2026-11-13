@@ -239,6 +239,25 @@ pub async fn git_reset(app: AppHandle, scope: GitScope, branch: String, commit: 
     }
 }
 
+/// Makes the commit `commit` of the session's worktree the diff base of the session and its sub sessions: their
+/// changelist, diffs and change markers then show every change since that commit, committed or not, as after a soft
+/// reset to it, while the branch keeps its commits. `None` compares against `HEAD` again. A pull request review keeps
+/// the merge base of its pull request.
+#[tauri::command]
+pub async fn set_diff_base(app: AppHandle, id: Uuid, commit: Option<String>) -> Result<(), String> {
+    let record = worktree_session(&app, id)?;
+    if record.pull_request.is_some() {
+        return Err("failed to set the diff base: the session reviews a pull request and compares against its merge base".into());
+    }
+    let diff_base = match &commit {
+        Some(commit) => Some(git::rev_parse(&record.worktree_path, &format!("{commit}^{{commit}}")).await?),
+        None => None,
+    };
+    store::set_diff_base(&app, record.parent_id.unwrap_or(record.id), diff_base.as_deref())?;
+    announce_sessions_changed(&app);
+    Ok(())
+}
+
 /// Rebases the session's own branch onto the branch on `origin` its push lands on, fetched first, as the push does.
 #[tauri::command]
 pub async fn git_update_branch(app: AppHandle, id: Uuid) -> Result<(), String> {

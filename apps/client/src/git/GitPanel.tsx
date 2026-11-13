@@ -71,10 +71,16 @@ function useGitSelection(sessionId: string | null, branch: string): [GitSelectio
   return [selection, change];
 }
 
-/** The context menu of a commit in the log: resets the local branch `branch` to it; `null` while a remote branch or tag is picked. */
-function commitMenuEntries(branch: string | null): GitMenuEntry<"reset">[] {
-  const disabledReason = branch ? null : "Pick a local branch in the branch tree to reset it";
-  return [{ kind: "reset", label: `Reset ${branch ?? "Branch"} to Here…`, disabledReason, isDanger: false, startsGroup: false }];
+/**
+ * The context menu of a commit in the log: resets the local branch `branch` to it (`null` while a remote branch or tag
+ * is picked), or compares the session's worktree against it; `diffBlocked` says why the session cannot, `null` when it can.
+ */
+function commitMenuEntries(branch: string | null, diffBlocked: string | null): GitMenuEntry<"reset" | "diff">[] {
+  const resetBlocked = branch ? null : "Pick a local branch in the branch tree to reset it";
+  return [
+    { kind: "reset", label: `Reset ${branch ?? "Branch"} to Here…`, disabledReason: resetBlocked, isDanger: false, startsGroup: false },
+    { kind: "diff", label: "Diff to Latest Commit", disabledReason: diffBlocked, isDanger: false, startsGroup: false },
+  ];
 }
 
 /**
@@ -104,6 +110,10 @@ export function GitPanel({ scope }: { scope: GitScope }) {
     const holder = sessions.find((candidate) => candidate.workspace === "checkout" && candidate.repoPath === repoPath && !candidate.parentId);
     return holder ? `The session "${holder.title}" works in this checkout` : null;
   }, [session, sessions, repoPath]);
+  /** Why "Diff to Latest Commit" cannot run: it sets the diff base of a session, which a pull request review keeps on its merge base. */
+  const diffBlocked = !session ? "Only a session has a changelist to compare" : session.pullRequest ? "The session reviews a pull request and compares against its merge base" : null;
+  const setRightTab = useSessionViewStore((state) => state.setTab);
+  const setChangeListTab = useSessionViewStore((state) => state.setChangeListTab);
   const remote = session ? remoteOf(session, sessions) : null;
   /** The session's own branch and the branch on `origin` a push of it lands on; `null` without a session or local worktree. */
   const pushes = useMemo(() => (session?.pushTarget ? { branch: session.branch, target: session.pushTarget } : null), [session]);
@@ -254,6 +264,22 @@ export function GitPanel({ scope }: { scope: GitScope }) {
       noteWorktreeChanged(sessionId);
     } else {
       setRepoVersion((current) => current + 1);
+    }
+  };
+
+  /**
+   * Compares the session and its sub sessions against `commit` and shows the result: the changelist of the Diff tab
+   * then lists every change since that commit, committed or not, as after a soft reset to it; the branch keeps its commits.
+   */
+  const diffToLatest = async (commit: Commit) => {
+    if (!session) return;
+    try {
+      await commands.setDiffBase(session.id, commit.id);
+      setChangeListTab(session.parentId ?? session.id, "changelist");
+      setRightTab(session.id, "diff");
+      refresh();
+    } catch (reason) {
+      reportFailure(errorText(reason));
     }
   };
 
@@ -446,11 +472,15 @@ export function GitPanel({ scope }: { scope: GitScope }) {
           title={`${commitMenu.commit.id.slice(0, 8)} ${commitMenu.commit.subject}`}
           x={commitMenu.x}
           y={commitMenu.y}
-          entries={commitMenuEntries(resetBranch?.name ?? null)}
+          entries={commitMenuEntries(resetBranch?.name ?? null, diffBlocked)}
           onClose={() => setCommitMenu(null)}
-          onPick={() => {
+          onPick={(entry) => {
             setCommitMenu(null);
-            setResetTarget(commitMenu.commit);
+            if (entry.kind === "reset") {
+              setResetTarget(commitMenu.commit);
+            } else {
+              void diffToLatest(commitMenu.commit);
+            }
           }}
         />
       ) : null}

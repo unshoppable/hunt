@@ -29,8 +29,9 @@ import { AgentButton } from "../ui/AgentButton";
 import { isWorktreeLocked, remoteOf } from "../sessions/remote/remote-session.utils";
 import { ICON_BUTTON_SM, PRIMARY_BUTTON_XS, SECONDARY_BUTTON_XS, TAB_ACTIVE, TAB_BUTTON_SM, TAB_INACTIVE } from "../ui/buttons.constants";
 import { confirmDestructive } from "../ui/confirm.utils";
+import { errorText } from "../ui/error-text.utils";
 import { GlobFilterInput } from "../ui/GlobFilterInput";
-import { ArchiveIcon, PencilIcon, PullRequestIcon, Spinner } from "../ui/Icons";
+import { ArchiveIcon, CloseIcon, PencilIcon, PullRequestIcon, Spinner } from "../ui/Icons";
 import { Dropdown } from "../ui/Dropdown";
 import type { DropdownOption } from "../ui/floating-menu.utils";
 import { UnsavedDot } from "../ui/UnsavedDot";
@@ -98,6 +99,7 @@ export function ChangeList({
   isLoading,
   hiddenByGlobsCount,
   reviewRatings,
+  chosenBase,
   scope,
   ownerIds,
   selectedPath,
@@ -118,6 +120,8 @@ export function ChangeList({
   hiddenByGlobsCount: number;
   /** The agent's review rating per path, from the dependency graph. */
   reviewRatings: Map<string, GraphNode>;
+  /** The commit the changelist tab compares against instead of `HEAD` (see `chosenDiffBase`); `null` when it lists only the uncommitted changes. */
+  chosenBase: string | null;
   /** Set when other sessions share the worktree; `null` hides the toggle. */
   scope: ScopeControl | null;
   /** Sessions whose changes count as this session's own (`scopeOwnerIds`); the badge of a file marks every other one. */
@@ -471,6 +475,19 @@ export function ChangeList({
           </button>
         ) : null}
         {isLoading ? <Spinner className="ml-1.5 size-4 shrink-0 text-neutral-400" /> : null}
+        {chosenBase ? (
+          <span className="ml-auto flex shrink-0 items-center gap-1 font-mono text-[12px]" title="The changelist lists every change since this commit, committed or not">
+            since {chosenBase.slice(0, 8)}
+            <button
+              type="button"
+              onClick={() => void commands.setDiffBase(sessionId, null).catch((reason) => setNotice(errorText(reason)))}
+              className={ICON_BUTTON_SM}
+              title="Compare against HEAD again"
+            >
+              <CloseIcon />
+            </button>
+          </span>
+        ) : null}
       </div>
       {tab !== "shelf" ? (
         <div className="flex items-center gap-1 border-b border-(--line) px-2 py-1.5 text-[13px] text-neutral-400">

@@ -1,6 +1,6 @@
 import { useChangelistSelectionStore } from "../diff/changelist-selection.store";
-import { changeListComparison, scopedChangedFiles, sharesWorktree, shownChangeListTab, withoutHiddenFiles } from "../diff/changelist-view.utils";
-import type { ChangedFileView } from "../diff/diff.types";
+import { changeListComparison, chosenDiffBase, scopedChangedFiles, sharesWorktree, shownChangeListTab, withoutHiddenFiles } from "../diff/changelist-view.utils";
+import type { ChangedFileView, Comparison } from "../diff/diff.types";
 import { commands } from "../ipc/commands";
 import { reviewSessionOf } from "../review/review-comments.utils";
 import { useHuntStore } from "../sessions/hunt.store";
@@ -12,7 +12,7 @@ import type { DiffAction } from "./tab-commands.utils";
 import { localWorktreePaths, unknownPaths } from "./worktree-paths.utils";
 
 /** The changelist of a session as its Diff tab shows it: the parent session whose tab and checked files it shares, its tab, and its scope, which applies when `isScoped`. */
-type Changelist = { familyId: string; isReviewing: boolean; tab: ChangeListTab; scope: ChangelistScope; isScoped: boolean };
+type Changelist = { familyId: string; isReviewing: boolean; tab: ChangeListTab; comparison: Comparison; scope: ChangelistScope; isScoped: boolean };
 
 /** The changed files of a changelist's tab: all of them, those in its scope, and those of these the hidden globs leave, which it lists. */
 type ChangelistFiles = { all: ChangedFileView[]; scoped: ChangedFileView[]; listed: ChangedFileView[] };
@@ -23,12 +23,13 @@ function changelistOf(session: SessionView): Changelist {
   const isReviewing = Boolean(reviewSessionOf(sessions, session.id)?.pullRequest);
   const tab = shownChangeListTab(useSessionViewStore.getState().views[familyId]?.changeListTab, isReviewing);
   const scope = useSettingsStore.getState().changelistScopes[session.id] ?? "own";
-  // The review tab lists every change of the pull request, whichever session made it.
-  return { familyId, isReviewing, tab, scope, isScoped: sharesWorktree(sessions, session) && tab !== "review" };
+  const comparison = changeListComparison(tab, chosenDiffBase(session));
+  // Against a diff base the list holds every change since that commit, whichever session made it.
+  return { familyId, isReviewing, tab, comparison, scope, isScoped: sharesWorktree(sessions, session) && comparison === "head" };
 }
 
 async function changedFilesOf(session: SessionView, changelist: Changelist): Promise<ChangelistFiles> {
-  const all = await commands.listChangedFiles(session.id, changeListComparison(changelist.tab));
+  const all = await commands.listChangedFiles(session.id, changelist.comparison);
   const owner = { sessionId: session.id, parentId: session.parentId, workspace: session.workspace, scope: changelist.isScoped ? changelist.scope : null };
   const scoped = scopedChangedFiles(all, owner);
   return { all, scoped, listed: withoutHiddenFiles(scoped, useSettingsStore.getState().changelistHiddenGlobs) };

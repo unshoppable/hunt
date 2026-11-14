@@ -16,6 +16,7 @@ import type { GraphStatus } from "../graph/graph.types";
 import type { SwfStepSkill } from "../guardrails/guardrail.types";
 import type { LintRules } from "../guardrails/lint-rules.types";
 import type { DocumentContentChange, DocumentEditAck, DocumentSaveOutcome, DocumentState } from "../ide/documents/documents.types";
+import type { Blame } from "../ide/blame/blame.types";
 import type { PrettierOutput } from "../ide/ide.types";
 import type { LanguageServerKind } from "../ide/lsp/lsp.types";
 import type { DirEntry } from "../ide/project-tree/project-tree.types";
@@ -392,6 +393,8 @@ export const commands = {
   listDeletedFiles: (id: string, dir: string) => invoke<string[]>("list_deleted_files", { id, dir }),
   /** Text content of a worktree file. */
   readFile: (id: string, path: string) => invoke<string>("read_file", { id, path }),
+  /** The commit that last changed each line of `contents`, the editor's text of the worktree file `path`; fails for a file HEAD does not hold. */
+  blameFile: (id: string, path: string, contents: string) => invoke<Blame>("blame_file", { id, path, contents }),
   /** `text` as the Prettier the worktree installs (with its config and plugins) formats the worktree file `path`. */
   formatWithPrettier: (id: string, path: string, text: string) => invoke<PrettierOutput>("format_with_prettier", { id, path, text }),
   /** The ESLint rules every `eslint.config.*` of the worktree sets, as the ESLint the worktree installs reads them. */

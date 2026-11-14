@@ -1,5 +1,5 @@
 //! The commands of the built-in editor and of WebStorm: the worktree's project tree, files and deleted files, Find in
-//! Files, Replace in Files and the usage search, import resolution, Prettier and the ESLint rules, opening the worktree, a file or the
+//! Files, Replace in Files and the usage search, import resolution, Prettier and the ESLint rules, a file's blame, opening the worktree, a file or the
 //! changed files' diff in WebStorm, and showing a file in the Finder.
 
 use std::os::unix::fs::PermissionsExt;
@@ -112,6 +112,13 @@ pub async fn list_deleted_files(app: AppHandle, id: Uuid, dir: String) -> Result
 pub async fn read_file(app: AppHandle, id: Uuid, path: String) -> Result<String, String> {
     let (record, _) = session_file(&app, id, &path)?;
     workspace::read_file(&record.worktree_path, &path)
+}
+
+/// The commit that last changed each line of `contents`, the editor's text of the worktree file `path`.
+#[tauri::command]
+pub async fn blame_file(app: AppHandle, id: Uuid, path: String, contents: String) -> Result<git::Blame, String> {
+    let (record, _) = session_file(&app, id, &path)?;
+    git::blame(&record.worktree_path, &path, &contents).await
 }
 
 /// `text` as the Prettier the worktree installs formats the file `path`; see `PrettierOutput` for files it leaves alone.

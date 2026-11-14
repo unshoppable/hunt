@@ -9,7 +9,9 @@ import { anchorBelowLine, type SelectionRequest } from "../editor/selection-requ
 import { STATUS_NAME_CLASS } from "../ui/styles.constants";
 import { useSettingsStore } from "../settings/settings.store";
 import { useHuntStore } from "../sessions/hunt.store";
+import { useSessionViewStore } from "../sessions/inspector.store";
 import { isWorktreeLocked, WORKTREE_LOCKED_MESSAGE } from "../sessions/remote/remote-session.utils";
+import { BlameAnnotations } from "./blame/blame-annotations.monaco";
 import { workspaceChangeMarkers, type ChangeMarkers, type Marker } from "./change-markers.monaco";
 import { ChangePopover } from "./ChangePopover";
 import type { DocumentWorkspace } from "./documents/documents.service";
@@ -72,7 +74,8 @@ type EditorPaneProps = {
  * first line number; a click on it reopens the sub chat in its popover. Releasing a selection shows a floating
  * button at its active end that toggles the popover for the selected lines. Outside a pull request review, every
  * script of a package.json gets a green run triangle in the glyph margin; a click saves the file and runs the script in
- * the Terminal tab.
+ * the Terminal tab. "Annotate with Git Blame" in the context menu, also of the gutter, shows the day and author of each
+ * line's commit left of the line numbers (see blame/blame-annotations.monaco.ts); a click on one shows the commit in the Git tab.
  */
 export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, statusByPath, pendingPosition, onOpenSubChat, onToggleSubChat }: EditorPaneProps) {
   const fileIconUrl = useFileIconUrl();
@@ -94,6 +97,7 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
   const markersRef = useRef<ChangeMarkers | null>(null);
   const chatMarkersRef = useRef<SelectionChatMarkers | null>(null);
   const scriptRunMarkersRef = useRef<ScriptRunMarkers | null>(null);
+  const blameRef = useRef<BlameAnnotations | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [crumbs, setCrumbs] = useState<SymbolCrumb[]>([]);
   /** Change marker whose popup is open. */
@@ -140,12 +144,13 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
     });
     editorRef.current = editor;
 
+    const fileOf = (model: monaco.editor.ITextModel) => {
+      const { workspace: current, sessionId: id } = latest.current;
+      const path = current.pathOf(model.uri);
+      return path ? { sessionId: id, path } : null;
+    };
     const refactorings = attachRefactorings(editor, {
-      fileOf: (model) => {
-        const { workspace: current, sessionId: id } = latest.current;
-        const path = current.pathOf(model.uri);
-        return path ? { sessionId: id, path } : null;
-      },
+      fileOf,
       onRename: (model, target) => setRenameQuery({ model, target }),
       onError: setError,
     });
@@ -211,6 +216,8 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
     });
     scriptRunMarkersRef.current = scriptRunMarkers;
     const unusedMemberMarkers = new UnusedMemberMarkers(editor);
+    const blame = new BlameAnnotations(editor, { fileOf, onError: setError });
+    blameRef.current = blame;
     setEditor(editor);
 
     let symbolTimer: ReturnType<typeof setTimeout> | null = null;
@@ -243,6 +250,12 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
         const { workspace: current, sessionId: id } = latest.current;
         const saved = current.isDirty(path) ? current.save(path) : Promise.resolve();
         saved.then(() => runPackageScript({ sessionId: id, directory: dirName(path), script })).catch((reason) => setError(errorText(reason)));
+      }),
+      // The Git tab filters its log by the commit's hash, since the commit may be on no page of the filter it had.
+      blame.onDidClickCommit((commit) => {
+        const { updateView, setTab } = useSessionViewStore.getState();
+        updateView(latest.current.sessionId, { gitFilter: { reference: "", text: commit.id }, gitCommit: commit.id, gitFile: null });
+        setTab(latest.current.sessionId, "git");
       }),
       editor.onDidChangeModelContent(() => {
         setShownMarker(null);
@@ -299,6 +312,8 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
       scriptRunMarkers.dispose();
       scriptRunMarkersRef.current = null;
       unusedMemberMarkers.dispose();
+      blame.dispose();
+      blameRef.current = null;
       refactorings.dispose();
       agent?.dispose();
       setEditor(null);
@@ -308,8 +323,15 @@ export function EditorPane({ sessionId, workspace, pane, isActive, dirtyPaths, s
     };
   }, []);
 
-  // A commit or revert moves the markers' baseline; the workspace drops its HEAD cache and the markers refetch.
-  useEffect(() => workspace.onHeadChange(() => markersRef.current?.reload()).dispose, [workspace]);
+  // A commit or revert moves the markers' baseline; the workspace drops its HEAD cache and the markers refetch, as does the blame.
+  useEffect(
+    () =>
+      workspace.onHeadChange(() => {
+        markersRef.current?.reload();
+        blameRef.current?.reload();
+      }).dispose,
+    [workspace],
+  );
 
   useEffect(() => {
     editorRef.current?.updateOptions({ fontSize, lineHeight, fontFamily });

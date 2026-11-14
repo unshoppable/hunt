@@ -189,6 +189,7 @@ command_handler![
     ide::list_files,
     ide::list_deleted_files,
     ide::read_file,
+    ide::blame_file,
     ide::format_with_prettier,
     ide::read_lint_rules,
     ide::search_word,

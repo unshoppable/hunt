@@ -570,6 +570,13 @@ body,
 .monaco-editor .hunt-review-add--note::before {
   background: #6e7681;
 }
+/* The day and author of a line's commit left of its line number (see ide/blame/blame-annotations.monaco.ts); a click shows the commit. */
+.monaco-editor .line-numbers .hunt-blame {
+  cursor: pointer;
+}
+.monaco-editor .line-numbers .hunt-blame:hover {
+  color: #c9d1d9;
+}
 /* WebStorm's green run triangle on each script of a package.json (see ide/package-scripts/script-run-markers.monaco.ts), centred in the glyph
    margin cell; a click runs the script. */
 .monaco-editor .hunt-script-run {

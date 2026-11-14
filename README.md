@@ -486,6 +486,11 @@ The editor refuses files above 50 MB before reading them and binary files (a NUL
 valid UTF-8; `apps/client/src-tauri/src/ide/workspace.rs`); a document longer than 5 MB (5 Mi UTF-16 code units) opens
 without language servers.
 
+*Annotate with Git Blame* in the editor's context menu, which also opens on a right click in the gutter, shows the day
+and the author of each line's commit left of the line numbers (`apps/client/src/ide/blame/`, `blame_file`); the hover
+names the commit, a click shows it in the Git tab, and *Close Annotations* hides them again. The blame is of the
+editor's text (`git blame --contents -`), so unsaved lines show no commit.
+
 Hover, inlay hints, diagnostics, the breadcrumb, go-to-declaration and usages come from the TypeScript 7 language
 server (`tsgo --lsp`, from the worktree's `node_modules/.bin` or the PATH), one process per worktree managed by
 `apps/client/src-tauri/src/ide/lsp.rs` and bridged through `apps/client/src/ide/lsp/`. The server reads loaded files from

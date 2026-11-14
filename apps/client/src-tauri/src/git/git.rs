@@ -1808,6 +1808,77 @@ pub async fn commit_file_diff(repo: &Path, id: &str, path: &str, old_path: Optio
     Ok(FileDiff { path: path.to_string(), old_content, new_content, unified })
 }
 
+/// A commit that lines of a blamed file come from.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlameCommit {
+    pub id: String,
+    pub author: String,
+    pub author_email: String,
+    pub authored_at: chrono::DateTime<chrono::Utc>,
+    pub subject: String,
+}
+
+/// The commit that last changed each line of a file: per line the index of its commit in `commits`, or `None` for a
+/// line no commit holds yet.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct Blame {
+    pub commits: Vec<BlameCommit>,
+    pub lines: Vec<Option<u32>>,
+}
+
+/// The blame of `contents` as the text of the worktree file `path`, so the lines are those of an editor's unsaved
+/// text; fails for a file HEAD does not hold.
+pub async fn blame(worktree: &Path, path: &str, contents: &str) -> Result<Blame, String> {
+    let output = run_git_with_input(worktree, &["blame", "--porcelain", "--contents", "-", "--", path], &[], contents).await?;
+    Ok(parse_blame(&output))
+}
+
+/// Reads `git blame --porcelain`: per line of the file a header `<commit> <original line> <final line> [<lines>]` and
+/// the line itself after a tab, with the commit's fields between them where the commit appears first. The all-zero
+/// commit stands for the lines of `--contents` that no commit holds.
+fn parse_blame(output: &str) -> Blame {
+    let mut blame = Blame::default();
+    let mut index_by_id: HashMap<&str, Option<u32>> = HashMap::new();
+    let mut current: Option<u32> = None;
+    for line in output.lines() {
+        if line.starts_with('\t') {
+            continue;
+        }
+        let (key, value) = line.split_once(' ').unwrap_or((line, ""));
+        if key.len() == 40 && is_commit_id(key) {
+            current = *index_by_id.entry(key).or_insert_with(|| {
+                if key.bytes().all(|digit| digit == b'0') {
+                    return None;
+                }
+                blame.commits.push(BlameCommit {
+                    id: key.to_string(),
+                    author: String::new(),
+                    author_email: String::new(),
+                    authored_at: chrono::DateTime::default(),
+                    subject: String::new(),
+                });
+                Some(blame.commits.len() as u32 - 1)
+            });
+            blame.lines.push(current);
+            continue;
+        }
+        let Some(commit) = current.and_then(|index| blame.commits.get_mut(index as usize)) else { continue };
+        match key {
+            "author" => commit.author = value.to_string(),
+            "author-mail" => commit.author_email = value.trim_start_matches('<').trim_end_matches('>').to_string(),
+            "author-time" => {
+                if let Some(authored_at) = value.parse().ok().and_then(|seconds| chrono::DateTime::from_timestamp(seconds, 0)) {
+                    commit.authored_at = authored_at;
+                }
+            }
+            "summary" => commit.subject = value.to_string(),
+            _ => {}
+        }
+    }
+    blame
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -1840,6 +1911,30 @@ mod tests {
 
         let bare = tempfile::tempdir().unwrap();
         assert_eq!(git_dir_of(bare.path()), None);
+    }
+
+    #[test]
+    fn parse_blame_maps_every_line_to_its_commit_and_leaves_uncommitted_lines_out() {
+        let first = "a".repeat(40);
+        let second = "b".repeat(40);
+        let zero = "0".repeat(40);
+        let output = format!(
+            "{first} 1 1 2\nauthor Jane Doe\nauthor-mail <jane@example.com>\nauthor-time 1760000000\nauthor-tz +0200\nsummary feat: x\nfilename a.txt\n\tone\n\
+             {first} 2 2\n\tauthor not a field\n\
+             {zero} 3 3 1\nauthor External file (--contents)\nauthor-mail <external.file>\nauthor-time 1760000500\nsummary Version of a.txt from standard input\nfilename a.txt\n\tnew\n\
+             {second} 3 4 1\nauthor Jo\nauthor-mail <jo@example.com>\nauthor-time 1750000000\nsummary init\nboundary\nfilename a.txt\n\tfour\n\
+             {first} 5 5 1\n\tfive\n"
+        );
+        let blame = parse_blame(&output);
+        assert_eq!(blame.lines, vec![Some(0), Some(0), None, Some(1), Some(0)]);
+        assert_eq!(blame.commits.len(), 2);
+        assert_eq!(blame.commits[0].id, first);
+        assert_eq!(blame.commits[0].author, "Jane Doe");
+        assert_eq!(blame.commits[0].author_email, "jane@example.com");
+        assert_eq!(blame.commits[0].authored_at.to_rfc3339(), "2025-10-09T08:53:20+00:00");
+        assert_eq!(blame.commits[0].subject, "feat: x");
+        assert_eq!(blame.commits[1].subject, "init");
+        assert_eq!(parse_blame(""), Blame::default());
     }
 
     #[test]

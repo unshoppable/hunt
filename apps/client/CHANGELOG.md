@@ -1,3 +1,9 @@
+## 0.167.0 (2026-11-14)
+
+### 🚀 Features
+
+- **client:** annotate a file with git blame in the editor ([d4aec97](https://github.com/unshoppable/hunt/commit/d4aec97))
+
 ## 0.166.0 (2026-11-13)
 
 ### 🚀 Features

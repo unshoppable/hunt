@@ -355,6 +355,8 @@ export const commands = {
   listScreenshots: () => invoke<Screenshot[]>("list_screenshots"),
   /** The image files among `paths` (e.g. files dropped into the chat) as attachments; other files are left out. */
   imageFiles: (paths: string[]) => invoke<Screenshot[]>("image_files", { paths }),
+  /** The regular files among `paths` (e.g. files dropped into the start view), in the given order; folders are left out. */
+  regularFiles: (paths: string[]) => invoke<string[]>("regular_files", { paths }),
   /**
    * Copies the dropped files among `paths` that the prompt of session `id` attaches into its worktree's `.hunt/attachments/`
    * and resolves with the absolute paths the agent reads them from (on its VM for a remote session); folders are left out.

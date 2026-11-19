@@ -23,6 +23,11 @@ export function fileReference(path: string): string {
   return `\`${path}\``;
 }
 
+/** `text` with every mention of the file at `from` naming `to` instead; other occurrences of the path stay. */
+export function replaceFileReference(text: string, from: string, to: string): string {
+  return text.split(fileReference(from)).join(fileReference(to));
+}
+
 /**
  * Inserts `reference` at `caret`, separated from neighbouring text by a space on each side, and returns the text with
  * the caret placed after the reference.

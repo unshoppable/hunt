@@ -118,6 +118,9 @@ export function NewSessionView({
   const headingRepoButtonRef = useRef<HTMLButtonElement>(null);
   /** What the prompt box holds; a session started without sending it (repository, branch or pull request picked) keeps it unsent in its own box. */
   const draftRef = useRef<PromptDraft | null>(initialPrompt);
+  /** The files dropped into the prompt box, by their paths on this Mac; the session attaches those its first prompt still names. */
+  const droppedFilesRef = useRef<string[]>(initialPrompt?.files ?? []);
+  const startViewRef = useRef<HTMLDivElement>(null);
   const recentReposButtonRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => refreshKnownOptions(repoPath), [repoPath]);
@@ -328,7 +331,7 @@ export function NewSessionView({
 
   function start(text: string, images: Screenshot[]) {
     if (!hasTarget) return;
-    startSession(titleFromPrompt(text) || "Screenshot", plainTarget(startRef), { text, images });
+    startSession(titleFromPrompt(text) || "Screenshot", plainTarget(startRef), { text, images, files: droppedFilesRef.current });
   }
 
   if (parentId && !parent) return null;
@@ -493,7 +496,7 @@ export function NewSessionView({
       ) : view === "sessionVms" ? (
         <SessionVmList onClose={() => setView("start")} />
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col justify-center overflow-y-auto py-8 pr-12">
+        <div ref={startViewRef} className="flex min-h-0 flex-1 flex-col justify-center overflow-y-auto py-8 pr-12">
           <div className="chat-column px-5 text-center">
             <h1 className="text-3xl font-medium tracking-tight text-neutral-100">
               What should we build
@@ -564,8 +567,14 @@ export function NewSessionView({
               placeholder="Describe what to build or change"
               initialDraft={initialPrompt}
               onDraftChange={(draft) => {
-                draftRef.current = draft;
+                draftRef.current = { ...draft, files: droppedFilesRef.current };
               }}
+              onAttachFiles={async (paths) => {
+                const files = await commands.regularFiles(paths);
+                droppedFilesRef.current = [...new Set([...droppedFilesRef.current, ...files])];
+                return files;
+              }}
+              dropZoneRef={startViewRef}
               hint={startsWhenLoaded ? "Starting the session…" : !hasTarget ? "Choose a repository to start the session right away" : undefined}
             />
             {error || branchError ? (

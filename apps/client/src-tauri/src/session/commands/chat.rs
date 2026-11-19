@@ -198,6 +198,13 @@ pub fn image_files(paths: Vec<String>) -> Vec<Screenshot> {
     screenshots::image_files(&paths)
 }
 
+/// The regular files among `paths` (e.g. files dropped into the start view), in the given order; folders and paths
+/// that do not exist are left out.
+#[tauri::command]
+pub fn regular_files(paths: Vec<String>) -> Vec<String> {
+    paths.into_iter().filter(|path| Path::new(path).is_file()).collect()
+}
+
 /// Copies the dropped files among `paths` into the worktree of `id` (`attachments::attach`) and returns the absolute
 /// paths the agent knows them by, on its VM for a remote session; folders are left out.
 #[tauri::command]

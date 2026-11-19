@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fileReference, insertImageReference, insertReference, removeImageReference, shiftImageReferences } from "./image-references.utils";
+import { fileReference, insertImageReference, insertReference, removeImageReference, replaceFileReference, shiftImageReferences } from "./image-references.utils";
 
 describe("insertImageReference", () => {
   it("inserts at the caret with a space on each side", () => {
@@ -43,5 +43,18 @@ describe("shiftImageReferences", () => {
   it("adds the offset to every reference", () => {
     expect(shiftImageReferences("[Image #1] and [Image #2]", 2)).toBe("[Image #3] and [Image #4]");
     expect(shiftImageReferences("[Image #1]", 0)).toBe("[Image #1]");
+  });
+});
+
+describe("replaceFileReference", () => {
+  it("renames every mention of the file and leaves the bare path alone", () => {
+    const text = "read `/Users/me/a b.csv` twice: `/Users/me/a b.csv`, not /Users/me/a b.csv";
+    expect(replaceFileReference(text, "/Users/me/a b.csv", "/work/.hunt/attachments/a b.csv")).toBe(
+      "read `/work/.hunt/attachments/a b.csv` twice: `/work/.hunt/attachments/a b.csv`, not /Users/me/a b.csv",
+    );
+  });
+
+  it("leaves text that does not mention the file alone", () => {
+    expect(replaceFileReference("read `/Users/me/b.csv`", "/Users/me/a.csv", "/work/a.csv")).toBe("read `/Users/me/b.csv`");
   });
 });

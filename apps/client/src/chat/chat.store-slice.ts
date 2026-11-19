@@ -27,8 +27,11 @@ export type SessionMode = { id: string; name: string; description?: string | nul
 /** Fill level of the agent's context window in tokens, as last reported by the agent. */
 export type ContextUsage = { used: number; size: number };
 
-/** Text and screenshots of a prompt before it is sent. */
-export type PromptDraft = { text: string; images: Screenshot[] };
+/**
+ * Text and screenshots of a prompt before it is sent. `files` are the files dropped into the start view, by their
+ * paths on this Mac: the text references them, and the new session attaches them before it sends the prompt.
+ */
+export type PromptDraft = { text: string; images: Screenshot[]; files?: string[] };
 
 /** A prompt sent while the agent was busy or starting; it waits in the chat's queue and is sent once the agent is idle. */
 export type QueuedPrompt = PromptDraft & { id: string };

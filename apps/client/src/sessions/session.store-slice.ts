@@ -6,6 +6,7 @@ import type { PullRequestRef, SessionEnding, SessionView, SummaryEvent, Workspac
 import type { ChatTurns, PromptDraft, SessionChat } from "../chat/chat.store-slice";
 import type { HuntGet, HuntSet, HuntState } from "./hunt.store";
 import { createEmptyChat } from "../chat/chat-reducer.utils";
+import { fileReference, replaceFileReference } from "../chat/image-references.utils";
 import { repoName } from "../common/path/path.utils";
 import { issueFromPrompt, titleFromPrompt } from "./session-labels.utils";
 import { useAgentDefaultsStore } from "../chat/agent-defaults.store";
@@ -16,7 +17,7 @@ export type AgentSetup = { configValues: Record<string, string>; modeId: string 
 
 /**
  * What a new session starts with: the agent setup, applied first, and the prompt shown in its chat at once and sent as
- * soon as the agent runs; `draft` is text left unsent in the start view's prompt box, which the session's box starts with.
+ * soon as the agent runs, after the files it names were attached; `draft` is text left unsent in the start view's prompt box, which the session's box starts with.
  */
 export type SessionStart = { setup: AgentSetup; prompt: PromptDraft | null; draft?: PromptDraft | null };
 
@@ -299,7 +300,8 @@ export function createSessionSlice(set: HuntSet, get: HuntGet, turns: ChatTurns)
       // The prompt shows since `listPlaceholder` listed the session, under the message id it got there.
       const shown = get().chats[id]?.items.find((item) => item.kind === "user");
       const messageId = (shown?.kind === "user" && shown.messageId) || crypto.randomUUID();
-      await runTurn(id, null, () => commands.sendPrompt(id, prompt.text, images, messageId));
+      const text = await attachPromptFiles(id, prompt, messageId);
+      await runTurn(id, null, () => commands.sendPrompt(id, text, images, messageId));
       return;
     }
     const isLive = Boolean(get().sessions.find((candidate) => candidate.id === id)?.isLive);
@@ -307,6 +309,29 @@ export function createSessionSlice(set: HuntSet, get: HuntGet, turns: ChatTurns)
     if (next) {
       await runPrompt(id, next);
     }
+  }
+
+  /**
+   * Attaches the files the start view's `prompt` references to the session `id` and returns the text that names them
+   * by the paths the agent reads them from, which the prompt shown as `messageId` takes over. A file that cannot be
+   * attached keeps its path on this Mac, and the failure lands in the chat's error.
+   */
+  async function attachPromptFiles(id: string, prompt: PromptDraft, messageId: string): Promise<string> {
+    let text = prompt.text;
+    const files = (prompt.files ?? []).filter((path) => text.includes(fileReference(path)));
+    if (!files.length) return text;
+    try {
+      for (const path of files) {
+        const [attached] = await commands.attachFiles(id, [path]);
+        if (attached) {
+          text = replaceFileReference(text, path, attached);
+        }
+      }
+    } catch (error) {
+      updateChat(id, (chat) => ({ ...chat, error: String(error) }));
+    }
+    updateChat(id, (chat) => ({ ...chat, items: chat.items.map((item) => (item.kind === "user" && item.messageId === messageId ? { ...item, text } : item)) }));
+    return text;
   }
 
   /** The title a session is created with: `title`, or for an untitled session (`null`) the name of its repository. */

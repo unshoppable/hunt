@@ -1,3 +1,9 @@
+## 0.168.0 (2026-11-19)
+
+### 🚀 Features
+
+- **client:** attach files dropped into the start view to the new session ([685cfa7](https://github.com/unshoppable/hunt/commit/685cfa7))
+
 ## 0.167.0 (2026-11-14)
 
 ### 🚀 Features

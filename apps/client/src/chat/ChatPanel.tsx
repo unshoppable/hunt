@@ -281,6 +281,11 @@ export function ChatPanel({ sessionId }: { sessionId: string }) {
         />
       ) : null}
 
+      {/* Shadow the summary and the agent tabs cast on the messages that scroll under them; it takes no height and no clicks. */}
+      <div aria-hidden="true" className="pointer-events-none relative z-10 h-0 shrink-0">
+        <div className="absolute inset-x-0 top-0 h-3.5 bg-[linear-gradient(to_bottom,rgba(0,0,0,0.4),rgba(0,0,0,0.14)_45%,transparent)]" />
+      </div>
+
       <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto py-5 pr-12 pl-5">
         <div ref={columnRef} className="chat-column">
           {shownSubagent ? (

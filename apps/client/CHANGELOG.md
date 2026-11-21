@@ -1,3 +1,9 @@
+## 0.168.1 (2026-11-21)
+
+### 🩹 Fixes
+
+- **client:** stop looking up a pull request for sessions that review none ([801a43e](https://github.com/unshoppable/hunt/commit/801a43e))
+
 ## 0.168.0 (2026-11-19)
 
 ### 🚀 Features

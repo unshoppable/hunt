@@ -1,3 +1,9 @@
+## 0.169.0 (2026-11-21)
+
+### 🚀 Features
+
+- **client:** cast a shadow from the summary and the agent tabs onto the messages below ([e7ba2a9](https://github.com/unshoppable/hunt/commit/e7ba2a9))
+
 ## 0.168.1 (2026-11-21)
 
 ### 🩹 Fixes

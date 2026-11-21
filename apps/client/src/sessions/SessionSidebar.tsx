@@ -7,7 +7,7 @@ import { configuredVmSettings, useSettingsStore } from "../settings/settings.sto
 import { accountOptions, LOCAL_LOGIN, useAccountsStore } from "../accounts/accounts.store";
 import { openSettingsWindow } from "../settings/settings-window.utils";
 import { useFileIconUrl, useFolderIconUrl } from "../ui/file-icons/file-icons.hook";
-import { sessionPullRequestReference, cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionReference, sessionSubtitle, sidebarTitle, type ReferenceTone } from "./session-labels.utils";
+import { cycleSessionId, filterSessionRows, groupSessions, sessionMarks, sessionReference, sessionSubtitle, sidebarTitle, type ReferenceTone } from "./session-labels.utils";
 import { SessionMark } from "./SessionMark";
 import { DeleteSessionDialog } from "./DeleteSessionDialog";
 import { StaleRemoteDialog } from "./remote/StaleRemoteDialog";
@@ -57,10 +57,9 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
   const marks = useMemo(() => sessionMarks(sessions), [sessions]);
   const pullRequestStates = useHuntStore((state) => state.pullRequestStates);
   const refreshPullRequestStates = useHuntStore((state) => state.refreshPullRequestStates);
-  const sessionPullRequests = useHuntStore((state) => state.sessionPullRequests);
-  // The pull request badges follow GitHub: fetched when the set of top-level sessions, one of their push targets or
-  // pipeline steps changes and whenever the window comes back to the front.
-  const pullRequestSources = sessions.filter((session) => !session.parentId).map((session) => `${session.id}:${session.pushTarget ?? ""}:${session.remote?.agent ?? ""}`).join(",");
+  // The pull request badges follow GitHub: fetched when the set of sessions that review a pull request changes and
+  // whenever the window comes back to the front.
+  const pullRequestSources = sessions.filter((session) => !session.parentId && session.pullRequest).map((session) => `${session.id}:${session.pullRequest?.number}`).join(",");
   useEffect(() => {
     if (!pullRequestSources) return;
     const refresh = () => void refreshPullRequestStates();
@@ -252,8 +251,6 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
           // A session the backend still creates has no worktree or agent yet: nothing can be started in or done to it.
           const isCreating = creatingIds.includes(session.id);
           const reference = sessionReference(session, pullRequestStates[session.id] ?? null);
-          const sessionPullRequest = sessionPullRequests[session.id];
-          const pullRequestOfSession = !isSubChat && sessionPullRequest ? sessionPullRequestReference(sessionPullRequest) : null;
           const step = session.mode === "swf" && session.remote ? sessionStepLabel(session.remote.agent, pipelineAgentOf(pipelines[session.id])) : null;
           // The repository heads its group of sessions: a heading before the first row of every repository.
           const startsGroup = !isSubChat && (index === 0 || rows[index - 1].repository !== repository);
@@ -337,12 +334,6 @@ export function SessionSidebar({ collapseToggle }: { collapseToggle: ReactNode }
                     ) : null}
                     {!isSubChat ? (session.pullRequest ? <GitHubIcon className="size-4 shrink-0" /> : <BranchIcon className="size-4 shrink-0" />) : null}
                     <span className="truncate">{isCreating && !isSubChat ? (session.workspace === "checkout" ? "Starting…" : "Creating worktree…") : sessionSubtitle(session)}</span>
-                    {pullRequestOfSession ? (
-                      <span className={`ml-auto flex shrink-0 items-center gap-1 pl-2 ${REFERENCE_TONE[pullRequestOfSession.tone]}`} title={pullRequestOfSession.title}>
-                        <PullRequestIcon className="size-4" />
-                        {pullRequestOfSession.label}
-                      </span>
-                    ) : null}
                   </span>
                   {!isSubChat ? (
                     <span className="mt-0.5 flex w-full min-w-0 items-center gap-1.5 pl-[26px] text-[0.9375em] text-neutral-400">

@@ -174,7 +174,6 @@ command_handler![
     github::github_viewer,
     github::view_pull_request,
     github::pull_request_state,
-    github::session_pull_request,
     github::list_review_threads,
     github::submit_pull_request_review,
     github::add_review_comment,

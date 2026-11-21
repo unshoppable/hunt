@@ -23,7 +23,7 @@ import type { DirEntry } from "../ide/project-tree/project-tree.types";
 import type { FileLine, ReplaceResult, TextQuery, TextSearchResult } from "../ide/search/find-in-files.types";
 import type { AppPage, PreviewStatus } from "../preview/preview.types";
 import type { GithubViewer, PullRequestDetails, ReplyTarget, ReviewComment, ReviewEvent, ReviewThread } from "../review/review.types";
-import type { SessionPullRequest, PullRequest, PullRequestState } from "../sessions/pull-requests.types";
+import type { PullRequest, PullRequestState } from "../sessions/pull-requests.types";
 import type { RemoteLink, SessionVm, SessionVmInfo, SessionVmState, SessionVmUsage } from "../sessions/remote/remote-session.types";
 import type { PullRequestRef, SessionEnding, SessionView, Workspace } from "../sessions/session.types";
 import type { SwfPipelineFiles } from "../sessions/swf-pipeline.types";
@@ -97,9 +97,6 @@ export const commands = {
   viewPullRequest: (sessionId: string) => invoke<PullRequestDetails>("view_pull_request", { sessionId }),
   /** State and draft flag of the pull request the session reviews; rejects when it reviews none. */
   pullRequestState: (sessionId: string) => invoke<PullRequestState>("pull_request_state", { sessionId }),
-  /** The pull request that closes `issue`, else the one that merges `branch`, of the repository at `repoPath`, in any state; `null` when there is none. */
-  sessionPullRequest: (repoPath: string, branch: string | null, issue: number | null) =>
-    invoke<SessionPullRequest | null>("session_pull_request", { repoPath, branch, issue }),
   /** Review threads of the pull request the session reviews, with their replies; rejects when it reviews none. */
   listReviewThreads: (sessionId: string) => invoke<ReviewThread[]>("list_review_threads", { sessionId }),
   /** Submits a review of the pull request the session reviews; `body` is its summary comment. */

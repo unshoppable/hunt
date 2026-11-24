@@ -16,6 +16,7 @@ import { useReviewCommentCounts, useReviewDraftCount, useReviewedPullRequest } f
 import type { ChangeListTab } from "../sessions/inspector.store";
 import { useLoad } from "../ui/load.hook";
 import { useChangelistSelectionStore } from "./changelist-selection.store";
+import { checkableFiles } from "./changelist-view.utils";
 import { ReviewDialog } from "../review/ReviewDialog";
 import { CommentCount } from "../review/CommentCount";
 import { ReviewBars } from "../graph/ReviewBars";
@@ -51,6 +52,9 @@ export type ChangeListTarget = { path: string; files: ChangedFile[]; isFolder: b
 
 /** One visible row of the tree view; `depth` is the indentation level. */
 type Row = { node: TreeNode; depth: number };
+
+/** Stands in for the checkbox of a row with nothing left to commit, so that the rows stay aligned. */
+const COMMITTED_MARK = <span className="size-4 shrink-0" title="Already committed: nothing of it is left to commit or shelve" />;
 
 /** Collapsed folders of every changelist, kept across session switches for the window's lifetime. */
 const collapsedBySession = new Map<string, Set<string>>();
@@ -227,7 +231,11 @@ export function ChangeList({
       </span>
     );
   };
-  const checkedFiles = useMemo(() => files.filter((file) => checked.has(file.path)), [files, checked]);
+  /** The files with a checkbox (`checkableFiles`); checking a folder or "Select all" takes only these. */
+  const checkable = useMemo(() => checkableFiles(files, tab), [files, tab]);
+  const checkablePaths = useMemo(() => new Set(checkable.map((file) => file.path)), [checkable]);
+  const onlyCheckable = (targets: ChangedFile[]) => targets.filter((file) => checkablePaths.has(file.path));
+  const checkedFiles = useMemo(() => checkable.filter((file) => checked.has(file.path)), [checkable, checked]);
   const checkedPaths = useMemo(() => checkedFiles.map((file) => file.path), [checkedFiles]);
 
   const rows = useMemo(() => {
@@ -244,15 +252,16 @@ export function ChangeList({
     return result;
   }, [tree, collapsed]);
 
-  const stateOf = (paths: ChangedFile[]): CheckState => {
-    const checkedCount = paths.filter((file) => checked.has(file.path)).length;
+  const stateOf = (targets: ChangedFile[]): CheckState => {
+    const candidates = onlyCheckable(targets);
+    const checkedCount = candidates.filter((file) => checked.has(file.path)).length;
     if (checkedCount === 0) return "unchecked";
-    return checkedCount === paths.length ? "checked" : "mixed";
+    return checkedCount === candidates.length ? "checked" : "mixed";
   };
 
   const setChecked = (targets: ChangedFile[], isChecked: boolean) => {
     const next = new Set(checked);
-    for (const file of targets) {
+    for (const file of onlyCheckable(targets)) {
       if (isChecked) {
         next.add(file.path);
       } else {
@@ -386,7 +395,11 @@ export function ChangeList({
         className="tree-row group flex items-center gap-1.5 pr-2.5"
         style={{ paddingLeft: `calc(12px + ${depth} * var(--changelist-indent))` }}
       >
-        <Checkbox state={checked.has(file.path) ? "checked" : "unchecked"} onChange={() => setChecked([file], !checked.has(file.path))} />
+        {checkablePaths.has(file.path) ? (
+          <Checkbox state={checked.has(file.path) ? "checked" : "unchecked"} onChange={() => setChecked([file], !checked.has(file.path))} />
+        ) : (
+          COMMITTED_MARK
+        )}
         <button
           type="button"
           onClick={() => nav.select(file.path)}
@@ -425,7 +438,7 @@ export function ChangeList({
         className="tree-row group flex items-center gap-1.5 pr-2.5"
         style={{ paddingLeft: `calc(12px + ${depth} * var(--changelist-indent))` }}
       >
-        <Checkbox state={stateOf(folder.files)} onChange={() => toggleGroup(folder.files)} />
+        {onlyCheckable(folder.files).length ? <Checkbox state={stateOf(folder.files)} onChange={() => toggleGroup(folder.files)} /> : COMMITTED_MARK}
         <button
           type="button"
           onClick={() => {
@@ -508,9 +521,10 @@ export function ChangeList({
       ) : (
         <>
           <div className="flex items-center gap-2 px-3 py-2 text-[13px] text-neutral-400">
-            <Checkbox state={files.length ? stateOf(files) : "unchecked"} onChange={() => toggleGroup(files)} title="Select all" />
+            <Checkbox state={stateOf(files)} onChange={() => toggleGroup(files)} title={checkable.length < files.length ? "Select all uncommitted" : "Select all"} />
             <span>
-              {files.length} changed{checkedPaths.length ? ` · ${checkedPaths.length} selected` : ""}
+              {files.length} changed{checkable.length < files.length ? ` · ${checkable.length} uncommitted` : ""}
+              {checkedPaths.length ? ` · ${checkedPaths.length} selected` : ""}
               {hiddenByGlobsCount ? ` · ${hiddenByGlobsCount} hidden` : ""}
             </span>
             {scope ? (

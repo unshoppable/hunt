@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { countByScope, isInScope, otherTouchers, scopeOwnerIds } from "./attribution.utils";
 
-const file = (touchedBy: string[]) => ({ path: "a.ts", status: "M", touchedBy });
+const file = (touchedBy: string[]) => ({ path: "a.ts", status: "M", touchedBy, isCommitted: false });
 
 describe("isInScope", () => {
   it("lists a file the session touched in every scope, whoever else did", () => {

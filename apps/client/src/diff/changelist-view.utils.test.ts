@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { storedSession } from "../sessions/hunt.store.fixtures";
 import type { PullRequestRef } from "../sessions/session.types";
-import { changeListComparison, chosenDiffBase, scopedChangedFiles, sharesWorktree, shownChangeListTab, withoutHiddenFiles } from "./changelist-view.utils";
+import { changeListComparison, checkableFiles, chosenDiffBase, scopedChangedFiles, sharesWorktree, shownChangeListTab, withoutHiddenFiles } from "./changelist-view.utils";
 
-const file = (path: string, touchedBy: string[]) => ({ path, status: "M", touchedBy });
+const file = (path: string, touchedBy: string[]) => ({ path, status: "M", touchedBy, isCommitted: false });
 
 describe("shownChangeListTab", () => {
   it("opens a pull request review on the review tab and every other session on the changelist", () => {
@@ -79,5 +79,17 @@ describe("withoutHiddenFiles", () => {
 
   it("keeps every file without globs", () => {
     expect(withoutHiddenFiles(files, "  ")).toBe(files);
+  });
+});
+
+describe("checkableFiles", () => {
+  const files = [file("a.ts", []), { ...file("b.ts", []), isCommitted: true }];
+
+  it("leaves out the files without an uncommitted change", () => {
+    expect(checkableFiles(files, "changelist").map(({ path }) => path)).toEqual(["a.ts"]);
+  });
+
+  it("keeps every file of the review tab", () => {
+    expect(checkableFiles(files, "review")).toEqual(files);
   });
 });

@@ -52,3 +52,12 @@ export function withoutHiddenFiles(files: ChangedFileView[], hiddenGlobsText: st
   if (!hiddenGlobs.length) return files;
   return files.filter((file) => !hiddenGlobs.some((glob) => matchesGlob(glob, file.path)));
 }
+
+/**
+ * The `files` the changelist's `tab` offers a checkbox for. A changelist compared against an older commit also lists
+ * files without an uncommitted change, which a commit or shelf cannot take; the review tab keeps every checkbox, since
+ * what is checked there is not committed but reverted or handed to the agent.
+ */
+export function checkableFiles(files: ChangedFileView[], tab: ChangeListTab): ChangedFileView[] {
+  return tab === "review" ? files : files.filter((file) => !file.isCommitted);
+}

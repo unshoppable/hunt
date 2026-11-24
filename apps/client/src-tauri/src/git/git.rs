@@ -1000,6 +1000,22 @@ fn literal_pathspecs(paths: &[String]) -> Vec<String> {
     paths.iter().map(|path| literal_pathspec(path)).collect()
 }
 
+/// Those of `paths` with an uncommitted change: a changed file, or a folder that holds one. Git aborts on a pathspec
+/// that matches nothing, which is what a file committed since an older diff base is once it was deleted, so a commit
+/// or shelf of a changelist compared against such a base takes only what is left to commit.
+async fn uncommitted_paths(worktree: &Path, paths: &[String]) -> Result<Vec<String>, String> {
+    let changed = changed_files(worktree, DIFF_BASE).await?;
+    let is_uncommitted = |path: &String| {
+        let folder = format!("{}/", path.trim_end_matches('/'));
+        changed.iter().any(|file| file.path == *path || file.path.starts_with(&folder))
+    };
+    let uncommitted: Vec<String> = paths.iter().filter(|path| is_uncommitted(path)).cloned().collect();
+    if uncommitted.is_empty() {
+        return Err("the selected files have no uncommitted changes".into());
+    }
+    Ok(uncommitted)
+}
+
 /// Stashes exactly `paths` (untracked files included) under `name`. Git prefixes the subject with
 /// `On <branch>: `, which is how `list_shelves` scopes entries to a branch. The index is reset first
 /// because `stash push` with a pathspec fails on staged deletions.
@@ -1009,8 +1025,9 @@ pub async fn shelve_files(worktree: &Path, paths: &[String], name: &str) -> Resu
         return Err("shelf name must not be empty".into());
     }
 
+    let paths = uncommitted_paths(worktree, paths).await?;
     run_git_writing_index(worktree, &["reset", "-q", "--"]).await?;
-    run_git(worktree, &with_paths(&["stash", "push", "-u", "-m", name, "--"], &literal_pathspecs(paths))).await?;
+    run_git(worktree, &with_paths(&["stash", "push", "-u", "-m", name, "--"], &literal_pathspecs(&paths))).await?;
     Ok(())
 }
 
@@ -1083,7 +1100,7 @@ pub async fn commit_files(worktree: &Path, paths: &[String], message: &str) -> R
         return Err("commit message must not be empty".into());
     }
 
-    let pathspecs = literal_pathspecs(paths);
+    let pathspecs = literal_pathspecs(&uncommitted_paths(worktree, paths).await?);
     run_git_writing_index(worktree, &with_paths(&["reset", "-q", "--"], &pathspecs)).await?;
     run_git_writing_index(worktree, &with_paths(&["add", "-A", "--"], &pathspecs)).await?;
     if is_merging(worktree).await {
@@ -2332,6 +2349,22 @@ mod tests {
         assert_eq!(committed.trim(), "feat: replace tracked.txt\n\nA\tnew.txt\nD\ttracked.txt");
         let left = run_git(repo, &["status", "--porcelain"]).await.unwrap();
         assert_eq!(left.trim_end(), "M  other.txt");
+    }
+
+    #[tokio::test]
+    async fn commit_files_skips_paths_without_an_uncommitted_change() {
+        let dir = fixture().await;
+        let repo = dir.path();
+        git(repo, &["rm", "-q", "tracked.txt"]).await;
+        git(repo, &["commit", "-q", "-m", "remove tracked.txt"]).await;
+        std::fs::write(repo.join("new.txt"), "new\n").unwrap();
+
+        commit_files(repo, &["tracked.txt".into(), "other.txt".into(), "new.txt".into()], "feat: add new.txt").await.unwrap();
+
+        let committed = run_git(repo, &["show", "--name-status", "--format=%s", "HEAD"]).await.unwrap();
+        assert_eq!(committed.trim(), "feat: add new.txt\n\nA\tnew.txt");
+        let error = commit_files(repo, &["tracked.txt".into(), "other.txt".into()], "feat: nothing").await.unwrap_err();
+        assert_eq!(error, "the selected files have no uncommitted changes");
     }
 
     #[tokio::test]

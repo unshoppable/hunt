@@ -1,5 +1,5 @@
 import { useChangelistSelectionStore } from "../diff/changelist-selection.store";
-import { changeListComparison, chosenDiffBase, scopedChangedFiles, sharesWorktree, shownChangeListTab, withoutHiddenFiles } from "../diff/changelist-view.utils";
+import { changeListComparison, checkableFiles, chosenDiffBase, scopedChangedFiles, sharesWorktree, shownChangeListTab, withoutHiddenFiles } from "../diff/changelist-view.utils";
 import type { ChangedFileView, Comparison } from "../diff/diff.types";
 import { commands } from "../ipc/commands";
 import { reviewSessionOf } from "../review/review-comments.utils";
@@ -75,7 +75,7 @@ async function readDiffState(session: SessionView): Promise<unknown> {
     collapsed: view?.diffCollapsed ?? false,
     changedFiles: listed.map(({ path, status, touchedBy }) => ({ path, status, touchedBy })),
     hiddenCount: files instanceof Error ? 0 : files.scoped.length - files.listed.length,
-    checkedPaths: listed.filter((file) => checked.has(file.path)).map((file) => file.path),
+    checkedPaths: checkableFiles(listed, changelist.tab).filter((file) => checked.has(file.path)).map((file) => file.path),
     unpushedCommitCount,
     shelves,
     reviewDraftCount: reviewSessionOf(useHuntStore.getState().sessions, session.id)?.reviewComments.length ?? 0,

@@ -2,6 +2,7 @@
 //! history, writing, creating, moving, deleting and reverting worktree files, writing the skills of the swf steps from Hunt's
 //! templates, shelves, and committing and pushing the session's branch, which the branch on a remote session's VM follows.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -28,6 +29,8 @@ pub struct ChangedFileView {
     #[serde(flatten)]
     pub file: ChangedFile,
     pub touched_by: Vec<Uuid>,
+    /// Whether the file has no uncommitted change, so that the list holds it only for its commits since the diff base.
+    pub is_committed: bool,
 }
 
 /// What the changelist and its diffs compare the worktree against.
@@ -52,11 +55,21 @@ pub(super) fn comparison_base(record: &store::SessionRecord, comparison: Compari
 pub async fn list_changed_files(app: AppHandle, id: Uuid, comparison: Comparison) -> Result<Vec<ChangedFileView>, String> {
     let record = worktree_session(&app, id)?;
     let base = comparison_base(&record, comparison);
-    let files = git::changed_files(&record.worktree_path, base).await?;
+    let worktree = &record.worktree_path;
+    let (files, uncommitted) = if base == git::DIFF_BASE {
+        (git::changed_files(worktree, base).await?, None)
+    } else {
+        let (files, uncommitted) = tokio::try_join!(git::changed_files(worktree, base), git::changed_files(worktree, git::DIFF_BASE))?;
+        (files, Some(uncommitted.into_iter().map(|file| file.path).collect::<HashSet<String>>()))
+    };
     let mut touched_by = store::touched_by(&app, &record.worktree_path)?;
     Ok(files
         .into_iter()
-        .map(|file| ChangedFileView { touched_by: touched_by.remove(&file.path).unwrap_or_default(), file })
+        .map(|file| ChangedFileView {
+            touched_by: touched_by.remove(&file.path).unwrap_or_default(),
+            is_committed: uncommitted.as_ref().is_some_and(|uncommitted| !uncommitted.contains(&file.path)),
+            file,
+        })
         .collect())
 }
 

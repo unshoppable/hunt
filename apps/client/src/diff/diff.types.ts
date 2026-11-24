@@ -4,6 +4,8 @@ import type { ChangedFile } from "../common/changes/changed-file.types";
 export type ChangedFileView = ChangedFile & {
   /** Empty when the change was made outside the agents, for example in an IDE or by restoring a shelf. */
   touchedBy: string[];
+  /** Whether the file has no uncommitted change: a changelist compared against an older commit lists it only for its commits since then, and there is nothing of it to commit or shelve. */
+  isCommitted: boolean;
 };
 
 /** A named set of changes parked in `git stash`, scoped to the session's branch. */

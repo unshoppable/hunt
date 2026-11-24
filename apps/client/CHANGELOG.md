@@ -1,3 +1,9 @@
+## 0.169.1 (2026-11-24)
+
+### 🩹 Fixes
+
+- **client:** commit and shelve only uncommitted files of a changelist compared with a branch ([3088042](https://github.com/unshoppable/hunt/commit/3088042))
+
 ## 0.169.0 (2026-11-21)
 
 ### 🚀 Features
